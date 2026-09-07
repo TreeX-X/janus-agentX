@@ -69,8 +69,8 @@ export function commandHelpText(): string {
   return [
     'Commands:',
     '  /help                 Show this help.',
-    '  /model [id]           Show or switch the model (/provider first when multi-provider lands).',
-    '  /provider [id]        (M2) List or switch providers.',
+    '  /model [id]           List models or switch the model.',
+    '  /provider [id]        List providers or switch provider.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
     '  /clear                Clear this conversation history.',
     '  /new [title]          Start a conversation (and switch to it).',
@@ -78,7 +78,7 @@ export function commandHelpText(): string {
     '  /switch <n|id>        Switch conversation.',
     '  /rename <title>       Rename the active conversation.',
     '  /delete [n|id]        Delete a conversation (default: active).',
-    '  /approval [mode]      (M2) Show or switch auto-run|per-action.',
+    '  /approval [mode]      Show or switch auto-run|per-action.',
     '  /exit                 Leave janus.',
     'Keys: Enter send · Ctrl+C cancel current turn · Ctrl+D exit.',
   ].join('\n')

@@ -135,7 +135,7 @@ describe('CliSession.sendTurn', () => {
     })
     if (isSessionValidationError(session)) throw new Error(session.message)
     expect(session.getModelId()).toBe('m1')
-    session.setModel('m2', { baseURL: 'http://x/v1', apiKey: 'k' })
+    session.setModel('m2')
     expect(session.getModelId()).toBe('m2')
     await session.sendTurn('hi')
     expect(session.getTurnCount()).toBe(1)

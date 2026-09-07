@@ -187,6 +187,7 @@ describe('runRepl conversations', () => {
         stderr: (text) => { err.push(text) },
         env: {} as NodeJS.ProcessEnv,
         store: memoryConversationStore(),
+        configPath: null,
         lines: arrayLineSource([
           '/new research',
           'deep question here',

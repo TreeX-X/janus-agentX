@@ -28,6 +28,7 @@ function collect() {
       stderr: (text: string) => { err.push(text) },
       env: {} as NodeJS.ProcessEnv,
       store: memoryConversationStore(),
+      configPath: null,
     },
   }
 }
@@ -83,7 +84,7 @@ describe('runRepl', () => {
     expect(c.out.join('')).toContain('model: m')
     expect(c.out.join('')).toContain('model switched: m2')
     expect(c.out.join('')).toContain('history cleared.')
-    expect(c.out.join('')).toContain('(M2)')
+    expect(c.out.join('')).toContain('* openai-compatible')
     expect(c.out.join('')).toContain('Commands:')
     expect(c.err.join('')).toContain('unknown command: /nope')
     expect(c.err.join('')).toContain('no conversation matches: x')
@@ -108,6 +109,8 @@ describe('runRepl', () => {
         stdout: c.io.stdout,
         stderr: c.io.stderr,
         env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv,
+        store: memoryConversationStore(),
+        configPath: null,
         lines: arrayLineSource(['/model m2', '/workspace /definitely/not/here-404', 'hi', '/exit']),
         streamTextFn: textStub('still-here'),
       },

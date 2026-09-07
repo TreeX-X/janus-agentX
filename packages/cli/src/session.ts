@@ -5,6 +5,10 @@
  * conversation `messages / toolTraces / ChatSessionRuntime`. Both `chat`
  * (single turn) and `tui` (many turns, many conversations) share the same
  * ports assembly. Pure logic + injected IO: no Ink, no stdout.
+ *
+ * Providers mirror JanusX `ProviderSettings` shapes (see providers.ts);
+ * approval resolves through the runtime `approval-requested` event with the
+ * same callerId the loop executes tools under (`janus-agent`).
  */
 import { statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -27,10 +31,31 @@ import {
   type ConversationStorePort,
   type ConversationSummary,
 } from './conversations.js'
+import {
+  effectiveModelId,
+  listProviderModels,
+  resolveActiveProvider,
+  resolveProviderRef,
+  saveCatalogFile,
+  synthesizeCatalog,
+  validateModelId,
+  type ProviderCatalog,
+  type ProviderEntry,
+} from './providers.js'
 
 export const CLI_WORKSPACE_ID = 'cli'
+/** Must match the callerId `runChatTurn` executes tools under (request.callerId ?? 'janus-agent'). */
+export const APPROVAL_CALLER_ID = 'janus-agent'
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 export const DEFAULT_MAX_TURNS = 40
+
+export interface ApprovalPrompt {
+  toolName: string
+  workspaceId: string
+  actionRisk: string
+  summary?: string
+  paths?: string[]
+}
 
 export interface CliSessionConfig {
   workspace: string
@@ -44,12 +69,20 @@ export interface CliSessionConfig {
   env?: NodeJS.ProcessEnv
   /** Conversation persistence. Defaults to memory (headless `chat` behavior). */
   store?: ConversationStorePort
+  /** Provider catalog. Defaults to a synthesized single endpoint (no file). */
+  catalog?: ProviderCatalog
+  providerId?: string
+  /** Persist provider/model defaults on switch. Null/undefined = skip. */
+  configPath?: string | null
+  /** Per-action approval UI. Absent = fail-closed deny. */
+  onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
+  onCatalogError?: (error: unknown) => void
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
 
 export interface SessionValidationError {
-  code: 'missing-model' | 'missing-api-key' | 'bad-workspace' | 'session-open-failed'
+  code: 'missing-model' | 'missing-api-key' | 'bad-workspace' | 'session-open-failed' | 'no-providers' | 'unknown-provider' | 'unknown-model'
   message: string
 }
 
@@ -59,6 +92,16 @@ export interface TurnEventCallbacks {
 
 type Runtime = ReturnType<typeof createAgentRuntime>
 
+interface ApprovalRequestShape {
+  id: string
+  sessionId: string
+  workspaceId: string
+  correlationId: string
+  toolName: string
+  actionRisk: unknown
+  preview?: { summary?: unknown; paths?: unknown }
+}
+
 export class CliSession {
   private readonly runtime: Runtime
   private readonly sessionId: string
@@ -66,8 +109,18 @@ export class CliSession {
   private readonly registry: ConversationRegistry
   private readonly workspaceRoot: string
   private readonly maxTurns: number
+  private readonly catalog: ProviderCatalog
+  private readonly configPath: string | null
+  private readonly onCatalogError?: (error: unknown) => void
+  private readonly onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
+  private readonly baseUrlOverride?: string
+  private readonly apiKey: string
+  private readonly envModel?: string
+  private activeProviderId: string
+  private modelOverride?: string
   private modelId: string
   private approvalMode: ApprovalModeOption
+  private approvalSignal: AbortSignal | null = null
 
   private constructor(init: {
     runtime: Runtime
@@ -76,6 +129,15 @@ export class CliSession {
     registry: ConversationRegistry
     workspaceRoot: string
     maxTurns: number
+    catalog: ProviderCatalog
+    configPath: string | null
+    onCatalogError?: (error: unknown) => void
+    onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
+    baseUrlOverride?: string
+    apiKey: string
+    envModel?: string
+    activeProviderId: string
+    modelOverride?: string
     modelId: string
     approvalMode: ApprovalModeOption
   }) {
@@ -85,18 +147,23 @@ export class CliSession {
     this.registry = init.registry
     this.workspaceRoot = init.workspaceRoot
     this.maxTurns = init.maxTurns
+    this.catalog = init.catalog
+    this.configPath = init.configPath
+    this.onCatalogError = init.onCatalogError
+    this.onApproval = init.onApproval
+    this.baseUrlOverride = init.baseUrlOverride
+    this.apiKey = init.apiKey
+    this.envModel = init.envModel
+    this.activeProviderId = init.activeProviderId
+    this.modelOverride = init.modelOverride
     this.modelId = init.modelId
     this.approvalMode = init.approvalMode
+    this.attachApprovalListener()
   }
 
   static async create(config: CliSessionConfig): Promise<CliSession | SessionValidationError> {
     const env = config.env ?? process.env
-    const modelId = config.model ?? env.JANUS_MODEL
-    const baseURL = config.baseUrl ?? env.JANUS_BASE_URL ?? DEFAULT_BASE_URL
     const apiKey = config.apiKey ?? env.JANUS_API_KEY
-    if (!modelId) {
-      return { code: 'missing-model', message: 'janus: missing model. Pass --model <id> or set JANUS_MODEL.' }
-    }
     if (!apiKey) {
       return { code: 'missing-api-key', message: 'janus: missing API key. Pass --api-key <key> or set JANUS_API_KEY.' }
     }
@@ -108,6 +175,26 @@ export class CliSession {
       return { code: 'bad-workspace', message: `janus: workspace is not a directory: ${config.workspace}` }
     }
 
+    const catalog = config.catalog ?? synthesizeCatalog({ model: config.model, baseUrl: config.baseUrl })
+    const activeEntry = resolveActiveProvider(catalog, config.providerId)
+    if (!activeEntry) {
+      if (config.providerId) {
+        const ids = catalog.providers.map((candidate) => candidate.id).join(', ') || '(none)'
+        return { code: 'unknown-provider', message: `janus: unknown provider "${config.providerId}". Available: ${ids}.` }
+      }
+      return { code: 'no-providers', message: 'janus: no enabled providers. Add one to ~/.janus/config.json or pass --model <id>.' }
+    }
+    const modelOverride = config.model
+    if (modelOverride && !validateModelId(activeEntry, modelOverride)) {
+      return {
+        code: 'unknown-model',
+        message: `janus: unknown model "${modelOverride}" for provider "${activeEntry.id}". Available: ${listProviderModels(activeEntry).join(', ') || '(none)'}.`,
+      }
+    }
+    const modelId = modelOverride ?? env.JANUS_MODEL ?? catalog.defaultModel ?? effectiveModelId(activeEntry)
+    if (!modelId) {
+      return { code: 'missing-model', message: 'janus: missing model. Pass --model <id> or set JANUS_MODEL.' }
+    }
     const approvalMode = config.approvalMode ?? 'auto-run'
     const runtime = createAgentRuntime({
       resolveWorkspaceRoot: async (id) => (id === CLI_WORKSPACE_ID ? workspaceRoot : null),
@@ -129,14 +216,13 @@ export class CliSession {
       }
     }
 
-    const model = createChatModel({ baseURL, apiKey, modelId })
     const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS
     type StreamResult = Awaited<ReturnType<ChatTurnPorts['streamTextFn']>>
     const streamTextFn: ChatTurnPorts['streamTextFn'] = config.streamTextFn
       ?? ((opts) => streamText(opts as Parameters<typeof streamText>[0]) as unknown as Promise<StreamResult>)
     const ports: ChatTurnPorts = {
       model: {
-        resolve: async () => ({ model, modelId, supportsFunctionCalling: true }),
+        resolve: async () => ({ model: undefined, modelId, supportsFunctionCalling: true }),
         getMaxTurns: () => maxTurns,
       },
       sessions: {
@@ -166,15 +252,113 @@ export class CliSession {
       config.store ?? memoryConversationStore(),
       config.conversationId,
     )
-    return new CliSession({
+    const session = new CliSession({
       runtime,
       sessionId,
       ports,
       registry,
       workspaceRoot,
       maxTurns,
+      catalog,
+      configPath: config.configPath ?? null,
+      onCatalogError: config.onCatalogError,
+      onApproval: config.onApproval,
+      baseUrlOverride: config.baseUrl ?? env.JANUS_BASE_URL,
+      apiKey,
+      envModel: env.JANUS_MODEL,
+      activeProviderId: activeEntry.id,
+      modelOverride,
       modelId,
       approvalMode,
+    })
+    session.rebuildTransport()
+    return session
+  }
+
+  private activeEntry(): ProviderEntry {
+    const entry = this.catalog.providers.find((candidate) => candidate.id === this.activeProviderId)
+    if (!entry) throw new Error(`janus: provider "${this.activeProviderId}" is no longer available`)
+    return entry
+  }
+
+  /** Single precedence chain (flags > env > file > provider) shared by create and rebuilds. */
+  private resolveModelId(entry: ProviderEntry): string | undefined {
+    if (this.modelOverride) return this.modelOverride
+    if (this.envModel) return this.envModel
+    // The file defaultModel pairs with the file defaultProvider; other
+    // providers fall through to their own default chain.
+    if (!this.catalog.defaultProvider || this.catalog.defaultProvider === entry.id) {
+      return this.catalog.defaultModel ?? effectiveModelId(entry)
+    }
+    return effectiveModelId(entry)
+  }
+
+  private rebuildTransport(): void {
+    const entry = this.activeEntry()
+    const modelId = this.resolveModelId(entry)
+    if (!modelId) throw new Error(`janus: provider "${entry.id}" has no model configured`)
+    const baseURL = this.baseUrlOverride ?? entry.baseURL ?? DEFAULT_BASE_URL
+    const model = createChatModel({ baseURL, apiKey: this.apiKey, modelId })
+    const previous = this.ports.model
+    this.ports.model = {
+      resolve: async () => ({ model, modelId, supportsFunctionCalling: true }),
+      getMaxTurns: () => previous.getMaxTurns(),
+    }
+    this.modelId = modelId
+  }
+
+  private persistCatalog(): void {
+    if (!this.configPath) return
+    try {
+      this.catalog.defaultProvider = this.activeProviderId
+      if (this.modelOverride) this.catalog.defaultModel = this.modelOverride
+      saveCatalogFile(this.configPath, this.catalog)
+    } catch (error) {
+      this.onCatalogError?.(error)
+    }
+  }
+
+  private attachApprovalListener(): void {
+    this.runtime.onEvent((event) => {
+      const typed = event as { type?: string; request?: Partial<ApprovalRequestShape> }
+      if (typed.type !== 'approval-requested') return
+      const request = typed.request
+      if (!request || request.sessionId !== this.sessionId || typeof request.id !== 'string') return
+      const snapshot: ApprovalRequestShape = {
+        id: request.id,
+        sessionId: request.sessionId,
+        workspaceId: typeof request.workspaceId === 'string' ? request.workspaceId : '',
+        correlationId: typeof request.correlationId === 'string' ? request.correlationId : '',
+        toolName: typeof request.toolName === 'string' ? request.toolName : 'tool',
+        actionRisk: request.actionRisk,
+        preview: request.preview,
+      }
+      void (async () => {
+        let approved = false
+        try {
+          const preview = snapshot.preview
+          approved = await (this.onApproval?.({
+            toolName: snapshot.toolName,
+            workspaceId: snapshot.workspaceId,
+            actionRisk: typeof snapshot.actionRisk === 'string' ? snapshot.actionRisk : 'unknown',
+            summary: typeof preview?.summary === 'string' ? preview.summary : undefined,
+            paths: Array.isArray(preview?.paths)
+              ? (preview.paths as unknown[]).filter((path): path is string => typeof path === 'string')
+              : undefined,
+          }, this.approvalSignal ?? new AbortController().signal) ?? false)
+        } catch {
+          approved = false
+        }
+        this.runtime.resolveApproval({
+          approvalId: snapshot.id,
+          approved,
+          workspaceId: snapshot.workspaceId,
+          sessionId: snapshot.sessionId,
+          correlationId: snapshot.correlationId,
+          toolName: snapshot.toolName,
+          actionRisk: snapshot.actionRisk,
+        }, APPROVAL_CALLER_ID)
+      })()
     })
   }
 
@@ -188,6 +372,34 @@ export class CliSession {
 
   getModelId(): string {
     return this.modelId
+  }
+
+  getProviderId(): string {
+    return this.activeProviderId
+  }
+
+  getCatalog(): ProviderCatalog {
+    return this.catalog
+  }
+
+  getConfigPath(): string | null {
+    return this.configPath
+  }
+
+  getApprovalHandler(): ((prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>) | undefined {
+    return this.onApproval
+  }
+
+  getCatalogErrorHandler(): ((error: unknown) => void) | undefined {
+    return this.onCatalogError
+  }
+
+  listProviders(): { entries: ProviderEntry[]; activeId: string } {
+    return { entries: this.catalog.providers, activeId: this.activeProviderId }
+  }
+
+  listModels(): string[] {
+    return listProviderModels(this.activeEntry())
   }
 
   getConversationId(): string {
@@ -226,18 +438,34 @@ export class CliSession {
   }
 
   /** Switch model for subsequent turns (rebuilds the local transport handle). */
-  setModel(modelId: string, init: { baseURL: string; apiKey: string }): void {
-    const model = createChatModel({ baseURL: init.baseURL, apiKey: init.apiKey, modelId })
-    const previous = this.ports.model
-    this.ports.model = {
-      resolve: async () => ({ model, modelId, supportsFunctionCalling: true }),
-      getMaxTurns: () => previous.getMaxTurns(),
+  setModel(modelId: string): void {
+    const entry = this.activeEntry()
+    if (!validateModelId(entry, modelId)) {
+      throw new Error(`janus: unknown model "${modelId}" for provider "${entry.id}". Available: ${listProviderModels(entry).join(', ') || '(none)'}.`)
     }
-    this.modelId = modelId
+    this.modelOverride = modelId
+    this.rebuildTransport()
+    this.persistCatalog()
+  }
+
+  /** Switch provider; the flags/env model override must exist there (or the provider is open-world). */
+  setProvider(ref: string): void {
+    const entry = resolveProviderRef(this.catalog, ref)
+    if (!entry) {
+      const ids = this.catalog.providers.map((candidate) => candidate.id).join(', ') || '(none)'
+      throw new Error(`janus: unknown provider "${ref}". Available: ${ids}.`)
+    }
+    if (this.modelOverride && !validateModelId(entry, this.modelOverride)) {
+      throw new Error(`janus: model "${this.modelOverride}" is not in provider "${entry.id}". Available: ${listProviderModels(entry).join(', ') || '(none)'}.`)
+    }
+    this.activeProviderId = entry.id
+    this.rebuildTransport()
+    this.persistCatalog()
   }
 
   setApprovalMode(mode: ApprovalModeOption): void {
     this.approvalMode = mode
+    this.runtime.setApprovalMode(this.sessionId, mode)
   }
 
   async clearHistory(): Promise<void> {
@@ -256,39 +484,44 @@ export class CliSession {
     if (record.data.title === DEFAULT_CONVERSATION_TITLE) {
       record.data.title = titleFromPrompt(prompt)
     }
-    const result = await runChatTurn(
-      {
-        requestId,
-        messages: requestMessages,
-        providerId: 'cli',
-        modelId: this.modelId,
-        sourceTag: 'janus-chat',
-        conversationId: record.data.id,
-        workspaceId: CLI_WORKSPACE_ID,
-        workspacePath: this.workspaceRoot,
-        workspaceResources: [{
+    this.approvalSignal = signal ?? new AbortController().signal
+    try {
+      const result = await runChatTurn(
+        {
+          requestId,
+          messages: requestMessages,
+          providerId: 'cli',
+          modelId: this.modelId,
+          sourceTag: 'janus-chat',
+          conversationId: record.data.id,
           workspaceId: CLI_WORKSPACE_ID,
           workspacePath: this.workspaceRoot,
-          workspaceName: this.getWorkspaceName(),
-          agentSessionId: this.sessionId,
-        }],
-        toolTraces: record.data.toolTraces,
-        chatSession: record.chatSession,
-      },
-      this.ports,
-      { onEvent: (event) => callbacks.onEvent?.({ requestId, event }) },
-      signal ?? new AbortController().signal,
-    )
-    if (!result.cancelled) {
-      record.data.messages = [...requestMessages, { role: 'assistant' as const, content: result.text }]
-      record.data.toolTraces = [...record.data.toolTraces, ...result.toolTraces].slice(-TOOL_TRACE_MAX_ENTRIES)
-    } else {
-      // Aborted turn: keep the user prompt so the user can retry or move on,
-      // but do not record a partial assistant message.
-      record.data.messages = requestMessages
+          workspaceResources: [{
+            workspaceId: CLI_WORKSPACE_ID,
+            workspacePath: this.workspaceRoot,
+            workspaceName: this.getWorkspaceName(),
+            agentSessionId: this.sessionId,
+          }],
+          toolTraces: record.data.toolTraces,
+          chatSession: record.chatSession,
+        },
+        this.ports,
+        { onEvent: (event) => callbacks.onEvent?.({ requestId, event }) },
+        this.approvalSignal,
+      )
+      if (!result.cancelled) {
+        record.data.messages = [...requestMessages, { role: 'assistant' as const, content: result.text }]
+        record.data.toolTraces = [...record.data.toolTraces, ...result.toolTraces].slice(-TOOL_TRACE_MAX_ENTRIES)
+      } else {
+        // Aborted turn: keep the user prompt so the user can retry or move on,
+        // but do not record a partial assistant message.
+        record.data.messages = requestMessages
+      }
+      await this.registry.persist(record.data.id)
+      return result
+    } finally {
+      this.approvalSignal = null
     }
-    await this.registry.persist(record.data.id)
-    return result
   }
 
   async close(): Promise<void> {

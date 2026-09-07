@@ -8,13 +8,14 @@
 import { createInterface } from 'node:readline'
 import type { ChatTurnPorts } from '@janus-agent/janus-agent'
 import type { TuiOptions } from './args.js'
-import { CliSession, isSessionValidationError, DEFAULT_BASE_URL } from './session.js'
+import { CliSession, isSessionValidationError, type ApprovalPrompt } from './session.js'
 import { defaultHistoryDir, fileConversationStore, type ConversationStorePort, type ConversationSummary } from './conversations.js'
+import { listProviderModels, loadEffectiveCatalog } from './providers.js'
 import { commandHelpText, parseInputLine } from './commands.js'
 import { renderLogoAscii, renderLogoPlain } from './logo.js'
 
 export interface ReplLineSource {
-  next(prompt?: string): Promise<string | null>
+  next(prompt?: string, opts?: { signal?: AbortSignal }): Promise<string | null>
   close(): void
 }
 
@@ -25,6 +26,8 @@ export interface ReplIO {
   lines?: ReplLineSource
   /** Conversation persistence. Defaults to ~/.janus/history (memory in tests via injection). */
   store?: ConversationStorePort
+  /** Provider config path. Undefined = default file, null = no file. */
+  configPath?: string | null
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
@@ -45,27 +48,50 @@ export function arrayLineSource(lines: Array<string | null>): ReplLineSource {
 function createReadlineSource(onSigint: () => void): ReplLineSource {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   const queued: string[] = []
-  const waiters: Array<(line: string | null) => void> = []
+  interface Waiter {
+    resolve: (line: string | null) => void
+    signal?: AbortSignal
+    onAbort?: () => void
+  }
+  const waiters: Waiter[] = []
   let closed = false
-  rl.on('line', (line) => {
+  const takeWaiter = (): Waiter | undefined => {
     const waiter = waiters.shift()
-    if (waiter) waiter(line)
+    if (waiter?.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort)
+    return waiter
+  }
+  rl.on('line', (line) => {
+    const waiter = takeWaiter()
+    if (waiter) waiter.resolve(line)
     else queued.push(line)
   })
   rl.on('close', () => {
     closed = true
-    let waiter: ((line: string | null) => void) | undefined
-    while ((waiter = waiters.shift())) waiter(null)
+    let waiter: Waiter | undefined
+    while ((waiter = takeWaiter())) waiter.resolve(null)
   })
   rl.on('SIGINT', onSigint)
   return {
-    next: (prompt = 'you> ') => {
+    next: (prompt = 'you> ', opts?: { signal?: AbortSignal }) => {
       const line = queued.shift()
       if (line !== undefined) return Promise.resolve(line)
       if (closed) return Promise.resolve(null)
+      // An already-aborted approval prompt resolves empty (= deny) without consuming input.
+      if (opts?.signal?.aborted) return Promise.resolve('')
       rl.setPrompt(prompt)
       rl.prompt()
-      return new Promise<string | null>((resolve) => { waiters.push(resolve) })
+      return new Promise<string | null>((resolve) => {
+        const waiter: Waiter = { resolve, signal: opts?.signal }
+        if (opts?.signal) {
+          waiter.onAbort = () => {
+            const index = waiters.indexOf(waiter)
+            if (index >= 0) waiters.splice(index, 1)
+            resolve('')
+          }
+          opts.signal.addEventListener('abort', waiter.onAbort, { once: true })
+        }
+        waiters.push(waiter)
+      })
     },
     close: () => rl.close(),
   }
@@ -78,15 +104,8 @@ interface ReplState {
   stdout: (text: string) => void
   stderr: (text: string) => void
   store: ConversationStorePort
+  lines: ReplLineSource
   streamTextFn?: ChatTurnPorts['streamTextFn']
-}
-
-function resolveModelTransport(state: ReplState): { baseURL: string; apiKey: string | undefined; modelId: string | undefined } {
-  return {
-    baseURL: state.options.baseUrl ?? state.env.JANUS_BASE_URL ?? DEFAULT_BASE_URL,
-    apiKey: state.options.apiKey ?? state.env.JANUS_API_KEY,
-    modelId: state.options.model ?? state.env.JANUS_MODEL,
-  }
 }
 
 function renderEvent(state: ReplState, event: unknown): void {
@@ -129,6 +148,23 @@ async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): P
 
 function formatConversation(index: number, summary: ConversationSummary): string {
   return `${index + 1}${summary.active ? '*' : ' '} ${summary.title} (${summary.turnCount} turns) [${summary.id.slice(0, 8)}]`
+}
+
+/** Terminal approval UI: single-shot y/N (empty/EOF/abort = deny, fail-closed). */
+async function askApproval(
+  lines: ReplLineSource,
+  stdout: (text: string) => void,
+  prompt: ApprovalPrompt,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const paths = prompt.paths?.length ? ` (${prompt.paths.join(', ')})` : ''
+  const summary = prompt.summary ? ` — ${prompt.summary}` : ''
+  // The question goes through stdout (not the line prompt) so injected
+  // line sources in tests and pipes render it identically to a TTY.
+  stdout(`◇ approve ${prompt.toolName}[${prompt.workspaceId}] risk=${prompt.actionRisk}${summary}${paths}\nAllow? [y/N] `)
+  const answer = await lines.next('', { signal })
+  if (answer === null) return false
+  return /^(y|yes)$/i.test(answer.trim())
 }
 
 async function handleCommand(state: ReplState, command: string, args: string[]): Promise<'continue' | 'exit' | 'recreated'> {
@@ -193,15 +229,17 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
     }
     case 'model': {
       if (args.length === 0) {
-        stdout(`model: ${state.session.getModelId()}\n`)
+        const models = state.session.listModels()
+        const active = state.session.getModelId()
+        stdout(`model: ${active}\n${models.map((model) => `${model === active ? '*' : ' '} ${model}`).join('\n')}\n`)
         return 'continue'
       }
-      const transport = resolveModelTransport(state)
-      if (!transport.apiKey) {
-        stderr('janus: missing API key. Pass --api-key <key> or set JANUS_API_KEY.\n')
+      try {
+        state.session.setModel(args[0])
+      } catch (error) {
+        stderr(`${error instanceof Error ? error.message : String(error)}\n`)
         return 'continue'
       }
-      state.session.setModel(args[0], { baseURL: transport.baseURL, apiKey: transport.apiKey })
       stdout(`model switched: ${args[0]}\n`)
       return 'continue'
     }
@@ -220,6 +258,11 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         approvalMode: state.session.getApprovalMode(),
         env: state.env,
         store: state.store,
+        catalog: state.session.getCatalog(),
+        providerId: state.session.getProviderId(),
+        configPath: state.session.getConfigPath(),
+        onApproval: state.session.getApprovalHandler(),
+        onCatalogError: state.session.getCatalogErrorHandler(),
         streamTextFn: state.streamTextFn,
       })
       if (isSessionValidationError(next)) {
@@ -231,16 +274,39 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
       stdout(`workspace switched: ${next.getWorkspaceRoot()} (history cleared)\n`)
       return 'recreated'
     }
-    case 'provider':
-      stdout('(M2) provider switching is not implemented yet; use /model <id> for now.\n')
+    case 'provider': {
+      const { entries, activeId } = state.session.listProviders()
+      if (args.length === 0) {
+        stdout(entries.length === 0
+          ? 'providers: (none)\n'
+          : `${entries.map((entry) => `${entry.id === activeId ? '*' : ' '} ${entry.id}${entry.name ? ` (${entry.name})` : ''} — ${listProviderModels(entry).length} model(s)`).join('\n')}\n`)
+        return 'continue'
+      }
+      try {
+        state.session.setProvider(args[0])
+      } catch (error) {
+        stderr(`${error instanceof Error ? error.message : String(error)}\n`)
+        return 'continue'
+      }
+      stdout(`provider switched: ${state.session.getProviderId()} · model ${state.session.getModelId()}\n`)
       return 'continue'
-    case 'approval':
+    }
+    case 'approval': {
       if (args.length === 0) {
         stdout(`approval: ${state.session.getApprovalMode()}\n`)
         return 'continue'
       }
-      stdout('(M2) approval switching is not implemented yet; this session stays auto-run.\n')
+      const mode = args[0].toLowerCase()
+      if (mode !== 'auto-run' && mode !== 'per-action') {
+        stderr('usage: /approval [auto-run|per-action]\n')
+        return 'continue'
+      }
+      state.session.setApprovalMode(mode)
+      stdout(mode === 'per-action'
+        ? 'approval: per-action (each write/create will ask y/N)\n'
+        : 'approval: auto-run\n')
       return 'continue'
+    }
     default:
       stderr(`unknown command: /${command} (type /help)\n`)
       return 'continue'
@@ -252,11 +318,35 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
   const stderr = io.stderr ?? ((text: string) => process.stderr.write(text))
   const env = io.env ?? process.env
   let historyWarned = false
-  const store = io.store ?? fileConversationStore(defaultHistoryDir(), () => {
+  const warnOnce = (message: string): void => {
     if (!historyWarned) {
       historyWarned = true
-      stderr('janus: history file unavailable, this run keeps memory only.\n')
+      stderr(message)
     }
+  }
+  const store = io.store ?? fileConversationStore(defaultHistoryDir(), () => {
+    warnOnce('janus: history file unavailable, this run keeps memory only.\n')
+  })
+  let activeController: AbortController | null = null
+  const lines = io.lines ?? createReadlineSource(() => {
+    // TTY Ctrl+C: cancel the running turn, stay in the loop.
+    // Idle Ctrl+C closes the source so the loop exits cleanly (code 0).
+    if (activeController) activeController.abort()
+    else lines.close()
+  })
+  if (!io.lines) {
+    // Piped stdin never reaches the rl SIGINT listener; the first Ctrl+C
+    // cancels the turn, a second one falls through to default termination.
+    process.once('SIGINT', () => {
+      if (activeController) activeController.abort()
+      else lines.close()
+    })
+  }
+  const catalogInput = loadEffectiveCatalog({
+    configPath: io.configPath,
+    model: options.model,
+    baseUrl: options.baseUrl,
+    onError: () => warnOnce('janus: provider config unreadable, using flags/env only.\n'),
   })
   const state: ReplState = {
     session: undefined as unknown as CliSession,
@@ -265,10 +355,20 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     stdout,
     stderr,
     store,
+    lines,
     streamTextFn: io.streamTextFn,
   }
 
-  const created = await CliSession.create({ ...options, env, store, streamTextFn: io.streamTextFn })
+  const created = await CliSession.create({
+    ...options,
+    env,
+    store,
+    catalog: catalogInput.catalog,
+    configPath: catalogInput.configPath,
+    onApproval: (prompt, signal) => askApproval(lines, stdout, prompt, signal),
+    onCatalogError: () => warnOnce('janus: provider config not writable, switches last this run only.\n'),
+    streamTextFn: io.streamTextFn,
+  })
   if (isSessionValidationError(created)) {
     stderr(`${created.message}\n`)
     return 2
@@ -278,25 +378,10 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
   stdout(`${options.plain ? renderLogoPlain() : renderLogoAscii()}\n`)
   const restored = created.listConversations()
   const activeTitle = restored.find((summary) => summary.active)?.title ?? ''
-  stdout(`janus · workspace ${created.getWorkspaceRoot()} · model ${created.getModelId()} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
+  const providerSegment = created.listProviders().entries.length > 1 ? ` · provider ${created.getProviderId()}` : ''
+  stdout(`janus · workspace ${created.getWorkspaceRoot()}${providerSegment} · model ${created.getModelId()} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
   if (activeTitle && activeTitle !== 'New conversation') {
     stdout(`resumed: ${activeTitle}\n`)
-  }
-
-  const lines = io.lines ?? createReadlineSource(() => {
-    // TTY Ctrl+C: cancel the running turn, stay in the loop.
-    // Idle Ctrl+C closes the source so the loop exits cleanly (code 0).
-    if (activeController) activeController.abort()
-    else lines.close()
-  })
-  let activeController: AbortController | null = null
-  if (!io.lines) {
-    // Piped stdin never reaches the rl SIGINT listener; the first Ctrl+C
-    // cancels the turn, a second one falls through to default termination.
-    process.once('SIGINT', () => {
-      if (activeController) activeController.abort()
-      else lines.close()
-    })
   }
 
   try {

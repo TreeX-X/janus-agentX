@@ -225,19 +225,24 @@ export class ConversationRegistry {
     }))
   }
 
-  /** Matches exact id, unique id prefix, or 1-based position in recency order. */
+  /**
+   * Matches exact id, then 1-based position in recency order for all-digit
+   * refs (list numbers are the primary affordance), then unique id prefix.
+   * Full ids always exact-match, so digit-leading ids stay addressable.
+   */
   resolveRef(ref: string): string | null {
     const trimmed = ref.trim()
     if (!trimmed) return null
     if (this.records.has(trimmed)) return trimmed
-    const prefix = [...this.records.keys()].filter((id) => id.startsWith(trimmed))
-    if (prefix.length === 1) return prefix[0]
-    const index = Number(trimmed)
-    if (Number.isInteger(index) && index >= 1) {
-      const ordered = this.list()
-      return ordered[index - 1]?.id ?? null
+    if (/^\d+$/.test(trimmed)) {
+      const index = Number(trimmed)
+      if (Number.isInteger(index) && index >= 1) {
+        return this.list()[index - 1]?.id ?? null
+      }
+      return null
     }
-    return null
+    const prefix = [...this.records.keys()].filter((id) => id.startsWith(trimmed))
+    return prefix.length === 1 ? prefix[0] : null
   }
 
   async create(title?: string): Promise<string> {
