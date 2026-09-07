@@ -2,7 +2,7 @@
   "name": "@janus-agent/agent-core",
   "version": "0.1.0",
   "type": "module",
-  "description": "Janus agent execution core - loop, stream, parsers, runtime policy, checkpoint, environment. No Electron dependency.",
+  "description": "Janus agent execution core - dialogue loop, stream, runtime policy, checkpoint, environment. No Electron dependency, no subprocess runner.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

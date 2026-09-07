@@ -1,7 +1,8 @@
 /**
- * Phase1 smoke: agent-core runs standalone (no Electron, no LLM service).
- * Covers the port seams: injected streamTextFn, sink-based registry,
- * file audit with explicit root, fail-closed runtime without resolver.
+ * agent-core smoke: dialogue/tool-call core runs standalone
+ * (no Electron, no LLM service, no subprocess runner).
+ * Covers the port seams: injected streamTextFn, file audit with
+ * explicit root, fail-closed runtime without resolver.
  */
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,11 +11,9 @@ import { describe, expect, it } from 'vitest'
 import { runJanusAgentLoop } from '../src/main/agent/loop/janus-agent-loop'
 import { createVercelStream } from '../src/main/agent/loop/vercel-stream-adapter'
 import { ToolCallAccumulator } from '../src/main/agent/stream/tool-call-accumulator'
-import { createParser } from '../src/main/agent/parsers/index'
 import { evaluateWorkspaceActionPolicy } from '../src/main/agent/runtime/policy-gate'
 import { MemoryPolicyAuditStore, FilePolicyAuditStore } from '../src/main/agent/runtime/policy-audit-store'
 import { WorkspaceAgentRuntime, createAgentRuntime } from '../src/main/agent/runtime/runtime'
-import { SubAgentRunRegistry } from '../src/main/agent/subagent-run-registry'
 
 describe('loop with injected stream', () => {
   it('completes a text-only turn without any host service', async () => {
@@ -54,18 +53,12 @@ describe('loop with injected stream', () => {
   })
 })
 
-describe('stream accumulator and parsers', () => {
+describe('stream accumulator', () => {
   it('accumulates a tool call and validates unknown tools', () => {
     const acc = new ToolCallAccumulator({ validate: () => 'Unknown tool: nope' })
     expect(acc.start('c1', 'nope')).toBe(true)
     const resolution = acc.complete({ callId: 'c1', name: 'nope', arguments: {} })
     expect(resolution.status).toBe('invalid')
-  })
-
-  it('creates one parser per engine', () => {
-    for (const engine of ['claude', 'codex', 'opencode'] as const) {
-      expect(createParser(engine).parseLine('{}')).toEqual([])
-    }
   })
 })
 
@@ -100,22 +93,10 @@ describe('policy and audit stores', () => {
   })
 })
 
-describe('runtime and run registry without Electron', () => {
+describe('runtime without Electron', () => {
   it('createSession fails closed without a workspace resolver', async () => {
     const runtime = createAgentRuntime()
     await expect(runtime.createSession({ workspaceId: 'w', workspaceRoot: tmpdir() })).rejects.toThrow()
     expect(runtime).toBeInstanceOf(WorkspaceAgentRuntime)
-  })
-
-  it('registry emits through the injected sink', () => {
-    const registry = new SubAgentRunRegistry()
-    const received: Array<{ channel: string; payload: unknown }> = []
-    registry.setEventSink((channel, payload) => { received.push({ channel, payload }) })
-    const run = registry.createRun({ id: 'r1', status: 'running' } as never)
-    expect(run.id).toBe('r1')
-    expect(received.length).toBeGreaterThan(0)
-    registry.setEventSink(null)
-    registry.finishRun('r1', 'done')
-    expect(registry.getRun('r1')?.status).toBe('done')
   })
 })

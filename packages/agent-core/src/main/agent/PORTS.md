@@ -8,7 +8,7 @@ Every host capability crosses one of these seams:
 | Model stream | `loop/vercel-stream-adapter.ts` (`streamTextFn: StreamTextFn`, now **required**) | Shell: `llm/ai-runtime.streamText`. CLI: own transport |
 | Workspace identity | `runtime/runtime.ts` (`ResolveWorkspaceRoot`, fail-closed) + `createAgentRuntime()` factory | Shell: office workspace registry. CLI: cwd-based resolver |
 | Audit persistence | `runtime/policy-audit-store.ts` (`FilePolicyAuditStore(rootDir)`, `createFilePolicyAuditStore`, `JANUSX_AUDIT_ROOT` override) | Shell: knowledge-root audit dir. CLI: isolated dir or memory |
-| Event fan-out | `subagent-run-registry.ts` (`setEventSink`, was `setMainWindow`) | Shell: `webContents.send`. CLI: stdout JSONL |
+| Event fan-out | `runtime/runtime.ts` (`onEvent` listener set) | Shell: `webContents.send`. CLI: stdout JSONL |
 | Renderer authz | `runtime/renderer-authorization.ts` (`HostIpcEvent`, `createRendererActionAuthorizer(store)`) | Shell: file audit store. Tests/CLI: memory |
 | project/command/git tools | **deleted** from core; see `runtime/tools/host-tool-ports.ts` | Shell keeps original impls as plugins via `ToolRegistry` |
 

@@ -1,5 +1,3 @@
-import type { AgentEngine } from './agent'
-
 export const CHECKPOINT_CHANNELS = {
   create: 'checkpoint:create',
   finalize: 'checkpoint:finalize',
@@ -13,7 +11,7 @@ export const CHECKPOINT_CHANNELS = {
   ready: 'checkpoint:ready',
 } as const
 
-export type CheckpointEngine = AgentEngine | 'shell' | 'manual'
+export type CheckpointEngine = 'shell' | 'manual'
 
 export interface CheckpointSummary {
   id: string

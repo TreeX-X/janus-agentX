@@ -1,86 +1,149 @@
 #!/usr/bin/env node
 /**
- * @file janus CLI entry. Pure Node (no Electron, no node-pty).
- * Mirrors the JanusX office-launcher pattern: testable runXxx() functions
- * behind a process.argv[1] guard so tests can import without side effects.
+ * @file janus CLI entry. Pure Node (no Electron, no subprocess runner).
+ * Runs the janus-agent dialogue/tool-call loop (`runChatTurn`) against one
+ * workspace directory, with a local `WorkspaceAgentRuntime` as the tool
+ * host and an OpenAI-compatible model transport. Testable runChat()
+ * sits behind a process.argv[1] guard so tests import without side effects.
  */
 import { randomUUID } from 'node:crypto'
-import { AgentStreamManager, resolveCLIPath } from '@janus-agent/agent-core'
+import { statSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
+import { streamText } from 'ai'
+import {
+  createAgentRuntime,
+  createToolManifests,
+  registerWorkspaceTools,
+} from '@janus-agent/agent-core'
+import { runChatTurn } from '@janus-agent/janus-agent'
+import type { ChatTurnPorts } from '@janus-agent/janus-agent'
+import { createChatModel } from './model.js'
 import { helpText, parseArgs } from './args.js'
+import type { ChatOptions } from './args.js'
 
-export async function runResolve(engine: 'claude' | 'codex' | 'opencode'): Promise<number> {
-  const cliPath = await resolveCLIPath(engine)
-  if (!cliPath) {
-    console.error(`janus: CLI not found for engine: ${engine}`)
-    return 3
-  }
-  console.log(cliPath)
-  return 0
+const CLI_WORKSPACE_ID = 'cli'
+const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+const DEFAULT_MAX_TURNS = 40
+
+export interface ChatRunIO {
+  stdout?: (line: string) => void
+  stderr?: (line: string) => void
+  env?: NodeJS.ProcessEnv
+  onSigint?: (handler: () => void) => void
+  /** Test seam: bypasses the real model transport. */
+  streamTextFn?: ChatTurnPorts['streamTextFn']
 }
 
-export async function runAgent(
-  options: {
-    engine: 'claude' | 'codex' | 'opencode'
-    cwd: string
-    model?: string
-    timeoutMs?: number
-    approvalMode?: 'per-action' | 'auto-run'
-    prompt: string
-  },
-  io: {
-    stdout?: (line: string) => void
-    onSigint?: (handler: () => void) => void
-  } = {},
-): Promise<number> {
+export async function runChat(options: ChatOptions, io: ChatRunIO = {}): Promise<number> {
   const stdout = io.stdout ?? ((line: string) => console.log(line))
-  const cliPath = await resolveCLIPath(options.engine)
-  if (!cliPath) {
-    console.error(`janus: CLI not found for engine: ${options.engine}`)
-    return 3
+  const stderr = io.stderr ?? ((line: string) => console.error(line))
+  const env = io.env ?? process.env
+
+  const modelId = options.model ?? env.JANUS_MODEL
+  const baseURL = options.baseUrl ?? env.JANUS_BASE_URL ?? DEFAULT_BASE_URL
+  const apiKey = options.apiKey ?? env.JANUS_API_KEY
+  if (!modelId) {
+    stderr('janus: missing model. Pass --model <id> or set JANUS_MODEL.')
+    return 2
   }
-
-  const manager = new AgentStreamManager({ maxConcurrency: 1 })
-  const id = randomUUID()
-  let finished = false
-  let hadError = false
-  let interrupted = false
-  let finish: () => void = () => undefined
-  const done = new Promise<void>((resolve) => { finish = resolve })
-
-  manager.onEvent(id, (event) => {
-    stdout(JSON.stringify({ sessionId: id, event }))
-    if (event.type === 'error') hadError = true
-    if (event.type === 'done') {
-      finished = true
-      finish()
-    }
-  })
-
-  const onSigint = () => {
-    interrupted = true
-    manager.cancel(id)
-  }
-  if (io.onSigint) io.onSigint(onSigint)
-  else process.once('SIGINT', onSigint)
-
-  try {
-    await manager.startWithId(id, {
-      engine: options.engine,
-      prompt: options.prompt,
-      cwd: options.cwd,
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-      ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
-    })
-  } catch (error) {
-    console.error(`janus: failed to start agent: ${error instanceof Error ? error.message : String(error)}`)
+  if (!apiKey) {
+    stderr('janus: missing API key. Pass --api-key <key> or set JANUS_API_KEY.')
     return 2
   }
 
-  await done
-  if (!finished) return 1
-  if (interrupted) return 130
-  return hadError ? 1 : 0
+  const workspaceRoot = resolve(options.workspace)
+  try {
+    if (!statSync(workspaceRoot).isDirectory()) throw new Error('not a directory')
+  } catch {
+    stderr(`janus: workspace is not a directory: ${options.workspace}`)
+    return 2
+  }
+
+  const runtime = createAgentRuntime({
+    resolveWorkspaceRoot: async (id) => (id === CLI_WORKSPACE_ID ? workspaceRoot : null),
+  })
+  registerWorkspaceTools(runtime.registry)
+  let sessionId: string
+  try {
+    const session = await runtime.createSession({
+      workspaceId: CLI_WORKSPACE_ID,
+      workspaceRoot,
+      approvalMode: 'auto-run',
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    })
+    sessionId = session.id
+  } catch (error) {
+    stderr(`janus: failed to open workspace session: ${error instanceof Error ? error.message : String(error)}`)
+    return 2
+  }
+
+  const model = createChatModel({ baseURL, apiKey, modelId })
+  const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS
+  type StreamResult = Awaited<ReturnType<ChatTurnPorts['streamTextFn']>>
+  const streamTextFn: ChatTurnPorts['streamTextFn'] = io.streamTextFn
+    ?? ((opts) => streamText(opts as Parameters<typeof streamText>[0]) as unknown as Promise<StreamResult>)
+  const ports: ChatTurnPorts = {
+    model: {
+      resolve: async () => ({ model, modelId, supportsFunctionCalling: true }),
+      getMaxTurns: () => maxTurns,
+    },
+    sessions: {
+      getSession: (id) => {
+        if (id !== sessionId) return null
+        const current = runtime.getSession(sessionId)
+        if (!current || current.status !== 'running') return null
+        return {
+          sessionId: current.id,
+          workspaceId: CLI_WORKSPACE_ID,
+          workspaceRoot: current.workspace.workspaceRoot,
+          status: current.status,
+        }
+      },
+    },
+    tools: {
+      executeFunctionCall: (input, callerId) => runtime.executeTool(input, callerId),
+      registry: {
+        list: () => runtime.registry.list(),
+        listManifests: () => createToolManifests(runtime.registry.list()),
+      },
+    },
+    streamTextFn,
+  }
+
+  const controller = new AbortController()
+  if (io.onSigint) io.onSigint(() => controller.abort())
+  else process.once('SIGINT', () => controller.abort())
+
+  const requestId = randomUUID()
+  const conversationId = options.conversationId ?? requestId
+  try {
+    const result = await runChatTurn(
+      {
+        requestId,
+        messages: [{ role: 'user', content: options.prompt }],
+        providerId: 'cli',
+        modelId,
+        sourceTag: 'janus-chat',
+        conversationId,
+        workspaceId: CLI_WORKSPACE_ID,
+        workspacePath: workspaceRoot,
+        workspaceResources: [{
+          workspaceId: CLI_WORKSPACE_ID,
+          workspacePath: workspaceRoot,
+          workspaceName: basename(workspaceRoot) || CLI_WORKSPACE_ID,
+          agentSessionId: sessionId,
+        }],
+      },
+      ports,
+      { onEvent: (event) => stdout(JSON.stringify({ requestId, event })) },
+      controller.signal,
+    )
+    if (result.cancelled || controller.signal.aborted) return 130
+    return 0
+  } catch (error) {
+    stderr(`janus: chat turn failed: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
+  }
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -95,12 +158,10 @@ async function main(argv: string[]): Promise<number> {
       console.log(helpText())
       return 0
     case 'version':
-      console.log('0.1.0')
+      console.log('0.2.0')
       return 0
-    case 'resolve':
-      return runResolve(parsed.resolveEngine ?? 'codex')
-    case 'run':
-      return runAgent(parsed.run ?? { engine: 'codex', cwd: process.cwd(), prompt: '' })
+    case 'chat':
+      return runChat(parsed.chat ?? { workspace: process.cwd(), prompt: '' })
   }
 }
 

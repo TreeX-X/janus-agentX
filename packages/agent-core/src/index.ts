@@ -72,7 +72,6 @@ export {
   resolveDefaultAuditDir,
 } from './main/agent/runtime/policy-audit-store'
 export type { PolicyAuditStore } from './main/agent/runtime/policy-audit-store'
-export { SubAgentRunRegistry } from './main/agent/subagent-run-registry'
 export {
   authorizeRendererAction,
   createRendererActionAuthorizer,
@@ -95,10 +94,6 @@ export type {
   WorkspaceChatRuntime,
   WorkspaceChatToolOptions,
 } from './main/agent/chat-tools/workspace-chat-tools'
-export { AgentStreamManager } from './main/agent/stream-manager'
-export type { AgentEngine, AgentEvent, AgentSpawnOptions } from './main/agent/types'
-export { resolveCLIPath } from './main/agent/cli-resolver'
-export { createParser } from './main/agent/parsers/index'
 export { checkpointManager, CheckpointManager } from './main/agent/checkpoint/checkpoint-manager'
 export { janusWorkspaceFs, isTextBuffer } from './main/agent/environment/janus-workspace-fs'
 export type { ResolveWorkspaceRoot, RunEventSink, HostIpcEvent } from './main/agent/ports'

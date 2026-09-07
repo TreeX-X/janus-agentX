@@ -2,7 +2,7 @@
   "name": "@janus-agent/cli",
   "version": "0.1.0",
   "type": "module",
-  "description": "Standalone janus CLI - headless agent runs over @janus-agent/agent-core. No Electron, no node-pty.",
+  "description": "Standalone janus CLI - dialogue/tool-call turns over @janus-agent/janus-agent with a local runtime. No Electron, no subprocess runner.",
   "bin": {
     "janus": "dist/cli.js"
   },
@@ -13,7 +13,10 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@janus-agent/agent-core": "file:../agent-core"
+    "@ai-sdk/openai": "^3.0.71",
+    "@janus-agent/agent-core": "file:../agent-core",
+    "@janus-agent/janus-agent": "file:../janus-agent",
+    "ai": "3.4.33"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

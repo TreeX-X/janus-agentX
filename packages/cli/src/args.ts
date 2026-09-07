@@ -1,30 +1,28 @@
 /**
  * @file Pure argv parsing for the janus CLI (no side effects, unit tested).
+ *
+ * The CLI drives the janus-agent dialogue/tool-call loop directly
+ * (`runChatTurn` over a local `WorkspaceAgentRuntime`). There is no
+ * subprocess runner here: no claude/codex/opencode engines.
  */
-import type { AgentEngine } from '@janus-agent/agent-core'
 
-export type CliCommand = 'run' | 'resolve' | 'version' | 'help'
+export type CliCommand = 'chat' | 'version' | 'help'
 
-export interface RunOptions {
-  engine: AgentEngine
-  cwd: string
+export interface ChatOptions {
+  workspace: string
   model?: string
+  baseUrl?: string
+  apiKey?: string
+  maxTurns?: number
   timeoutMs?: number
-  approvalMode?: 'per-action' | 'auto-run'
+  conversationId?: string
   prompt: string
 }
 
 export interface ParsedArgs {
   command: CliCommand
-  run?: RunOptions
-  resolveEngine?: AgentEngine
+  chat?: ChatOptions
   error?: string
-}
-
-const ENGINES: AgentEngine[] = ['claude', 'codex', 'opencode']
-
-function isEngine(value: string): value is AgentEngine {
-  return (ENGINES as string[]).includes(value)
 }
 
 export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
@@ -35,26 +33,23 @@ export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
   if (command === 'version' || command === '--version' || command === '-V') {
     return { command: 'version' }
   }
-  if (command === 'resolve') {
-    const engine = rest[0] ?? 'codex'
-    if (!isEngine(engine)) return { command: 'help', error: `Unknown engine: ${engine}` }
-    return { command: 'resolve', resolveEngine: engine }
-  }
-  if (command !== 'run') {
+  if (command !== 'chat') {
     return { command: 'help', error: `Unknown command: ${command}` }
   }
 
-  let engine: AgentEngine = 'codex'
-  let dir = cwd
+  let workspace = cwd
   let model: string | undefined
+  let baseUrl: string | undefined
+  let apiKey: string | undefined
+  let maxTurns: number | undefined
   let timeoutMs: number | undefined
-  let approvalMode: RunOptions['approvalMode']
+  let conversationId: string | undefined
   const promptParts: string[] = []
   let separatorSeen = false
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i]
-    if (separatorSeen || (!arg.startsWith('-') && !arg.startsWith('/'))) {
+    if (separatorSeen || !arg.startsWith('-')) {
       promptParts.push(arg)
       continue
     }
@@ -69,18 +64,11 @@ export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
       return next
     }
     switch (arg) {
-      case '--engine':
-      case '-e': {
-        const value = takeValue()
-        if (!value || !isEngine(value)) return { command: 'help', error: `Invalid --engine: ${value ?? '(missing)'}` }
-        engine = value
-        break
-      }
-      case '--cwd':
+      case '--workspace':
       case '-C': {
         const value = takeValue()
-        if (!value) return { command: 'help', error: 'Missing --cwd value' }
-        dir = value
+        if (!value) return { command: 'help', error: 'Missing --workspace value' }
+        workspace = value
         break
       }
       case '--model':
@@ -88,6 +76,25 @@ export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
         const value = takeValue()
         if (!value) return { command: 'help', error: 'Missing --model value' }
         model = value
+        break
+      }
+      case '--base-url': {
+        const value = takeValue()
+        if (!value) return { command: 'help', error: 'Missing --base-url value' }
+        baseUrl = value
+        break
+      }
+      case '--api-key': {
+        const value = takeValue()
+        if (!value) return { command: 'help', error: 'Missing --api-key value' }
+        apiKey = value
+        break
+      }
+      case '--max-turns': {
+        const value = takeValue()
+        const parsed = value === undefined ? NaN : Number(value)
+        if (!Number.isInteger(parsed) || parsed <= 0) return { command: 'help', error: `Invalid --max-turns: ${value ?? '(missing)'}` }
+        maxTurns = parsed
         break
       }
       case '--timeout-ms': {
@@ -99,10 +106,14 @@ export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
       }
       case '--approval-mode': {
         const value = takeValue()
-        if (value !== 'per-action' && value !== 'auto-run') {
-          return { command: 'help', error: `Invalid --approval-mode: ${value ?? '(missing)'}` }
-        }
-        approvalMode = value
+        // Headless CLI has no approver: per-action would hang on first write.
+        if (value !== 'auto-run') return { command: 'help', error: `Invalid --approval-mode: ${value ?? '(missing)'}. Only auto-run is supported headless` }
+        break
+      }
+      case '--conversation': {
+        const value = takeValue()
+        if (!value) return { command: 'help', error: 'Missing --conversation value' }
+        conversationId = value
         break
       }
       default:
@@ -111,20 +122,21 @@ export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
   }
 
   const prompt = promptParts.join(' ').trim()
-  if (!prompt) return { command: 'help', error: 'Missing prompt. Usage: janus run [--engine codex] [--] "prompt"' }
-  return { command: 'run', run: { engine, cwd: dir, model, timeoutMs, approvalMode, prompt } }
+  if (!prompt) return { command: 'help', error: 'Missing prompt. Usage: janus chat [--workspace <dir>] [--model <id>] [--] "prompt"' }
+  return { command: 'chat', chat: { workspace, model, baseUrl, apiKey, maxTurns, timeoutMs, conversationId, prompt } }
 }
 
 export function helpText(): string {
   return [
-    'janus - standalone Janus agent CLI',
+    'janus - standalone Janus agent CLI (dialogue + workspace tools, no Electron)',
     '',
-    '  janus run [--engine codex|claude|opencode] [--cwd <dir>] [--model <id>]',
-    '            [--timeout-ms <ms>] [--approval-mode per-action|auto-run] [--] "prompt"',
-    '      Run one headless agent turn; AgentEvents stream as JSONL on stdout.',
-    '  janus resolve [engine]   Print the resolved CLI binary path (exit 3 if missing).',
+    '  janus chat [--workspace <dir>] [--model <id>] [--base-url <url>] [--api-key <key>]',
+    '             [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run]',
+    '             [--conversation <id>] [--] "prompt"',
+    '      Run one agent turn against a workspace; ChatAgentEvents stream as JSONL on stdout.',
+    '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
     '  janus version            Print the CLI version.',
     '',
-    'Exit codes: 0 done · 1 agent error · 2 usage/config error · 3 binary missing · 130 interrupted.',
+    'Exit codes: 0 done · 1 agent/model error · 2 usage/config error · 130 interrupted.',
   ].join('\n')
 }

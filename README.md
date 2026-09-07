@@ -1,26 +1,38 @@
 # janus-agentX
 
-Janus agent engine extracted from JanusX. JanusX keeps the Electron shell;
-all intelligence lives here and is consumed in-process by the shell and
-headless by the standalone `janus` CLI.
+Janus agent engine extracted from JanusX: dialogue + workspace tool-call
+loop (`runJanusAgentLoop` / `runChatTurn`) with zero `electron` imports.
+Host capabilities cross explicit ports
+(`packages/agent-core/src/main/agent/PORTS.md`).
+
+Scope: **janus-agent only**. The subprocess runner for external
+claude/codex/opencode CLIs is NOT here on purpose — in JanusX it lives
+under `src/main/janus-runner/`; `janus-chat` there now means the chat UI.
 
 ## Packages
 
 | Package | Contents |
 |---|---|
-| `@janus-agent/contracts` | Shared IPC/type contracts copied from JanusX `src/shared` (no runtime deps) |
-| `@janus-agent/agent-core` | Agent loop, stream, parsers, runtime (policy/path/registry/manifest/result/transaction), checkpoint, environment, cli-resolver, stream-manager. Zero `electron` imports; host capabilities via `ports` |
+| `@janus-agent/agent-core` | Dialogue loop, stream, runtime (policy/path/registry/manifest/result/transaction), checkpoint, environment, workspace tools, chat-tool adapters |
 | `@janus-agent/chat-core` | Chat session budget, agent-event mapping, system-prompt builder, orchestrator pure helpers |
-| `@janus-agent/janus-agent` | Facade (planned Phase3): LLM service, knowledge engine, roundtable, blueprint maintenance |
-| `@janus-agent/cli` | Standalone `janus` CLI (planned Phase4) |
+| `@janus-agent/janus-agent` | Facade: framework-agnostic `runChatTurn` over agent-core + chat-core via `ChatTurnPorts` |
+| `@janus-agent/cli` | Standalone `janus` CLI: `janus chat` runs one agent turn headless |
 
-## Migration spec
+## CLI
 
-See JanusX `docs/08-JanusX壳体化与Agent外迁实施方案.md` (Phase0-Phase5).
+```bash
+node packages/cli/dist/cli.js chat --workspace . --model <id> -- "prompt"
+# Model config via flags or env: JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY
+# ChatAgentEvents stream as JSONL on stdout.
+```
+
+Transport pins the shell-proven combo (`ai@3.4.33` +
+`@ai-sdk/openai@3`, OpenAI-compatible `baseURL`); the v3→v1 shim in
+`packages/cli/src/model-compat.ts` is vendored from JanusX llm-core and
+must be re-vendored, not forked.
 
 ## Layout rule
 
-`packages/agent-core/src` mirrors JanusX `src` (`main/agent/**`, `shared/**`,
-`main/lib/atomic-file.ts`) so relative imports keep working byte-identical.
-Host-coupled files are replaced by port-based versions documented in
-`packages/agent-core/src/main/agent/PORTS.md`.
+`packages/agent-core/src` mirrors JanusX `src/main/janus-agent/**`,
+`shared/**`, `main/lib/atomic-file.ts` so relative imports keep working
+byte-identical.
