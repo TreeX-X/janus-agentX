@@ -43,7 +43,7 @@ describe('parseArgs', () => {
     expect(parseArgs(['chat', '--nope', 'y'], '/b').error).toMatch(/Unknown flag/)
     expect(parseArgs(['run', 'x'], '/b').command).toBe('help')
     expect(parseArgs(['frobnicate'], '/b').command).toBe('help')
-    expect(parseArgs([], '/b').command).toBe('help')
+    expect(parseArgs([], '/b').command).toBe('tui')
   })
 
   it('parses version', () => {
