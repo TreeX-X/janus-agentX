@@ -81,6 +81,14 @@ export {
   workspaceSearchTool,
 } from './main/agent/runtime/tools/workspace-tools'
 export type { CommandHost, GitHost, HostToolHosts, ProjectHost } from './main/agent/runtime/tools/host-tool-ports'
+export {
+  createToolPreview,
+  createWorkspaceChatTools,
+} from './main/agent/chat-tools/workspace-chat-tools'
+export type {
+  WorkspaceChatRuntime,
+  WorkspaceChatToolOptions,
+} from './main/agent/chat-tools/workspace-chat-tools'
 export { AgentStreamManager } from './main/agent/stream-manager'
 export { resolveCLIPath } from './main/agent/cli-resolver'
 export { createParser } from './main/agent/parsers/index'
