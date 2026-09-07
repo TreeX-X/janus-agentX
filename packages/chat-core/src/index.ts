@@ -16,5 +16,14 @@ export {
   toolTraceHistoryMessage,
   traceFromResult,
   workspaceRecoveryPrompt,
+  CHAT_MAX_STEPS,
+  TOOL_TRACE_MAX_ENTRIES,
+  WORKSPACE_MUTATION_TOOLS,
 } from './main/llm/chat-pure'
 export type { ChatMessage, ChatRecallInput, KnowledgeSearchPort } from './main/llm/chat-pure'
+export type {
+  ChatAgentEvent,
+  ChatToolTraceEntry,
+  ChatWorkspaceResource,
+} from './shared/ipc/llm'
+export type { KnowledgeContextResult, KnowledgeRecallTrace } from './shared/knowledge'

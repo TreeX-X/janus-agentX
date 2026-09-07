@@ -1,0 +1,29 @@
+{
+  "name": "@janus-agent/janus-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Janus agent facade - framework-agnostic chat-turn orchestration over agent-core and chat-core. No Electron dependency.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@janus-agent/agent-core": "file:../agent-core",
+    "@janus-agent/chat-core": "file:../chat-core"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

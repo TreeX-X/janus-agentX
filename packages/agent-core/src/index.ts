@@ -32,6 +32,12 @@ export {
   createJanusRuntimeTools,
   createJanusRuntimeToolsForResources,
 } from './main/agent/loop/runtime-tool-adapter'
+export type {
+  JanusRuntimeAgentTool,
+  JanusRuntimeToolHost,
+  JanusRuntimeToolPreview,
+  JanusRuntimeWorkspaceResource,
+} from './main/agent/loop/runtime-tool-adapter'
 export { toAgentStreamEvent, ToolCallAccumulator } from './main/agent/stream/index'
 export type {
   AgentStreamEvent,
@@ -95,3 +101,17 @@ export { createParser } from './main/agent/parsers/index'
 export { checkpointManager, CheckpointManager } from './main/agent/checkpoint/checkpoint-manager'
 export { janusWorkspaceFs, isTextBuffer } from './main/agent/environment/janus-workspace-fs'
 export type { ResolveWorkspaceRoot, RunEventSink, HostIpcEvent } from './main/agent/ports'
+export type {
+  AgentRuntimeEvent,
+  AgentSession,
+  ApprovalPreview,
+  ApprovalResult,
+  CreateAgentSessionInput,
+  ExecuteToolInput,
+  PolicyAuditQuery,
+  PolicyDecisionRecord,
+  ToolCall,
+  ToolDefinition,
+  ToolInputSchema,
+  ToolResult,
+} from './shared/ipc/agent-runtime'
