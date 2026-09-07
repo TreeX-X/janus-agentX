@@ -139,7 +139,7 @@ describe('CliSession.sendTurn', () => {
     expect(session.getModelId()).toBe('m2')
     await session.sendTurn('hi')
     expect(session.getTurnCount()).toBe(1)
-    session.clearHistory()
+    await session.clearHistory()
     expect(session.getTurnCount()).toBe(0)
     await session.close()
   })

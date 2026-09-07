@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { arrayLineSource, runRepl } from '../src/repl.js'
+import { memoryConversationStore } from '../src/conversations.js'
 import type { ChatTurnPorts } from '@janus-agent/janus-agent'
 
 type StreamFn = ChatTurnPorts['streamTextFn']
@@ -26,6 +27,7 @@ function collect() {
       stdout: (text: string) => { out.push(text) },
       stderr: (text: string) => { err.push(text) },
       env: {} as NodeJS.ProcessEnv,
+      store: memoryConversationStore(),
     },
   }
 }
@@ -81,10 +83,10 @@ describe('runRepl', () => {
     expect(c.out.join('')).toContain('model: m')
     expect(c.out.join('')).toContain('model switched: m2')
     expect(c.out.join('')).toContain('history cleared.')
-    expect(c.out.join('')).toContain('(M1)')
     expect(c.out.join('')).toContain('(M2)')
     expect(c.out.join('')).toContain('Commands:')
     expect(c.err.join('')).toContain('unknown command: /nope')
+    expect(c.err.join('')).toContain('no conversation matches: x')
   })
 
   it('returns 2 when the api key is missing', async () => {

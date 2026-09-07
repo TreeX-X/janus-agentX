@@ -1,12 +1,13 @@
 /**
  * @file Resident session over the janus-agent dialogue/tool-call loop.
  * @description Owns one `WorkspaceAgentRuntime` + one agent session + the
- * accumulated `messages / toolTraces / ChatSessionRuntime` for a
- * conversationId, so both `chat` (single turn) and `tui` (many turns) share
- * the same ports assembly. Pure logic + injected IO: no Ink, no stdout.
+ * shared model transport, plus a `ConversationRegistry` holding per-
+ * conversation `messages / toolTraces / ChatSessionRuntime`. Both `chat`
+ * (single turn) and `tui` (many turns, many conversations) share the same
+ * ports assembly. Pure logic + injected IO: no Ink, no stdout.
  */
-import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { basename, resolve } from 'node:path'
 import { streamText } from 'ai'
 import {
@@ -14,14 +15,18 @@ import {
   createToolManifests,
   registerWorkspaceTools,
 } from '@janus-agent/agent-core'
-import {
-  ChatSessionRuntime,
-  TOOL_TRACE_MAX_ENTRIES,
-  type ChatToolTraceEntry,
-} from '@janus-agent/chat-core'
+import { TOOL_TRACE_MAX_ENTRIES } from '@janus-agent/chat-core'
 import { runChatTurn, type ChatTurnPorts, type ChatTurnResult } from '@janus-agent/janus-agent'
 import { createChatModel } from './model.js'
 import type { ApprovalModeOption } from './args.js'
+import {
+  ConversationRegistry,
+  DEFAULT_CONVERSATION_TITLE,
+  memoryConversationStore,
+  titleFromPrompt,
+  type ConversationStorePort,
+  type ConversationSummary,
+} from './conversations.js'
 
 export const CLI_WORKSPACE_ID = 'cli'
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -37,6 +42,8 @@ export interface CliSessionConfig {
   conversationId?: string
   approvalMode?: ApprovalModeOption
   env?: NodeJS.ProcessEnv
+  /** Conversation persistence. Defaults to memory (headless `chat` behavior). */
+  store?: ConversationStorePort
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
@@ -55,33 +62,30 @@ type Runtime = ReturnType<typeof createAgentRuntime>
 export class CliSession {
   private readonly runtime: Runtime
   private readonly sessionId: string
-  private readonly chatSession = new ChatSessionRuntime()
   private readonly ports: ChatTurnPorts
+  private readonly registry: ConversationRegistry
   private readonly workspaceRoot: string
   private readonly maxTurns: number
   private modelId: string
-  private readonly conversationId: string
   private approvalMode: ApprovalModeOption
-  private messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = []
-  private toolTraces: ChatToolTraceEntry[] = []
 
   private constructor(init: {
     runtime: Runtime
     sessionId: string
     ports: ChatTurnPorts
+    registry: ConversationRegistry
     workspaceRoot: string
     maxTurns: number
     modelId: string
-    conversationId: string
     approvalMode: ApprovalModeOption
   }) {
     this.runtime = init.runtime
     this.sessionId = init.sessionId
     this.ports = init.ports
+    this.registry = init.registry
     this.workspaceRoot = init.workspaceRoot
     this.maxTurns = init.maxTurns
     this.modelId = init.modelId
-    this.conversationId = init.conversationId
     this.approvalMode = init.approvalMode
   }
 
@@ -158,14 +162,18 @@ export class CliSession {
       streamTextFn,
     }
 
+    const registry = await ConversationRegistry.load(
+      config.store ?? memoryConversationStore(),
+      config.conversationId,
+    )
     return new CliSession({
       runtime,
       sessionId,
       ports,
+      registry,
       workspaceRoot,
       maxTurns,
       modelId,
-      conversationId: config.conversationId ?? randomUUID(),
       approvalMode,
     })
   }
@@ -183,7 +191,7 @@ export class CliSession {
   }
 
   getConversationId(): string {
-    return this.conversationId
+    return this.registry.getActiveId()
   }
 
   getApprovalMode(): ApprovalModeOption {
@@ -191,7 +199,30 @@ export class CliSession {
   }
 
   getTurnCount(): number {
-    return this.messages.filter((message) => message.role === 'user').length
+    return this.registry.getActive().data.messages.filter((message) => message.role === 'user').length
+  }
+
+  listConversations(): ConversationSummary[] {
+    return this.registry.list()
+  }
+
+  async createConversation(title?: string): Promise<ConversationSummary> {
+    const id = await this.registry.create(title)
+    return this.registry.list().find((summary) => summary.id === id) as ConversationSummary
+  }
+
+  async switchConversation(ref: string): Promise<ConversationSummary | null> {
+    return this.registry.switch(ref)
+  }
+
+  async renameConversation(ref: string, title: string): Promise<ConversationSummary | null> {
+    return this.registry.rename(ref, title)
+  }
+
+  async deleteConversation(ref: string): Promise<ConversationSummary | null> {
+    const activeId = await this.registry.delete(ref)
+    if (!activeId) return null
+    return this.registry.list().find((summary) => summary.id === activeId) ?? null
   }
 
   /** Switch model for subsequent turns (rebuilds the local transport handle). */
@@ -209,9 +240,8 @@ export class CliSession {
     this.approvalMode = mode
   }
 
-  clearHistory(): void {
-    this.messages = []
-    this.toolTraces = []
+  async clearHistory(): Promise<void> {
+    await this.registry.resetActive()
   }
 
   async sendTurn(
@@ -220,8 +250,12 @@ export class CliSession {
     signal?: AbortSignal,
   ): Promise<ChatTurnResult> {
     const requestId = randomUUID()
+    const record = this.registry.getActive()
     const userMessage = { role: 'user' as const, content: prompt }
-    const requestMessages = [...this.messages, userMessage]
+    const requestMessages = [...record.data.messages, userMessage]
+    if (record.data.title === DEFAULT_CONVERSATION_TITLE) {
+      record.data.title = titleFromPrompt(prompt)
+    }
     const result = await runChatTurn(
       {
         requestId,
@@ -229,7 +263,7 @@ export class CliSession {
         providerId: 'cli',
         modelId: this.modelId,
         sourceTag: 'janus-chat',
-        conversationId: this.conversationId,
+        conversationId: record.data.id,
         workspaceId: CLI_WORKSPACE_ID,
         workspacePath: this.workspaceRoot,
         workspaceResources: [{
@@ -238,25 +272,31 @@ export class CliSession {
           workspaceName: this.getWorkspaceName(),
           agentSessionId: this.sessionId,
         }],
-        toolTraces: this.toolTraces,
-        chatSession: this.chatSession,
+        toolTraces: record.data.toolTraces,
+        chatSession: record.chatSession,
       },
       this.ports,
       { onEvent: (event) => callbacks.onEvent?.({ requestId, event }) },
       signal ?? new AbortController().signal,
     )
     if (!result.cancelled) {
-      this.messages = [...requestMessages, { role: 'assistant' as const, content: result.text }]
-      this.toolTraces = [...this.toolTraces, ...result.toolTraces].slice(-TOOL_TRACE_MAX_ENTRIES)
+      record.data.messages = [...requestMessages, { role: 'assistant' as const, content: result.text }]
+      record.data.toolTraces = [...record.data.toolTraces, ...result.toolTraces].slice(-TOOL_TRACE_MAX_ENTRIES)
     } else {
       // Aborted turn: keep the user prompt so the user can retry or move on,
       // but do not record a partial assistant message.
-      this.messages = requestMessages
+      record.data.messages = requestMessages
     }
+    await this.registry.persist(record.data.id)
     return result
   }
 
   async close(): Promise<void> {
+    try {
+      await this.registry.persist(this.registry.getActiveId())
+    } catch {
+      // Best effort: session teardown must not fail.
+    }
     await this.runtime.cancelSession(this.sessionId).catch(() => undefined)
   }
 }

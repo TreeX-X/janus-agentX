@@ -5,10 +5,11 @@
  * are injectable so tests drive turns without a TTY. Ink fullscreen lands
  * in M1 on top of the same session/commands.
  */
-import { createInterface, type Interface } from 'node:readline'
+import { createInterface } from 'node:readline'
 import type { ChatTurnPorts } from '@janus-agent/janus-agent'
 import type { TuiOptions } from './args.js'
 import { CliSession, isSessionValidationError, DEFAULT_BASE_URL } from './session.js'
+import { defaultHistoryDir, fileConversationStore, type ConversationStorePort, type ConversationSummary } from './conversations.js'
 import { commandHelpText, parseInputLine } from './commands.js'
 import { renderLogoAscii, renderLogoPlain } from './logo.js'
 
@@ -22,6 +23,8 @@ export interface ReplIO {
   stderr?: (text: string) => void
   env?: NodeJS.ProcessEnv
   lines?: ReplLineSource
+  /** Conversation persistence. Defaults to ~/.janus/history (memory in tests via injection). */
+  store?: ConversationStorePort
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
@@ -34,25 +37,37 @@ export function arrayLineSource(lines: Array<string | null>): ReplLineSource {
   }
 }
 
-function createReadlineSource(stdout: (text: string) => void): ReplLineSource {
-  let rl: Interface | undefined
-  let sigintHandler: (() => void) | undefined
+/**
+ * Line-queued source: a permanent `line` listener buffers rows that arrive
+ * while a turn is running (pastes, pipes), so no input is lost between
+ * prompts. `close`/EOF resolves pending reads with null (clean exit).
+ */
+function createReadlineSource(onSigint: () => void): ReplLineSource {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const queued: string[] = []
+  const waiters: Array<(line: string | null) => void> = []
+  let closed = false
+  rl.on('line', (line) => {
+    const waiter = waiters.shift()
+    if (waiter) waiter(line)
+    else queued.push(line)
+  })
+  rl.on('close', () => {
+    closed = true
+    let waiter: ((line: string | null) => void) | undefined
+    while ((waiter = waiters.shift())) waiter(null)
+  })
+  rl.on('SIGINT', onSigint)
   return {
-    next: (prompt = 'you> ') => new Promise<string | null>((resolve) => {
-      if (!rl) {
-        rl = createInterface({ input: process.stdin, output: process.stdout })
-        rl.on('close', () => resolve(null))
-        if (sigintHandler) rl.on('SIGINT', sigintHandler)
-      }
-      const current = rl
-      current.once('SIGINT', () => {
-        sigintHandler?.()
-        // Re-issue the prompt; the turn abort is handled via the controller.
-        current.prompt()
-      })
-      current.question(prompt, (answer) => resolve(answer))
-    }),
-    close: () => rl?.close(),
+    next: (prompt = 'you> ') => {
+      const line = queued.shift()
+      if (line !== undefined) return Promise.resolve(line)
+      if (closed) return Promise.resolve(null)
+      rl.setPrompt(prompt)
+      rl.prompt()
+      return new Promise<string | null>((resolve) => { waiters.push(resolve) })
+    },
+    close: () => rl.close(),
   }
 }
 
@@ -62,6 +77,7 @@ interface ReplState {
   env: NodeJS.ProcessEnv
   stdout: (text: string) => void
   stderr: (text: string) => void
+  store: ConversationStorePort
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
 
@@ -111,6 +127,10 @@ async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): P
   state.stdout('\n')
 }
 
+function formatConversation(index: number, summary: ConversationSummary): string {
+  return `${index + 1}${summary.active ? '*' : ' '} ${summary.title} (${summary.turnCount} turns) [${summary.id.slice(0, 8)}]`
+}
+
 async function handleCommand(state: ReplState, command: string, args: string[]): Promise<'continue' | 'exit' | 'recreated'> {
   const { stdout, stderr } = state
   switch (command) {
@@ -120,9 +140,57 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
     case 'exit':
       return 'exit'
     case 'clear':
-      state.session.clearHistory()
+      await state.session.clearHistory()
       stdout('history cleared.\n')
       return 'continue'
+    case 'new': {
+      const summary = await state.session.createConversation(args.join(' ') || undefined)
+      const index = state.session.listConversations().findIndex((item) => item.id === summary.id)
+      stdout(`new conversation: ${formatConversation(index, summary)}\n`)
+      return 'continue'
+    }
+    case 'list': {
+      const conversations = state.session.listConversations()
+      stdout(`${conversations.map((summary, index) => formatConversation(index, summary)).join('\n')}\n`)
+      return 'continue'
+    }
+    case 'switch': {
+      if (args.length === 0) {
+        stderr('usage: /switch <number|id>\n')
+        return 'continue'
+      }
+      const summary = await state.session.switchConversation(args[0])
+      if (!summary) {
+        stderr(`no conversation matches: ${args[0]}\n`)
+        return 'continue'
+      }
+      const index = state.session.listConversations().findIndex((item) => item.id === summary.id)
+      stdout(`switched to: ${formatConversation(index, summary)}\n`)
+      return 'continue'
+    }
+    case 'rename': {
+      if (args.length === 0) {
+        stderr('usage: /rename <title>\n')
+        return 'continue'
+      }
+      const summary = await state.session.renameConversation(state.session.getConversationId(), args.join(' '))
+      if (!summary) {
+        stderr('janus: rename failed.\n')
+        return 'continue'
+      }
+      stdout(`renamed to: ${summary.title}\n`)
+      return 'continue'
+    }
+    case 'delete': {
+      const summary = await state.session.deleteConversation(args[0] ?? state.session.getConversationId())
+      if (!summary) {
+        stderr(`no conversation matches: ${args[0]}\n`)
+        return 'continue'
+      }
+      const index = state.session.listConversations().findIndex((item) => item.id === summary.id)
+      stdout(`deleted. active: ${formatConversation(index, summary)}\n`)
+      return 'continue'
+    }
     case 'model': {
       if (args.length === 0) {
         stdout(`model: ${state.session.getModelId()}\n`)
@@ -151,6 +219,7 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         timeoutMs: state.options.timeoutMs,
         approvalMode: state.session.getApprovalMode(),
         env: state.env,
+        store: state.store,
         streamTextFn: state.streamTextFn,
       })
       if (isSessionValidationError(next)) {
@@ -164,13 +233,6 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
     }
     case 'provider':
       stdout('(M2) provider switching is not implemented yet; use /model <id> for now.\n')
-      return 'continue'
-    case 'new':
-    case 'list':
-    case 'switch':
-    case 'rename':
-    case 'delete':
-      stdout(`(M1) /${command} (multi-conversation) is not implemented yet; /clear resets this conversation.\n`)
       return 'continue'
     case 'approval':
       if (args.length === 0) {
@@ -189,16 +251,24 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
   const stdout = io.stdout ?? ((text: string) => process.stdout.write(text))
   const stderr = io.stderr ?? ((text: string) => process.stderr.write(text))
   const env = io.env ?? process.env
+  let historyWarned = false
+  const store = io.store ?? fileConversationStore(defaultHistoryDir(), () => {
+    if (!historyWarned) {
+      historyWarned = true
+      stderr('janus: history file unavailable, this run keeps memory only.\n')
+    }
+  })
   const state: ReplState = {
     session: undefined as unknown as CliSession,
     options,
     env,
     stdout,
     stderr,
+    store,
     streamTextFn: io.streamTextFn,
   }
 
-  const created = await CliSession.create({ ...options, env, streamTextFn: io.streamTextFn })
+  const created = await CliSession.create({ ...options, env, store, streamTextFn: io.streamTextFn })
   if (isSessionValidationError(created)) {
     stderr(`${created.message}\n`)
     return 2
@@ -206,11 +276,23 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
   state.session = created
 
   stdout(`${options.plain ? renderLogoPlain() : renderLogoAscii()}\n`)
-  stdout(`janus · workspace ${created.getWorkspaceRoot()} · model ${created.getModelId()} · /help for commands\n`)
+  const restored = created.listConversations()
+  const activeTitle = restored.find((summary) => summary.active)?.title ?? ''
+  stdout(`janus · workspace ${created.getWorkspaceRoot()} · model ${created.getModelId()} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
+  if (activeTitle && activeTitle !== 'New conversation') {
+    stdout(`resumed: ${activeTitle}\n`)
+  }
 
-  const lines = io.lines ?? createReadlineSource(stdout)
+  const lines = io.lines ?? createReadlineSource(() => {
+    // TTY Ctrl+C: cancel the running turn, stay in the loop.
+    // Idle Ctrl+C closes the source so the loop exits cleanly (code 0).
+    if (activeController) activeController.abort()
+    else lines.close()
+  })
   let activeController: AbortController | null = null
   if (!io.lines) {
+    // Piped stdin never reaches the rl SIGINT listener; the first Ctrl+C
+    // cancels the turn, a second one falls through to default termination.
     process.once('SIGINT', () => {
       if (activeController) activeController.abort()
       else lines.close()

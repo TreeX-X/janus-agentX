@@ -13,6 +13,12 @@ export type BuiltinCommandName =
   | 'workspace'
   | 'clear'
   | 'exit'
+  | 'new'
+  | 'list'
+  | 'switch'
+  | 'rename'
+  | 'delete'
+  | 'approval'
 
 export interface ParsedInput {
   kind: 'input' | 'command' | 'empty'
@@ -32,12 +38,12 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'workspace',
   'clear',
   'exit',
-  // §4.6 staged (parsed as known, executed from M1/M2 on):
   'new',
   'list',
   'switch',
   'rename',
   'delete',
+  // Staged for §4.6 M2 (parsed as known, executed later):
   'approval',
 ])
 
@@ -67,7 +73,11 @@ export function commandHelpText(): string {
     '  /provider [id]        (M2) List or switch providers.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
     '  /clear                Clear this conversation history.',
-    '  /new /list /switch /rename /delete   (M1) Manage conversations.',
+    '  /new [title]          Start a conversation (and switch to it).',
+    '  /list                 List conversations (* = active).',
+    '  /switch <n|id>        Switch conversation.',
+    '  /rename <title>       Rename the active conversation.',
+    '  /delete [n|id]        Delete a conversation (default: active).',
     '  /approval [mode]      (M2) Show or switch auto-run|per-action.',
     '  /exit                 Leave janus.',
     'Keys: Enter send · Ctrl+C cancel current turn · Ctrl+D exit.',
