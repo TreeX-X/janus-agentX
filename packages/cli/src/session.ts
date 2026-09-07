@@ -108,11 +108,10 @@ export class CliSession {
   private readonly ports: ChatTurnPorts
   private readonly registry: ConversationRegistry
   private readonly workspaceRoot: string
-  private readonly maxTurns: number
   private readonly catalog: ProviderCatalog
   private readonly configPath: string | null
   private readonly onCatalogError?: (error: unknown) => void
-  private readonly onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
+  private onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
   private readonly baseUrlOverride?: string
   private readonly apiKey: string
   private readonly envModel?: string
@@ -146,7 +145,6 @@ export class CliSession {
     this.ports = init.ports
     this.registry = init.registry
     this.workspaceRoot = init.workspaceRoot
-    this.maxTurns = init.maxTurns
     this.catalog = init.catalog
     this.configPath = init.configPath
     this.onCatalogError = init.onCatalogError
@@ -310,8 +308,10 @@ export class CliSession {
   private persistCatalog(): void {
     if (!this.configPath) return
     try {
+      // Last state wins: the default pair always describes the active provider,
+      // so a restart never pairs provider B with provider A's model.
       this.catalog.defaultProvider = this.activeProviderId
-      if (this.modelOverride) this.catalog.defaultModel = this.modelOverride
+      this.catalog.defaultModel = this.modelId
       saveCatalogFile(this.configPath, this.catalog)
     } catch (error) {
       this.onCatalogError?.(error)
@@ -390,6 +390,11 @@ export class CliSession {
     return this.onApproval
   }
 
+  /** Lets hosts (re)bind the approval UI after construction (Ink gate, workspace switch). */
+  setApprovalHandler(handler: ((prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>) | undefined): void {
+    this.onApproval = handler
+  }
+
   getCatalogErrorHandler(): ((error: unknown) => void) | undefined {
     return this.onCatalogError
   }
@@ -412,6 +417,15 @@ export class CliSession {
 
   getTurnCount(): number {
     return this.registry.getActive().data.messages.filter((message) => message.role === 'user').length
+  }
+
+  /** Active conversation messages for UI hydration (switch/resume). */
+  getActiveMessages(): Array<{ role: 'user' | 'assistant' | 'system'; content: string }> {
+    return this.registry.getActive().data.messages.map((message) => ({ ...message }))
+  }
+
+  getActiveTitle(): string {
+    return this.registry.getActive().data.title
   }
 
   listConversations(): ConversationSummary[] {
@@ -448,17 +462,18 @@ export class CliSession {
     this.persistCatalog()
   }
 
-  /** Switch provider; the flags/env model override must exist there (or the provider is open-world). */
+  /**
+   * Switch provider; the model override is cleared so the new provider's
+   * default chain applies (flags --model still wins at startup creation).
+   */
   setProvider(ref: string): void {
     const entry = resolveProviderRef(this.catalog, ref)
     if (!entry) {
       const ids = this.catalog.providers.map((candidate) => candidate.id).join(', ') || '(none)'
       throw new Error(`janus: unknown provider "${ref}". Available: ${ids}.`)
     }
-    if (this.modelOverride && !validateModelId(entry, this.modelOverride)) {
-      throw new Error(`janus: model "${this.modelOverride}" is not in provider "${entry.id}". Available: ${listProviderModels(entry).join(', ') || '(none)'}.`)
-    }
     this.activeProviderId = entry.id
+    this.modelOverride = undefined
     this.rebuildTransport()
     this.persistCatalog()
   }

@@ -9,9 +9,10 @@ import { createInterface } from 'node:readline'
 import type { ChatTurnPorts } from '@janus-agent/janus-agent'
 import type { TuiOptions } from './args.js'
 import { CliSession, isSessionValidationError, type ApprovalPrompt } from './session.js'
-import { defaultHistoryDir, fileConversationStore, type ConversationStorePort, type ConversationSummary } from './conversations.js'
-import { listProviderModels, loadEffectiveCatalog } from './providers.js'
-import { commandHelpText, parseInputLine } from './commands.js'
+import { defaultHistoryDir, fileConversationStore, type ConversationStorePort } from './conversations.js'
+import { loadEffectiveCatalog } from './providers.js'
+import { executeCommand } from './tui/exec.js'
+import { parseInputLine } from './commands.js'
 import { renderLogoAscii, renderLogoPlain } from './logo.js'
 
 export interface ReplLineSource {
@@ -146,10 +147,6 @@ async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): P
   state.stdout('\n')
 }
 
-function formatConversation(index: number, summary: ConversationSummary): string {
-  return `${index + 1}${summary.active ? '*' : ' '} ${summary.title} (${summary.turnCount} turns) [${summary.id.slice(0, 8)}]`
-}
-
 /** Terminal approval UI: single-shot y/N (empty/EOF/abort = deny, fail-closed). */
 async function askApproval(
   lines: ReplLineSource,
@@ -168,88 +165,10 @@ async function askApproval(
 }
 
 async function handleCommand(state: ReplState, command: string, args: string[]): Promise<'continue' | 'exit' | 'recreated'> {
-  const { stdout, stderr } = state
-  switch (command) {
-    case 'help':
-      stdout(`${commandHelpText()}\n`)
-      return 'continue'
-    case 'exit':
-      return 'exit'
-    case 'clear':
-      await state.session.clearHistory()
-      stdout('history cleared.\n')
-      return 'continue'
-    case 'new': {
-      const summary = await state.session.createConversation(args.join(' ') || undefined)
-      const index = state.session.listConversations().findIndex((item) => item.id === summary.id)
-      stdout(`new conversation: ${formatConversation(index, summary)}\n`)
-      return 'continue'
-    }
-    case 'list': {
-      const conversations = state.session.listConversations()
-      stdout(`${conversations.map((summary, index) => formatConversation(index, summary)).join('\n')}\n`)
-      return 'continue'
-    }
-    case 'switch': {
-      if (args.length === 0) {
-        stderr('usage: /switch <number|id>\n')
-        return 'continue'
-      }
-      const summary = await state.session.switchConversation(args[0])
-      if (!summary) {
-        stderr(`no conversation matches: ${args[0]}\n`)
-        return 'continue'
-      }
-      const index = state.session.listConversations().findIndex((item) => item.id === summary.id)
-      stdout(`switched to: ${formatConversation(index, summary)}\n`)
-      return 'continue'
-    }
-    case 'rename': {
-      if (args.length === 0) {
-        stderr('usage: /rename <title>\n')
-        return 'continue'
-      }
-      const summary = await state.session.renameConversation(state.session.getConversationId(), args.join(' '))
-      if (!summary) {
-        stderr('janus: rename failed.\n')
-        return 'continue'
-      }
-      stdout(`renamed to: ${summary.title}\n`)
-      return 'continue'
-    }
-    case 'delete': {
-      const summary = await state.session.deleteConversation(args[0] ?? state.session.getConversationId())
-      if (!summary) {
-        stderr(`no conversation matches: ${args[0]}\n`)
-        return 'continue'
-      }
-      const index = state.session.listConversations().findIndex((item) => item.id === summary.id)
-      stdout(`deleted. active: ${formatConversation(index, summary)}\n`)
-      return 'continue'
-    }
-    case 'model': {
-      if (args.length === 0) {
-        const models = state.session.listModels()
-        const active = state.session.getModelId()
-        stdout(`model: ${active}\n${models.map((model) => `${model === active ? '*' : ' '} ${model}`).join('\n')}\n`)
-        return 'continue'
-      }
-      try {
-        state.session.setModel(args[0])
-      } catch (error) {
-        stderr(`${error instanceof Error ? error.message : String(error)}\n`)
-        return 'continue'
-      }
-      stdout(`model switched: ${args[0]}\n`)
-      return 'continue'
-    }
-    case 'workspace': {
-      if (args.length === 0) {
-        stdout(`workspace: ${state.session.getWorkspaceRoot()}\n`)
-        return 'continue'
-      }
+  const outcome = await executeCommand(state.session, command, args, {
+    recreateWorkspace: async (dir) => {
       const next = await CliSession.create({
-        workspace: args[0],
+        workspace: dir,
         model: state.session.getModelId(),
         baseUrl: state.options.baseUrl,
         apiKey: state.options.apiKey,
@@ -265,52 +184,16 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         onCatalogError: state.session.getCatalogErrorHandler(),
         streamTextFn: state.streamTextFn,
       })
-      if (isSessionValidationError(next)) {
-        stderr(`${next.message}\n`)
-        return 'continue'
-      }
+      if (isSessionValidationError(next)) return { ok: false, message: next.message }
       await state.session.close()
       state.session = next
-      stdout(`workspace switched: ${next.getWorkspaceRoot()} (history cleared)\n`)
-      return 'recreated'
-    }
-    case 'provider': {
-      const { entries, activeId } = state.session.listProviders()
-      if (args.length === 0) {
-        stdout(entries.length === 0
-          ? 'providers: (none)\n'
-          : `${entries.map((entry) => `${entry.id === activeId ? '*' : ' '} ${entry.id}${entry.name ? ` (${entry.name})` : ''} — ${listProviderModels(entry).length} model(s)`).join('\n')}\n`)
-        return 'continue'
-      }
-      try {
-        state.session.setProvider(args[0])
-      } catch (error) {
-        stderr(`${error instanceof Error ? error.message : String(error)}\n`)
-        return 'continue'
-      }
-      stdout(`provider switched: ${state.session.getProviderId()} · model ${state.session.getModelId()}\n`)
-      return 'continue'
-    }
-    case 'approval': {
-      if (args.length === 0) {
-        stdout(`approval: ${state.session.getApprovalMode()}\n`)
-        return 'continue'
-      }
-      const mode = args[0].toLowerCase()
-      if (mode !== 'auto-run' && mode !== 'per-action') {
-        stderr('usage: /approval [auto-run|per-action]\n')
-        return 'continue'
-      }
-      state.session.setApprovalMode(mode)
-      stdout(mode === 'per-action'
-        ? 'approval: per-action (each write/create will ask y/N)\n'
-        : 'approval: auto-run\n')
-      return 'continue'
-    }
-    default:
-      stderr(`unknown command: /${command} (type /help)\n`)
-      return 'continue'
-  }
+      return { ok: true, message: `workspace switched: ${next.getWorkspaceRoot()} (history cleared)` }
+    },
+  })
+  for (const line of outcome.stdout) state.stdout(`${line}\n`)
+  for (const line of outcome.stderr) state.stderr(`${line}\n`)
+  if (outcome.exit) return 'exit'
+  return outcome.workspaceSwitched ? 'recreated' : 'continue'
 }
 
 export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<number> {

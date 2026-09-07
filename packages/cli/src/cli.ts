@@ -11,6 +11,7 @@ import { helpText, parseArgs } from './args.js'
 import type { ChatOptions } from './args.js'
 import { CliSession, isSessionValidationError } from './session.js'
 import { runRepl } from './repl.js'
+import { runFullscreen } from './tui/run.js'
 import type { TuiOptions } from './args.js'
 
 export interface ChatRunIO {
@@ -72,10 +73,14 @@ async function main(argv: string[]): Promise<number> {
       return runChat(parsed.chat ?? { workspace: process.cwd(), prompt: '' })
     case 'tui': {
       const tui: TuiOptions = parsed.tui ?? { workspace: process.cwd() }
-      if (tui.fullscreen) {
-        console.error('janus: --fullscreen (Ink) lands in M1; running plain loop for now.')
+      const tty = !!process.stdin.isTTY && !!process.stdout.isTTY
+      if (tui.plain || !tty) {
+        if (tui.fullscreen && !tty) {
+          console.error('janus: --fullscreen needs a TTY; running plain loop.')
+        }
+        return runRepl(tui)
       }
-      return runRepl(tui)
+      return runFullscreen(tui)
     }
   }
 }

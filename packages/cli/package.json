@@ -16,10 +16,15 @@
     "@ai-sdk/openai": "^3.0.71",
     "@janus-agent/agent-core": "file:../agent-core",
     "@janus-agent/janus-agent": "file:../janus-agent",
-    "ai": "3.4.33"
+    "ai": "3.4.33",
+    "ink": "^7.1.1",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.8"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.2.18",
+    "ink-testing-library": "^4.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"
   }
