@@ -1,0 +1,25 @@
+{
+  "name": "@janus-agent/agent-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Janus agent execution core - loop, stream, parsers, runtime policy, checkpoint, environment. No Electron dependency.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@janus-agent/chat-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Janus chat orchestration core - session budget, event mapping, system prompt, pure recall/trace helpers. No Electron dependency.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@janus-agent/agent-core": "file:../agent-core"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
