@@ -47,7 +47,7 @@ import {
   type ChatWorkspaceResource,
   type KnowledgeRecallTrace,
 } from '@janus-agent/chat-core'
-import type { ChatTurnPorts } from '../ports'
+import type { ChatTurnPorts } from '../ports.js'
 
 export interface ChatTurnRequest {
   requestId: string

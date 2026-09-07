@@ -1,8 +1,8 @@
 /**
  * @file Public barrel for @janus-agent/janus-agent
  */
-export { runChatTurn } from './orchestrator/chat-turn'
-export type { ChatTurnRequest, ChatTurnResult } from './orchestrator/chat-turn'
+export { runChatTurn } from './orchestrator/chat-turn.js'
+export type { ChatTurnRequest, ChatTurnResult } from './orchestrator/chat-turn.js'
 export type {
   AgentSessionDescriptor,
   ChatTurnPorts,
@@ -13,4 +13,4 @@ export type {
   SessionResolverPort,
   ToolExecutorPort,
   TurnCapture,
-} from './ports'
+} from './ports.js'

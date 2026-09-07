@@ -1,15 +1,10 @@
 {
-  "name": "@janus-agent/chat-core",
+  "name": "@janus-agent/cli",
   "version": "0.1.0",
   "type": "module",
-  "description": "Janus chat orchestration core - session budget, event mapping, system prompt, pure recall/trace helpers. No Electron dependency.",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+  "description": "Standalone janus CLI - headless agent runs over @janus-agent/agent-core. No Electron, no node-pty.",
+  "bin": {
+    "janus": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc && node ../../scripts/fix-dist-extensions.mjs dist",

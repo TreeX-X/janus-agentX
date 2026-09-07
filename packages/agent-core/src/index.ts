@@ -96,6 +96,7 @@ export type {
   WorkspaceChatToolOptions,
 } from './main/agent/chat-tools/workspace-chat-tools'
 export { AgentStreamManager } from './main/agent/stream-manager'
+export type { AgentEngine, AgentEvent, AgentSpawnOptions } from './main/agent/types'
 export { resolveCLIPath } from './main/agent/cli-resolver'
 export { createParser } from './main/agent/parsers/index'
 export { checkpointManager, CheckpointManager } from './main/agent/checkpoint/checkpoint-manager'
