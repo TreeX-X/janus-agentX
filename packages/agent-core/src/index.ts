@@ -47,14 +47,19 @@ export type {
   NormalizedProviderError,
 } from './main/agent/stream/index'
 export { WorkspaceAgentRuntime, createAgentRuntime } from './main/agent/runtime/runtime'
+export type { KnowledgeContextResult, KnowledgeRecallTrace } from './shared/knowledge'
 export { ToolRegistry } from './main/agent/runtime/registry'
+export type { RegisteredTool } from './main/agent/runtime/registry'
 export { createToolManifests } from './main/agent/runtime/tool-manifest'
 export type { ToolManifest } from './main/agent/runtime/tool-manifest'
 export { toolResultToModelValue } from './main/agent/runtime/tool-result'
 export {
   createPolicyDecisionRecord,
   evaluateWorkspaceActionPolicy,
+  evaluateWorkspaceReadPolicy,
   isSafeCompileCommand,
+  isSensitivePath,
+  redactHighConfidenceSecrets,
   redactPolicyValue,
   redactWorkingValue,
   sanitizePolicyText,
@@ -95,6 +100,7 @@ export type {
   WorkspaceChatToolOptions,
 } from './main/agent/chat-tools/workspace-chat-tools'
 export { checkpointManager, CheckpointManager } from './main/agent/checkpoint/checkpoint-manager'
+export type { CheckpointEngine } from './main/agent/checkpoint/types'
 export { janusWorkspaceFs, isTextBuffer } from './main/agent/environment/janus-workspace-fs'
 export type { ResolveWorkspaceRoot, RunEventSink, HostIpcEvent } from './main/agent/ports'
 export type {

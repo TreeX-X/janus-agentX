@@ -2,7 +2,7 @@
   "name": "janus-agentx",
   "version": "0.1.0",
   "private": true,
-  "description": "Janus agent engine extracted from JanusX - agent loop, runtime, LLM orchestration, knowledge, roundtable and blueprint maintenance, with standalone janus CLI.",
+  "description": "Janus agent engine extracted from JanusX - agent loop, runtime, LLM orchestration helpers and workspace tools, with standalone janus CLI.",
   "type": "module",
   "workspaces": [
     "packages/*"

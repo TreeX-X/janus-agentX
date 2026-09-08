@@ -16,6 +16,7 @@
     "@ai-sdk/openai": "^3.0.71",
     "@janus-agent/agent-core": "file:../agent-core",
     "@janus-agent/janus-agent": "file:../janus-agent",
+    "@janus-agent/node-hosts": "file:../node-hosts",
     "ai": "3.4.33",
     "ink": "^7.1.1",
     "ink-text-input": "^6.0.0",

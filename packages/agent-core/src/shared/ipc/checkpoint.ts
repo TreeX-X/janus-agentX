@@ -11,7 +11,14 @@ export const CHECKPOINT_CHANNELS = {
   ready: 'checkpoint:ready',
 } as const
 
-export type CheckpointEngine = 'shell' | 'manual'
+/**
+ * Engine union mirrors JanusX `src/shared/ipc/checkpoint.ts`
+ * (`AgentEngine | 'shell' | 'manual' | 'janus' | 'pi'` where
+ * `AgentEngine = 'claude' | 'codex' | 'opencode'`); inlined here so core
+ * stays free of the shell-only `agent.ts` contract. Any change must sync
+ * both files (see tools-contract coverage).
+ */
+export type CheckpointEngine = 'claude' | 'codex' | 'opencode' | 'shell' | 'manual' | 'janus' | 'pi'
 
 export interface CheckpointSummary {
   id: string

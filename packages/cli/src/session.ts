@@ -22,6 +22,7 @@ import {
 import { TOOL_TRACE_MAX_ENTRIES } from '@janus-agent/chat-core'
 import { runChatTurn, type ChatTurnPorts, type ChatTurnResult } from '@janus-agent/janus-agent'
 import { createChatModel } from './model.js'
+import { JobManager, registerNodeHostTools } from '@janus-agent/node-hosts'
 import type { ApprovalModeOption } from './args.js'
 import {
   ConversationRegistry,
@@ -44,6 +45,9 @@ import {
 } from './providers.js'
 
 export const CLI_WORKSPACE_ID = 'cli'
+/** Shown when a turn needs the model transport but no key is configured. */
+export const MISSING_API_KEY_MESSAGE =
+  'janus: missing API key. Pass --api-key <key>, set JANUS_API_KEY, or run /key <key> in this session.'
 /** Must match the callerId `runChatTurn` executes tools under (request.callerId ?? 'janus-agent'). */
 export const APPROVAL_CALLER_ID = 'janus-agent'
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -82,7 +86,7 @@ export interface CliSessionConfig {
 }
 
 export interface SessionValidationError {
-  code: 'missing-model' | 'missing-api-key' | 'bad-workspace' | 'session-open-failed' | 'no-providers' | 'unknown-provider' | 'unknown-model'
+  code: 'missing-model' | 'bad-workspace' | 'session-open-failed' | 'no-providers' | 'unknown-provider' | 'unknown-model'
   message: string
 }
 
@@ -104,6 +108,7 @@ interface ApprovalRequestShape {
 
 export class CliSession {
   private readonly runtime: Runtime
+  private readonly hosts: JobManager
   private readonly sessionId: string
   private readonly ports: ChatTurnPorts
   private readonly registry: ConversationRegistry
@@ -113,7 +118,10 @@ export class CliSession {
   private readonly onCatalogError?: (error: unknown) => void
   private onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
   private readonly baseUrlOverride?: string
-  private readonly apiKey: string
+  /** Undefined until a key arrives via flags/env/file-defaults or /key (memory only). */
+  private apiKey: string | undefined
+  /** True when the host injected its own model transport (tests/dev): no key needed. */
+  private readonly hasCustomTransport: boolean
   private readonly envModel?: string
   private activeProviderId: string
   private modelOverride?: string
@@ -123,6 +131,7 @@ export class CliSession {
 
   private constructor(init: {
     runtime: Runtime
+    hosts: JobManager
     sessionId: string
     ports: ChatTurnPorts
     registry: ConversationRegistry
@@ -133,7 +142,8 @@ export class CliSession {
     onCatalogError?: (error: unknown) => void
     onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
     baseUrlOverride?: string
-    apiKey: string
+    apiKey: string | undefined
+    hasCustomTransport: boolean
     envModel?: string
     activeProviderId: string
     modelOverride?: string
@@ -141,6 +151,7 @@ export class CliSession {
     approvalMode: ApprovalModeOption
   }) {
     this.runtime = init.runtime
+    this.hosts = init.hosts
     this.sessionId = init.sessionId
     this.ports = init.ports
     this.registry = init.registry
@@ -151,6 +162,7 @@ export class CliSession {
     this.onApproval = init.onApproval
     this.baseUrlOverride = init.baseUrlOverride
     this.apiKey = init.apiKey
+    this.hasCustomTransport = init.hasCustomTransport
     this.envModel = init.envModel
     this.activeProviderId = init.activeProviderId
     this.modelOverride = init.modelOverride
@@ -161,10 +173,10 @@ export class CliSession {
 
   static async create(config: CliSessionConfig): Promise<CliSession | SessionValidationError> {
     const env = config.env ?? process.env
+    // No key is fine here: interactive hosts (tui/repl) enter normally and
+    // only fail when a turn actually needs the model transport. Headless
+    // `chat` still refuses to run without one (see runChat).
     const apiKey = config.apiKey ?? env.JANUS_API_KEY
-    if (!apiKey) {
-      return { code: 'missing-api-key', message: 'janus: missing API key. Pass --api-key <key> or set JANUS_API_KEY.' }
-    }
 
     const workspaceRoot = resolve(config.workspace)
     try {
@@ -198,6 +210,8 @@ export class CliSession {
       resolveWorkspaceRoot: async (id) => (id === CLI_WORKSPACE_ID ? workspaceRoot : null),
     })
     registerWorkspaceTools(runtime.registry)
+    const hosts = new JobManager()
+    registerNodeHostTools(runtime.registry, hosts)
     let sessionId: string
     try {
       const session = await runtime.createSession({
@@ -252,6 +266,7 @@ export class CliSession {
     )
     const session = new CliSession({
       runtime,
+      hosts,
       sessionId,
       ports,
       registry,
@@ -263,6 +278,7 @@ export class CliSession {
       onApproval: config.onApproval,
       baseUrlOverride: config.baseUrl ?? env.JANUS_BASE_URL,
       apiKey,
+      hasCustomTransport: config.streamTextFn !== undefined,
       envModel: env.JANUS_MODEL,
       activeProviderId: activeEntry.id,
       modelOverride,
@@ -295,6 +311,10 @@ export class CliSession {
     const entry = this.activeEntry()
     const modelId = this.resolveModelId(entry)
     if (!modelId) throw new Error(`janus: provider "${entry.id}" has no model configured`)
+    this.modelId = modelId
+    // Without a key there is nothing to build yet: sendTurn refuses turns
+    // until one arrives, so the placeholder resolver below is never used.
+    if (!this.apiKey) return
     const baseURL = this.baseUrlOverride ?? entry.baseURL ?? DEFAULT_BASE_URL
     const model = createChatModel({ baseURL, apiKey: this.apiKey, modelId })
     const previous = this.ports.model
@@ -302,7 +322,6 @@ export class CliSession {
       resolve: async () => ({ model, modelId, supportsFunctionCalling: true }),
       getMaxTurns: () => previous.getMaxTurns(),
     }
-    this.modelId = modelId
   }
 
   private persistCatalog(): void {
@@ -415,6 +434,27 @@ export class CliSession {
     return this.approvalMode
   }
 
+  /** True once a key arrived via flags/env or /key (memory only). */
+  hasApiKey(): boolean {
+    return this.apiKey !== undefined && this.apiKey.length > 0
+  }
+
+  /** Runtime key for host session recreation (workspace switch). */
+  getApiKey(): string | undefined {
+    return this.apiKey
+  }
+
+  /**
+   * Set the API key for this run (memory only, never written to disk)
+   * and rebuild the model transport so queued turns can proceed.
+   */
+  setApiKey(key: string): void {
+    const trimmed = key.trim()
+    if (!trimmed) throw new Error('usage: /key <api-key>')
+    this.apiKey = trimmed
+    this.rebuildTransport()
+  }
+
   getTurnCount(): number {
     return this.registry.getActive().data.messages.filter((message) => message.role === 'user').length
   }
@@ -487,11 +527,22 @@ export class CliSession {
     await this.registry.resetActive()
   }
 
+  /**
+   * TUI launch: start a new empty conversation and drop previous ones, so
+   * every restart begins fresh instead of resuming the last conversation.
+   */
+  async startFreshConversation(): Promise<void> {
+    await this.registry.freshStart()
+  }
+
   async sendTurn(
     prompt: string,
     callbacks: TurnEventCallbacks = {},
     signal?: AbortSignal,
   ): Promise<ChatTurnResult> {
+    if (!this.hasApiKey() && !this.hasCustomTransport) {
+      throw new Error(MISSING_API_KEY_MESSAGE)
+    }
     const requestId = randomUUID()
     const record = this.registry.getActive()
     const userMessage = { role: 'user' as const, content: prompt }
@@ -545,6 +596,7 @@ export class CliSession {
     } catch {
       // Best effort: session teardown must not fail.
     }
+    await this.hosts.dispose()
     await this.runtime.cancelSession(this.sessionId).catch(() => undefined)
   }
 }
