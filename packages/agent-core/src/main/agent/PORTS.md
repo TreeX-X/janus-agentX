@@ -57,7 +57,7 @@ channels and renderer contracts into core. None serve the janus-agent loop
 or CLI (parsers' only consumer is the shell-side `stream-manager`), so all
 stay in JanusX. This section replaces the former `pending P5` list.
 
-- `main/agent/parsers/{claude,codex,opencode,index}.ts` — external-CLI output parsing for the shell stream-manager
-- `main/agent/cli-resolver.ts`, `main/agent/stream-manager.ts` — desktop terminal CLI orchestration
-- `main/agent/subagent-run-registry.ts`, `main/agent/types.ts` — terminal run tracking + external-agent types
-- `shared/ipc/agent.ts`, `shared/subAgentRun.ts` — terminal/subagent IPC + renderer contracts
+- `main/janus-runner/parsers/{claude,codex,opencode,index}.ts` — external-CLI output parsing for the shell stream-manager
+- `main/janus-runner/cli-resolver.ts`, `main/janus-runner/stream-manager.ts` — desktop terminal CLI orchestration
+- `main/janus-runner/subagent-run-registry.ts`, `main/agent/types.ts` — terminal run tracking + external-agent types
+- `shared/ipc/janus-runner.ts`, `shared/subAgentRun.ts` — terminal/subagent IPC + renderer contracts
