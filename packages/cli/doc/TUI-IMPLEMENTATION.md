@@ -3,8 +3,8 @@
 > 位置：`packages/cli/doc/TUI-IMPLEMENTATION.md`
 > 目标：`janus` 无参（或 `janus tui`）进入常驻交互终端，多轮可用；保留 `janus chat -- "prompt"` 单轮 headless 不变。
 > 基线：Node v24.14.1 / `ai@3.4.33` + `@ai-sdk/openai@3` / Ink 7.1.1 + React 19.2.8 + ink-text-input + ink-testing-library。
-> 状态（as-built，`f5ecffe`）：M0 地基、M1（plain 循环 + 多会话）、M2（配置商 + 审批）、Ink 全屏全部落地；
-> `typecheck` + `strict-unused` + `build` + **74 单测**全绿。剩余只有 M3（JanusX 对接）。
+> 状态：M0 地基、M1（plain 循环 + 多会话）、M2（配置商 + 审批）、Ink 全屏、M3（JanusX preset + 编排器适配）全部落地；
+> `typecheck` + `strict-unused` + `build` + **104 单测**全绿。剩余只有 JanusX 面板真机实跑与镜像删除。
 > 约束：本 TUI 必须能以**原生终端形态**迁入 JanusX chat，且 JanusX 能**灵活复用 janus-agentX 能力**（既能 PTY spawn `janus tui`，也能进程内 `import runChatTurn/session`）。
 
 ---
@@ -31,6 +31,8 @@
 | `src/providers.ts` | `ProviderCatalog`（字段照抄 llm-core `ProviderSettings`，`apiKey` 永不落盘） | `~/.janus/config.json`；closed-world 强校验，open-world 单端点放行 |
 | `src/repl.ts` | plain 常驻循环（readline 行队列 + 可注入 lines） | 管道/测试/降级路径；y/N 审批行 |
 | `src/tui/store.ts` | 纯 reducer（§4.3 全事件覆盖） | Ink 与 plain 语义同源 |
+| `src/tui/composer-state.ts` | 纯输入框逻辑（补全/多行缓冲/滚动窗口） | Ink 专属；plain（readline 单行，管道安全）不跟进 |
+| `src/tui/tool-card.ts` | 纯工具卡展示（字形/字色/单行文本，底色带常量） | Ink 讨论区整幅渲染；plain 沿用 `◇/→` 文本行 |
 | `src/tui/exec.ts` | 双宿主共享命令执行器 | plain 与 Ink 输出逐字一致 |
 | `src/tui/App.tsx` + `run.tsx` | Ink 三段式（header/讨论区/composer+状态栏）+ 内联 y/n 审批框 | `jsx: react-jsx`，`moduleResolution: bundler`（只为读 Ink 的 exports 映射，emit 不变） |
 | JanusX `chat-orchestrator.ts` | 未动（M3 才收薄为 ports 适配器） | twin test 随 M3 做 |
@@ -51,7 +53,7 @@ $ janus
 # 宿主 C（M3）：JanusX Chat 面板直调 runChatTurn，同一 ports/session 逻辑
 ```
 
-已落地：常驻循环 + 流式正文 + 工具卡三态 + 多轮记忆 + `Ctrl+C` 断当轮 + `/help /model /provider /workspace /clear /new /list /switch /rename /delete /approval /exit` + 空态 logo + 状态栏。
+已落地：常驻循环 + 流式正文 + 工具卡三态 + 多轮记忆 + `Ctrl+C` 断当轮 + `/help /model /provider /workspace /clear /new /list /switch /rename /delete /approval /exit` + 空态 logo + 状态栏 + 多行输入框（默认 3 行，`Enter` 发送/`Shift+Enter` 换行，`/` 前缀 Tab 补全）。
 
 未做（M3 或更后）：多 workspace attach（仍单 `cli` 资源）、文件 `@引用` 补全、主题/分栏、knowledge 回忆面板、steering/rewrite/retry（island 专属，不引入 CLI）。
 
@@ -60,9 +62,9 @@ $ janus
 对标：`JanusX/.../janus/JanusChat.tsx`（`PIXEL_WORDMARK:144-189`、空态 banner`:1105-1109`、composer`:1297-1346`、status-bar`:1347-1399`）。
 
 1. **logo 默认显示**：空态 ASCII 点阵（`█`/`░░`，单测逐格锁定与 chat 点阵一致），`--plain`/管道降级 `JANUSX`；有消息后 header 留 mini `janus`。
-2. **输入框常驻**：底部单行（多行为 M3），busy/审批时禁用或让位 y/n；`isStreaming` 显示 `working…`。
+2. **输入框常驻**：底部多行实心黑面板（默认 3 行、上限 6 行滚动跟随光标；逐 cell 全黑含边框字形，CJK 按双倍宽对齐截断；常驻呼吸块光标，busy/审批时置灰 steady）；`Enter` 发送，`Shift+Enter` 换行（kitty `return+shift` 与 ConPTY LF 双通道），`/` 开头弹命令补全（Up/Down 选、Tab 应用、Esc 关、Enter 照常发送）；`isStreaming` 显示 `working…`。
 3. **状态栏**：`conversation · statusText · /help · ctrl+c cancel · ctrl+d exit`；header 另有 workspace·provider/model·approval。
-4. **消息与卡片**：`you ›` 绿 / `janus ›` 青 + 流式 `▍`；工具卡 `◇ ready → ◐ running → ✔/✘`；reasoning 折叠计数；无 `HH:mm` 时间戳（终端暂省）。
+4. **消息与卡片**（灰橙主题，对齐 JanusX chat：橙 `#ff7830` / 次灰 `#8a8f98` / 正文 `#e8e8e8`）：`you ›` 灰 / `janus ›` 橙 + 流式 `▍`；回答正文无底色，工具卡整幅深暖底色带 `#241c12`（`◇` 灰 / `◐` 橙进行中 / `✔` 暖沙 `#d9c7a8` / `✘` 红），两者字色底色都不同；空态为双色 JANUSX 点阵（JANUS 灰白 + X 橙/灰）；输入框常驻橙边框（busy 置灰），审批框橙边；reasoning 折叠计数；无 `HH:mm` 时间戳（终端暂省）。
 5. 文案硬编码中文；i18n key 对齐以后再做。
 
 ---
@@ -146,7 +148,7 @@ TUI 将跑在 `TerminalManager(node-pty) → TERMINAL_* IPC → xterm.js` 管道
 
 ### 4.5 janus-agentX 自持会话/配置商/权限（已落地）
 
-1. **多会话**：`conversations.ts`（`create/list/switch/rename/delete`，`resolveRef` 支持完整 id/唯一前缀/序号——纯数字优先按序号，避免 uuid 数字前缀抢占；单调时钟保证同毫秒排序确定；删除永不留空）。持久化经 `ConversationStorePort`：CLI 用 `~/.janus/history/<id>.jsonl`，损坏文件跳过。
+1. **多会话**：`conversations.ts`（`create/list/switch/rename/delete`，`resolveRef` 支持完整 id/唯一前缀/序号——纯数字优先按序号，避免 uuid 数字前缀抢占；单调时钟保证同毫秒排序确定；删除永不留空）。持久化经 `ConversationStorePort`：CLI 用 `~/.janus/history/<id>.jsonl`，损坏文件跳过。**每次 TUI 启动（plain/Ink）默认 fresh start：开新空会话并删掉旧会话落盘，还原空态 banner；显式 `--conversation <id>` 则恢复指定会话。**`chat` 单轮不受影响。
 2. **配置商**：`providers.ts` + `~/.janus/config.json`（`{providers, defaultProvider, defaultModel}`，`apiKey` 解析即剥离）。优先级 flags > env > file > provider 链；`defaultModel` 只跟 `defaultProvider` 配对（切商不串味）；切商清空 model 覆盖跟随新商默认链并写回配对；closed-world（`models` 非空）打错模型直接拒，open-world 单端点放行。`ModelResolverPort` 形状不变，CLI 内部查 catalog 再 `createChatModel`。
 3. **权限**：`approvalMode` 每会话可设（默认 `auto-run`，`chat` 单轮恒为 auto-run）；`per-action` 经运行时 `approval-requested` 事件 + 同 callerId（`janus-agent`，与执行侧一致）`resolveApproval`；终端 UI 为阻塞式 y/N（空/EOF/中断一律 fail-closed deny）；`setApprovalMode` 热切实时生效；Ctrl+C 在审批等待中转 deny，不断轮不挂死。
 
@@ -180,14 +182,14 @@ janus version / janus help              # 不变
 * [x] **M1 plain + 多会话**（`54bcb8c`）：readline 行队列循环 + 注册表 + 文件历史 + `/new/list/switch/rename/delete`；附带修 `question()` 管道丢行 bug。
 * [x] **M2 配置商 + 权限**（`8ae8b64`）：catalog + `/provider /model` + 终端 y/N 审批 + `/approval`；附带修 transport 重建丢 env/file 解析、defaultModel 跨商串味。
 * [x] **Ink 全屏**（`f5ecffe`）：`store/exec` 双宿主共享 + `App/run` + TTY 路由；附带修命令输出被 hydrate 清掉、provider 切换卡死。
-* [x] **M3-preset（JanusX `be7be3a`）**：`janus` preset（`janus tui` 直启）+ warmup/resolveCLIPath（PATH 查找，npm link 即可）+ hooks 无操作短路 + checkpoint/遥测/office/图标/i18n 全链路；`AgentEngine`（janus-runner）与 hooks 域刻意未动——janus 不发 hooks、不进子进程 runner。
-* [ ] **M3-编排器**：`chat-orchestrator` 收薄为 ports 适配器（twin tests）；ConPTY/宽字符/长输出在 JanusX 面板实测。
+* [x] **M3-preset（JanusX 侧已落地）**：`janus` preset（`janus tui` 直启）+ warmup/resolveCLIPath（PATH 查找，npm link 即可）+ hooks 无操作短路（不装 hook、不进 runner 注册表）+ checkpoint/遥测/i18n/图标链路；`AgentEngine`（runner）与 hooks 域刻意未动——janus 不发 hooks、不进子进程 runner。
+* [x] **M3-编排器（JanusX 侧已落地）**：`chat-orchestrator` 收薄为 `ChatTurnPorts` 适配器（`src/main/llm/janus-agent-ports.ts`，twin tests 锁定与旧内联逻辑一致）；40ms 合批/reasoning 上限/LRU/窗口守卫/IPC 扇出留壳；recallTrace 通道改为整轮结束后发送（同 requestId）。
 
-DoD（M3）：`build/typecheck/test` 全绿 + 双宿主实跑（独立终端与 JanusX 面板各一遍：多轮→工具→审批→取消→切模型→resize→kill→退出）。
+DoD（M3）：`build/typecheck/test` 全绿 + 双宿主实跑（独立终端与 JanusX 面板各一遍：多轮→工具→审批→取消→切模型→resize→kill→退出）。剩余：JanusX 终端面板真机实跑；JanusX 删除镜像文件改直引包（待全仓绿后做）。
 
 ---
 
-## 7. 测试（12 文件，74 用例，全绿；单测即契约）
+## 7. 测试（14 文件，104 用例，全绿；单测即契约）
 
 | 文件 | 覆盖 |
 |---|---|
@@ -199,7 +201,9 @@ DoD（M3）：`build/typecheck/test` 全绿 + 双宿主实跑（独立终端与 
 | `tui-approval` | 真 policy 链：auto 放行无提示、y 放行/n 拒绝、热切、审批中 abort 转 deny、repl y/N |
 | `tui-store` | reducer 全事件覆盖 |
 | `tui-exec` | 双宿主命令一致性（help/会话/模型/商/审批/workspace/未知） |
-| `tui-app` | ink-testing-library 真渲染：空态→问答→命令→退出 |
+| `tui-app` | ink-testing-library 真渲染：空态→问答→命令→退出 + Shift+Enter 多行发送 + Tab 补全 + 工具调用卡片行 |
+| `tui-tool-card` | 卡片字形/字色映射、单行文本格式、整幅底色带宽度 |
+| `tui-composer-state` | 补全过滤/应用、粘贴换行归一、光标行列换算、滚动窗口、行尾光标预留、显示宽度与截断、补全覆盖全部已知命令 |
 
 铁律：单测 hermetic——默认 memory store + `configPath: null` + tmp 目录；跑完 `~/.janus` 必须为空（曾泄漏一次，[`8ae8b64`] 修好）。另：`stdin.write` 文本与 `\r` 必须分两次写（单次写入 `\r` 被当字面量，测试环境 quirk，TTY 不受影响）。
 

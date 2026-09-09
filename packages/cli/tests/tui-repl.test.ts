@@ -34,14 +34,17 @@ function collect() {
 }
 
 describe('runRepl', () => {
-  it('returns 2 when model config is missing', async () => {
+  it('enters without a model; turns fail gracefully until /model sets one', async () => {
     const c = collect()
     const code = await runRepl(
       { workspace: tmpdir() },
-      { ...c.io, lines: arrayLineSource([]) },
+      { ...c.io, env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv, lines: arrayLineSource(['hi', '/model', '/exit']) },
     )
-    expect(code).toBe(2)
-    expect(c.err.join('')).toMatch(/JANUS_MODEL|JANUS_API_KEY/)
+    expect(code).toBe(0)
+    expect(c.err.join('')).toContain('no model')
+    expect(c.err.join('')).toContain('JANUS_MODEL')
+    expect(c.err.join('')).toContain('missing model')
+    expect(c.out.join('')).toContain('(no model')
   })
 
   it('runs turns until /exit and keeps multi-turn context', async () => {
@@ -90,14 +93,32 @@ describe('runRepl', () => {
     expect(c.err.join('')).toContain('no conversation matches: x')
   })
 
-  it('returns 2 when the api key is missing', async () => {
+  it('enters without an api key; turns fail gracefully until /key sets one', async () => {
     const c = collect()
     const code = await runRepl(
       { workspace: tmpdir() },
-      { ...c.io, env: { JANUS_MODEL: 'm' } as NodeJS.ProcessEnv, lines: arrayLineSource([]) },
+      { ...c.io, env: { JANUS_MODEL: 'm' } as NodeJS.ProcessEnv, lines: arrayLineSource(['hi', '/exit']) },
     )
-    expect(code).toBe(2)
+    expect(code).toBe(0)
+    expect(c.err.join('')).toContain('no API key')
     expect(c.err.join('')).toContain('JANUS_API_KEY')
+  })
+
+  it('recovers via /key and keeps chatting on the stub transport', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-key-'))
+    const c = collect()
+    const code = await runRepl(
+      { workspace: dir, model: 'm', plain: true },
+      {
+        ...c.io,
+        lines: arrayLineSource(['/key', '/key sk-test', 'hi', '/exit']),
+        streamTextFn: textStub('recovered'),
+      },
+    )
+    expect(code).toBe(0)
+    expect(c.out.join('')).toContain('api key: missing')
+    expect(c.out.join('')).toContain('api key set for this run')
+    expect(c.out.join('')).toContain('recovered')
   })
 
   it('keeps the session when /workspace fails and stays usable', async () => {

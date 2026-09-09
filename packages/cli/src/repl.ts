@@ -171,7 +171,7 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         workspace: dir,
         model: state.session.getModelId(),
         baseUrl: state.options.baseUrl,
-        apiKey: state.options.apiKey,
+        apiKey: state.session.getApiKey() ?? state.options.apiKey,
         maxTurns: undefined,
         timeoutMs: state.options.timeoutMs,
         approvalMode: state.session.getApprovalMode(),
@@ -256,13 +256,24 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     stderr(`${created.message}\n`)
     return 2
   }
+  if (!created.getModelId()) {
+    stderr('janus: no model — entering without model access. Set one with /model <id>, --model, or JANUS_MODEL.\n')
+  }
+  if (!created.hasApiKey()) {
+    stderr('janus: no API key — entering without model access. Set one with /key <key>, --api-key, or JANUS_API_KEY.\n')
+  }
+  // Every restart begins with a new empty conversation; previous ones are
+  // dropped. An explicit --conversation id opts back into resume.
+  if (!options.conversationId) {
+    await created.startFreshConversation()
+  }
   state.session = created
 
   stdout(`${options.plain ? renderLogoPlain() : renderLogoAscii()}\n`)
   const restored = created.listConversations()
   const activeTitle = restored.find((summary) => summary.active)?.title ?? ''
   const providerSegment = created.listProviders().entries.length > 1 ? ` · provider ${created.getProviderId()}` : ''
-  stdout(`janus · workspace ${created.getWorkspaceRoot()}${providerSegment} · model ${created.getModelId()} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
+  stdout(`janus · workspace ${created.getWorkspaceRoot()}${providerSegment} · model ${created.getModelId() ?? '(no model)'} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
   if (activeTitle && activeTitle !== 'New conversation') {
     stdout(`resumed: ${activeTitle}\n`)
   }

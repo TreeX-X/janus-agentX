@@ -48,6 +48,9 @@ export const CLI_WORKSPACE_ID = 'cli'
 /** Shown when a turn needs the model transport but no key is configured. */
 export const MISSING_API_KEY_MESSAGE =
   'janus: missing API key. Pass --api-key <key>, set JANUS_API_KEY, or run /key <key> in this session.'
+/** Shown when a turn needs a model but none is configured. */
+export const MISSING_MODEL_MESSAGE =
+  'janus: missing model. Pass --model <id>, set JANUS_MODEL, or run /model <id> in this session.'
 /** Must match the callerId `runChatTurn` executes tools under (request.callerId ?? 'janus-agent'). */
 export const APPROVAL_CALLER_ID = 'janus-agent'
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -86,7 +89,7 @@ export interface CliSessionConfig {
 }
 
 export interface SessionValidationError {
-  code: 'missing-model' | 'bad-workspace' | 'session-open-failed' | 'no-providers' | 'unknown-provider' | 'unknown-model'
+  code: 'bad-workspace' | 'session-open-failed' | 'no-providers' | 'unknown-provider' | 'unknown-model'
   message: string
 }
 
@@ -125,7 +128,8 @@ export class CliSession {
   private readonly envModel?: string
   private activeProviderId: string
   private modelOverride?: string
-  private modelId: string
+  /** Undefined until a model arrives via flags/env/file-defaults or /model. */
+  private modelId: string | undefined
   private approvalMode: ApprovalModeOption
   private approvalSignal: AbortSignal | null = null
 
@@ -147,7 +151,7 @@ export class CliSession {
     envModel?: string
     activeProviderId: string
     modelOverride?: string
-    modelId: string
+    modelId: string | undefined
     approvalMode: ApprovalModeOption
   }) {
     this.runtime = init.runtime
@@ -202,9 +206,9 @@ export class CliSession {
       }
     }
     const modelId = modelOverride ?? env.JANUS_MODEL ?? catalog.defaultModel ?? effectiveModelId(activeEntry)
-    if (!modelId) {
-      return { code: 'missing-model', message: 'janus: missing model. Pass --model <id> or set JANUS_MODEL.' }
-    }
+    // No model is fine here (same policy as the API key): interactive hosts
+    // (tui/repl) enter normally and only fail when a turn actually needs the
+    // model. Headless `chat` still refuses to run without one (see runChat).
     const approvalMode = config.approvalMode ?? 'auto-run'
     const runtime = createAgentRuntime({
       resolveWorkspaceRoot: async (id) => (id === CLI_WORKSPACE_ID ? workspaceRoot : null),
@@ -234,7 +238,9 @@ export class CliSession {
       ?? ((opts) => streamText(opts as Parameters<typeof streamText>[0]) as unknown as Promise<StreamResult>)
     const ports: ChatTurnPorts = {
       model: {
-        resolve: async () => ({ model: undefined, modelId, supportsFunctionCalling: true }),
+        // Placeholder until a model arrives: sendTurn refuses turns while
+        // modelId is undefined, so this resolver is never used unconfigured.
+        resolve: async () => ({ model: undefined, modelId: modelId ?? '', supportsFunctionCalling: true }),
         getMaxTurns: () => maxTurns,
       },
       sessions: {
@@ -310,8 +316,11 @@ export class CliSession {
   private rebuildTransport(): void {
     const entry = this.activeEntry()
     const modelId = this.resolveModelId(entry)
-    if (!modelId) throw new Error(`janus: provider "${entry.id}" has no model configured`)
     this.modelId = modelId
+    // Without a model there is nothing to build yet: sendTurn refuses turns
+    // until one arrives, so the placeholder resolver below is never used.
+    // (Same policy as a missing API key.)
+    if (!modelId) return
     // Without a key there is nothing to build yet: sendTurn refuses turns
     // until one arrives, so the placeholder resolver below is never used.
     if (!this.apiKey) return
@@ -389,7 +398,7 @@ export class CliSession {
     return basename(this.workspaceRoot) || CLI_WORKSPACE_ID
   }
 
-  getModelId(): string {
+  getModelId(): string | undefined {
     return this.modelId
   }
 
@@ -540,6 +549,10 @@ export class CliSession {
     callbacks: TurnEventCallbacks = {},
     signal?: AbortSignal,
   ): Promise<ChatTurnResult> {
+    const modelId = this.modelId
+    if (!modelId) {
+      throw new Error(MISSING_MODEL_MESSAGE)
+    }
     if (!this.hasApiKey() && !this.hasCustomTransport) {
       throw new Error(MISSING_API_KEY_MESSAGE)
     }
@@ -557,7 +570,7 @@ export class CliSession {
           requestId,
           messages: requestMessages,
           providerId: 'cli',
-          modelId: this.modelId,
+          modelId,
           sourceTag: 'janus-chat',
           conversationId: record.data.id,
           workspaceId: CLI_WORKSPACE_ID,

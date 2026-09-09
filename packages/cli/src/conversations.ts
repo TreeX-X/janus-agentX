@@ -307,4 +307,21 @@ export class ConversationRegistry {
     record.chatSession = new ChatSessionRuntime()
     await this.persist(record.data.id)
   }
+
+  /**
+   * Fresh start: opens a new empty conversation and drops every previous
+   * one (memory + store files), so each TUI launch begins with a clean
+   * slate instead of resuming the last conversation.
+   */
+  async freshStart(): Promise<string> {
+    const freshId = this.createRecord({ title: DEFAULT_CONVERSATION_TITLE })
+    for (const id of [...this.records.keys()]) {
+      if (id === freshId) continue
+      this.records.delete(id)
+      await this.store.remove(id)
+    }
+    this.activeId = freshId
+    await this.persist(freshId)
+    return freshId
+  }
 }

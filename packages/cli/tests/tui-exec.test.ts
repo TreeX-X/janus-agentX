@@ -80,6 +80,18 @@ describe('executeCommand', () => {
     await session.close()
   })
 
+  it('shows api-key status and sets it without echoing', async () => {
+    const session = await openSession()
+    expect((await executeCommand(session, 'key', [])).stdout).toEqual([
+      'api key: set (flags > env > /key, memory only)',
+    ])
+    const set = await executeCommand(session, 'key', ['sk-rotated'])
+    expect(set.stdout).toEqual(['api key set for this run (memory only, never written to disk).'])
+    expect(set.stdout.join('')).not.toContain('sk-rotated')
+    expect(session.getApiKey()).toBe('sk-rotated')
+    await session.close()
+  })
+
   it('reports workspace state and delegates recreation', async () => {
     const session = await openSession()
     expect((await executeCommand(session, 'workspace', [])).stdout.join('')).toContain('workspace:')

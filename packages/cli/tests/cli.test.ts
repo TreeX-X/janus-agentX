@@ -67,6 +67,16 @@ describe('runChat', () => {
     expect(errors.join('\n')).toMatch(/JANUS_MODEL|JANUS_API_KEY/)
   })
 
+  it('returns 2 for chat without an api key', async () => {
+    const errors: string[] = []
+    const code = await runChat(
+      { workspace: tmpdir(), model: 'm', prompt: 'hi' },
+      { env: {}, stderr: (line) => { errors.push(line) } },
+    )
+    expect(code).toBe(2)
+    expect(errors.join('\n')).toContain('JANUS_API_KEY')
+  })
+
   it('returns 2 for a non-directory workspace', async () => {
     const errors: string[] = []
     const code = await runChat(

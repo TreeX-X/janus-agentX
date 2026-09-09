@@ -7,7 +7,7 @@ import type { ChatAgentEvent } from '@janus-agent/chat-core'
 
 export interface ChatMessageView {
   id: string
-  role: 'user' | 'assistant' | 'info' | 'error'
+  role: 'user' | 'assistant' | 'info' | 'error' | 'notice'
   text: string
 }
 
@@ -54,6 +54,7 @@ export type TuiAction =
   | { type: 'user-message'; text: string }
   | { type: 'info'; text: string }
   | { type: 'error'; text: string }
+  | { type: 'notice'; text: string }
   | { type: 'approval-requested'; approval: ApprovalView }
   | { type: 'approval-resolved' }
   | { type: 'hydrate'; messages: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> }
@@ -173,6 +174,8 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages: [...state.messages, { id: viewId(), role: 'user', text: action.text }] }
     case 'info':
       return { ...state, messages: [...state.messages, { id: viewId(), role: 'info', text: action.text }] }
+    case 'notice':
+      return { ...state, messages: [...state.messages, { id: viewId(), role: 'notice', text: action.text }] }
     case 'error':
       return {
         ...state,

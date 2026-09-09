@@ -29,6 +29,7 @@ describe('parseInputLine', () => {
     expect(isKnownCommand('clear')).toBe(true)
     expect(isKnownCommand('nope')).toBe(false)
     expect(commandHelpText()).toContain('/exit')
+    expect(commandHelpText()).toContain('/key')
     expect(commandHelpText()).toContain('Ctrl+C')
   })
 })

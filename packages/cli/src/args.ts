@@ -243,6 +243,7 @@ export function helpText(): string {
     '            [--conversation <id>] [--fullscreen] [--plain]',
     '      Resident interactive loop (default with no argv); human-readable streaming.',
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
+    '      Starts without a model/API key; chat turns then fail until set (/model <id>, /key <key>).',
     '  janus chat [--workspace <dir>] [--model <id>] [--base-url <url>] [--api-key <key>]',
     '             [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run]',
     '             [--conversation <id>] [--] "prompt"',

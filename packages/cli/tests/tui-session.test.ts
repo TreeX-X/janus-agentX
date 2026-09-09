@@ -19,15 +19,46 @@ function textStub(text: string, capture?: { messages?: unknown[] }): StreamFn {
 }
 
 describe('CliSession.create', () => {
-  it('rejects missing model/api-key and bad workspace with codes', async () => {
-    const noModel = await CliSession.create({ workspace: tmpdir(), apiKey: 'k' })
-    expect(isSessionValidationError(noModel) && noModel.code).toBe('missing-model')
-    const noKey = await CliSession.create({ workspace: tmpdir(), model: 'm' })
-    expect(isSessionValidationError(noKey) && noKey.code).toBe('missing-api-key')
+  it('rejects bad workspace with a code; missing model enters and fails turns until set', async () => {
     const badWs = await CliSession.create({
       workspace: join(tmpdir(), 'janus-cli-nope-404'), model: 'm', apiKey: 'k',
     })
     expect(isSessionValidationError(badWs) && badWs.code).toBe('bad-workspace')
+
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-nomodel-'))
+    const session = await CliSession.create({ workspace: dir, apiKey: 'k' })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    expect(session.getModelId()).toBeUndefined()
+    await expect(session.sendTurn('hi')).rejects.toThrow(/missing model/)
+    session.setModel('m')
+    expect(session.getModelId()).toBe('m')
+    await session.close()
+  })
+
+  it('enters without an api key; real-transport turns fail until setApiKey unlocks them', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-nokey-'))
+    const session = await CliSession.create({ workspace: dir, model: 'm' })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    expect(session.hasApiKey()).toBe(false)
+    expect(session.getApiKey()).toBeUndefined()
+    await expect(session.sendTurn('hi')).rejects.toThrow(/missing API key/)
+    expect(() => session.setApiKey('   ')).toThrow(/usage: \/key/)
+    session.setApiKey('k')
+    expect(session.hasApiKey()).toBe(true)
+    expect(session.getApiKey()).toBe('k')
+    await session.close()
+  })
+
+  it('lets an injected transport run keyless (test/dev seam)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-nokey-stub-'))
+    const session = await CliSession.create({
+      workspace: dir, model: 'm', streamTextFn: textStub('unblocked'),
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    const result = await session.sendTurn('hi')
+    expect(result.cancelled).toBe(false)
+    expect(result.text).toContain('unblocked')
+    await session.close()
   })
 })
 

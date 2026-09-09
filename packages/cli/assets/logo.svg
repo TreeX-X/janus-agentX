@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 200 200" fill="none">
+  <title>Janus-agent CLI</title>
+  <!-- AI 核心视觉标识 -->
+  <g id="logo-mark">
+    <!-- [字母 A] 左侧腿笔画 - 钛灰色 -->
+    <path d="M 42 152 L 78 48"
+          stroke="#8b92a0"
+          stroke-width="18"
+          stroke-linecap="round"
+          fill="none"/>
+    <!-- [字母 A] 右侧下半腿笔画 - 钛灰色 -->
+    <path d="M 100 98 L 118 152"
+          stroke="#8b92a0"
+          stroke-width="18"
+          stroke-linecap="round"
+          fill="none"/>
+    <!-- [字母 A / 终端 > ] 亮白色核心终端符号 '>' 笔画 -->
+    <!-- 该笔画既是 A 的右上边和中横梁，又完美呈现出终端提示符 '>' -->
+    <path d="M 78 48 L 100 98 L 60 114"
+          stroke="#ffffff"
+          stroke-width="18"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          fill="none"/>
+    <!-- [字母 I] 右侧橙色笔画 -->
+    <path d="M 152 48 L 152 152"
+          stroke="#ff6b00"
+          stroke-width="18"
+          stroke-linecap="round"
+          fill="none"/>
+  </g>
+</svg>

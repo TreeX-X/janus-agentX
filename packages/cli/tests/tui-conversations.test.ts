@@ -51,7 +51,19 @@ describe('ConversationRegistry', () => {
     expect((await registry.switch('1'))?.id).toBe(secondId)
     expect((await registry.switch('2'))?.id).toBe(firstId)
     expect((await registry.switch(firstId))?.id).toBe(firstId)
-    expect((await registry.switch(firstId.slice(0, 8)))?.id).toBe(firstId)
+    // Prefix switch must dodge the documented digit-prefix rule (an all-digit
+    // prefix resolves by position, and a 1-char prefix may be ambiguous), so
+    // grow the prefix until it uniquely resolves.
+    let prefix = ''
+    for (const length of [8, 12, 16, 20, 24, 28, 32, 36]) {
+      const candidate = firstId.slice(0, length)
+      if (!/^\d+$/.test(candidate) && registry.resolveRef(candidate) === firstId) {
+        prefix = candidate
+        break
+      }
+    }
+    expect(prefix).not.toBe('')
+    expect((await registry.switch(prefix))?.id).toBe(firstId)
     expect(await registry.switch('nope')).toBeNull()
     expect(await registry.switch('99')).toBeNull()
   })
@@ -111,6 +123,21 @@ describe('ConversationRegistry', () => {
     const registry = await ConversationRegistry.load(fileConversationStore(dir, (error) => { errors.push(error) }))
     // Both files skipped; registry seeds one fresh conversation.
     expect(registry.list()).toHaveLength(1)
+  })
+
+  it('freshStart opens one empty conversation and drops previous ones', async () => {
+    const store = memoryConversationStore([
+      { id: 'old-1', title: 'stale one', createdAt: 1, updatedAt: 1, messages: [{ role: 'user', content: 'stale-marker' }], toolTraces: [] },
+      { id: 'old-2', title: 'stale two', createdAt: 2, updatedAt: 2, messages: [], toolTraces: [] },
+    ])
+    const registry = await ConversationRegistry.load(store)
+    expect(registry.list()).toHaveLength(2)
+    const freshId = await registry.freshStart()
+    expect(registry.getActiveId()).toBe(freshId)
+    expect(registry.list()).toHaveLength(1)
+    expect(registry.list()[0].title).toBe(DEFAULT_CONVERSATION_TITLE)
+    expect(registry.getActive().data.messages).toHaveLength(0)
+    expect(await store.list()).toHaveLength(1)
   })
 })
 
@@ -209,5 +236,53 @@ describe('runRepl conversations', () => {
     expect(all).toContain('renamed to: main')
     expect(all).toContain('deleted. active:')
     expect(err.join('')).toBe('')
+  })
+
+  it('starts fresh on launch: previous conversations are dropped', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-fresh-'))
+    const store = memoryConversationStore([
+      { id: 'stale-id', title: 'stale-marker', createdAt: 1, updatedAt: 1, messages: [{ role: 'user', content: 'stale-marker question' }], toolTraces: [] },
+    ])
+    const out: string[] = []
+    const code = await runRepl(
+      { workspace: dir, model: 'm', apiKey: 'k', plain: true },
+      {
+        stdout: (text) => { out.push(text) },
+        stderr: () => {},
+        env: {} as NodeJS.ProcessEnv,
+        store,
+        configPath: null,
+        lines: arrayLineSource(['/list', '/exit']),
+        streamTextFn: textStub(() => 'unused'),
+      },
+    )
+    expect(code).toBe(0)
+    const all = out.join('')
+    expect(all).toContain('1 conversation')
+    expect(all).not.toContain('stale-marker')
+    expect(await store.list()).toHaveLength(1)
+  })
+
+  it('explicit --conversation still resumes instead of fresh-starting', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-resume-'))
+    const store = memoryConversationStore([
+      { id: 'keep-id', title: 'keep-me', createdAt: 1, updatedAt: 1, messages: [{ role: 'user', content: 'keep-me question' }], toolTraces: [] },
+    ])
+    const out: string[] = []
+    const code = await runRepl(
+      { workspace: dir, model: 'm', apiKey: 'k', plain: true, conversationId: 'keep-id' },
+      {
+        stdout: (text) => { out.push(text) },
+        stderr: () => {},
+        env: {} as NodeJS.ProcessEnv,
+        store,
+        configPath: null,
+        lines: arrayLineSource(['/exit']),
+        streamTextFn: textStub(() => 'unused'),
+      },
+    )
+    expect(code).toBe(0)
+    expect(out.join('')).toContain('resumed: keep-me')
+    expect(await store.list()).toHaveLength(1)
   })
 })

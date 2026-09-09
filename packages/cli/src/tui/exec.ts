@@ -18,11 +18,13 @@ export interface CommandSession {
   renameConversation(ref: string, title: string): Promise<ConversationSummary | null>
   deleteConversation(ref: string): Promise<ConversationSummary | null>
   listModels(): string[]
-  getModelId(): string
+  getModelId(): string | undefined
   setModel(modelId: string): void
   listProviders(): { entries: ProviderEntry[]; activeId: string }
   setProvider(ref: string): void
   getProviderId(): string
+  hasApiKey(): boolean
+  setApiKey(key: string): void
   getWorkspaceRoot(): string
   getApprovalMode(): ApprovalModeOption
   setApprovalMode(mode: ApprovalModeOption): void
@@ -59,6 +61,17 @@ export async function executeCommand(
   switch (command) {
     case 'help':
       return continued([commandHelpText()])
+    case 'key': {
+      if (args.length === 0) {
+        return continued([`api key: ${session.hasApiKey() ? 'set' : 'missing'} (flags > env > /key, memory only)`])
+      }
+      try {
+        session.setApiKey(args[0])
+      } catch (error) {
+        return continued([], [error instanceof Error ? error.message : String(error)])
+      }
+      return continued(['api key set for this run (memory only, never written to disk).'])
+    }
     case 'exit':
       return { stdout: [], stderr: [], exit: true }
     case 'clear':
@@ -96,7 +109,9 @@ export async function executeCommand(
       if (args.length === 0) {
         const models = session.listModels()
         const active = session.getModelId()
-        return continued([`model: ${active}\n${models.map((model) => `${model === active ? '*' : ' '} ${model}`).join('\n')}`])
+        const head = `model: ${active ?? '(no model — set one with /model <id>)'}`
+        if (models.length === 0) return continued([head])
+        return continued([`${head}\n${models.map((model) => `${model === active ? '*' : ' '} ${model}`).join('\n')}`])
       }
       try {
         session.setModel(args[0])
@@ -124,7 +139,7 @@ export async function executeCommand(
       } catch (error) {
         return continued([], [error instanceof Error ? error.message : String(error)])
       }
-      return continued([`provider switched: ${session.getProviderId()} · model ${session.getModelId()}`])
+      return continued([`provider switched: ${session.getProviderId()} · model ${session.getModelId() ?? '(no model)'}`])
     }
     case 'approval': {
       if (args.length === 0) return continued([`approval: ${session.getApprovalMode()}`])

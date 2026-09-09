@@ -9,7 +9,7 @@
  */
 import { helpText, parseArgs } from './args.js'
 import type { ChatOptions } from './args.js'
-import { CliSession, isSessionValidationError } from './session.js'
+import { CliSession, MISSING_API_KEY_MESSAGE, MISSING_MODEL_MESSAGE, isSessionValidationError } from './session.js'
 import { runRepl } from './repl.js'
 import { runFullscreen } from './tui/run.js'
 import type { TuiOptions } from './args.js'
@@ -30,6 +30,18 @@ export async function runChat(options: ChatOptions, io: ChatRunIO = {}): Promise
   const session = await CliSession.create({ ...options, env: io.env, streamTextFn: io.streamTextFn })
   if (isSessionValidationError(session)) {
     stderr(session.message)
+    return 2
+  }
+  // Headless single turn has no recovery path: refuse without model or key.
+  // (Interactive tui/repl instead enter normally and remind inside.)
+  if (!session.getModelId()) {
+    stderr(MISSING_MODEL_MESSAGE)
+    return 2
+  }
+  // Headless single turn has no recovery path: refuse without a key.
+  // (The stub-transport seam is exempt so tests stay network-free.)
+  if (!session.hasApiKey() && !io.streamTextFn) {
+    stderr(MISSING_API_KEY_MESSAGE)
     return 2
   }
 

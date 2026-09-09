@@ -8,6 +8,7 @@
 
 export type BuiltinCommandName =
   | 'help'
+  | 'key'
   | 'model'
   | 'provider'
   | 'workspace'
@@ -33,6 +34,7 @@ export interface ParsedInput {
 
 const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'help',
+  'key',
   'model',
   'provider',
   'workspace',
@@ -69,6 +71,7 @@ export function commandHelpText(): string {
   return [
     'Commands:',
     '  /help                 Show this help.',
+    '  /key [api-key]        Show key status or set the API key (memory only).',
     '  /model [id]           List models or switch the model.',
     '  /provider [id]        List providers or switch provider.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
