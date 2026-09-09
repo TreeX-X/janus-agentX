@@ -3,3 +3,14 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+
+# WorkflowX local runtime isolation (full isolation, 2026-09-09)
+# 本地 Agent/Workflow 运行时配置，默认不上传，避免个人工作流与危险默认策略污染协作者
+.claude/
+.codex/
+.janusX/
+AGENTS.md
+CLAUDE.md
+# 兜底：即使未来目录结构变化，本地记忆与本地设置也不上传
+**/*.local.md
+**/settings.local.json

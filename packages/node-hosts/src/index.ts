@@ -27,16 +27,20 @@ export {
   registerGitTools,
 } from './git.js'
 export { createProjectJobTools, registerProjectJobTools } from './project-jobs.js'
+export { detectProjects, projectDetectTool, registerProjectDetectTools } from './project-detect.js'
+export type { DetectedProject } from './project-detect.js'
 export type { RegisteredTool, ToolRegistry } from '@janus-agent/agent-core'
 import type { ToolRegistry } from '@janus-agent/agent-core'
 import type { JobManager } from './jobs.js'
 import { registerCommandTools } from './command.js'
 import { registerGitTools } from './git.js'
+import { registerProjectDetectTools } from './project-detect.js'
 import { registerProjectJobTools } from './project-jobs.js'
 
-/** Register command + git + background-job project tools on one registry. */
+/** Register command + git + project (detect + background jobs) tools on one registry. */
 export function registerNodeHostTools(registry: ToolRegistry, jobs: JobManager): void {
   registerCommandTools(registry, jobs)
   registerGitTools(registry)
+  registerProjectDetectTools(registry)
   registerProjectJobTools(registry, jobs)
 }

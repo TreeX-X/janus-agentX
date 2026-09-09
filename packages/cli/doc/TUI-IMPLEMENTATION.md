@@ -9,6 +9,18 @@
 
 ---
 
+## 流式输出展示更新（2026-09-09）
+
+- CLI 的实时传输使用 `ai-stream`（`ai@6` 的 npm 别名）直接消费现有 spec-v3 模型，`model-stream.ts` 转换核心的消息、工具 schema 和流事件契约。旧 `model-compat.ts` 保留为历史适配参考，不再用于默认传输；它会丢弃 reasoning 事件，旧 ai@3 也不支持该事件。
+- 思考只显示服务商实际返回的 reasoning 内容。黄色摘要与正文分开，显示独立耗时；`Ctrl+T` 展开完整内容。无 reasoning 的模型不会生成虚构思考。
+- 正文通过 `marked` 解析，分别渲染标题、强调、行内代码、带行号代码块、引用、任务列表和表格；窄终端自动换行或将表格转为字段行。
+- 工具具有 preparing / ready / running / completed / failed / cancelled 状态；读取、搜索、修改、命令、Git、项目操作使用不同类别与颜色。目标、脱敏结果和耗时按调用实时更新；命令非零退出码按失败展示。`Ctrl+O` 展开或收起已捕获的工具输出。
+- 修改预览来自本次成功调用的 replacements / unifiedDiff / content，不混入原有工作区 diff。输出有大小上限和截断标记；失败或拒绝的写入不会显示为已应用的修改。
+- 整轮活动指示持续到工具和后续回答完成，结束后显示耗时和服务商提供的 token 用量；`--plain` 保持思考、工具、正文的输出顺序。
+- `runChatTurn.onStreamEvent` 是可选的进程内宿主回调。CLI 的 `tool-display.ts` 将其投影为有界、脱敏的展示数据；现有 `ChatAgentEvent` IPC 与单轮 JSONL 契约保持原样。
+
+实现参考：[Codex message cells](https://github.com/openai/codex/blob/main/codex-rs/tui/src/history_cell/messages.rs)、[Codex execution cells](https://github.com/openai/codex/blob/main/codex-rs/tui/src/history_cell/exec.rs)、[opencode session parts](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/routes/session/index.tsx)。
+
 ## 0. 顶层原则（JanusX 迁移前置，不可违背）
 
 1. **library-first，CLI 是薄客户端**：`agent-core / chat-core / janus-agent` 保持零 Electron、零 Ink、零 React（`PORTS.md` 保证 + `strict-unused` 守门），TUI 只依赖 facade + ports，不反向污染。JanusX 主进程直接 `import @janus-agent/janus-agent`，不经过 CLI 二进制。
@@ -48,7 +60,7 @@ $ janus
 │  ████ … (ASCII JANUSX)  Type a message …                   │
 │  you › …  janus › …▍  ◇/◐/✔/✘ 工具卡                        │
 ├─ [> message (/help)] ──────────────────────────────────────┤
-│ conv-title · /help · ctrl+c cancel · ctrl+d exit            │
+│ conv-title · /help · ctrl+p                                 │
 # 宿主 B（M3）：JanusX 终端面板 spawn `janus tui -C <ws>` → 同上 Ink UI
 # 宿主 C（M3）：JanusX Chat 面板直调 runChatTurn，同一 ports/session 逻辑
 ```
@@ -63,8 +75,8 @@ $ janus
 
 1. **logo 默认显示**：空态 ASCII 点阵（`█`/`░░`，单测逐格锁定与 chat 点阵一致），`--plain`/管道降级 `JANUSX`；有消息后 header 留 mini `janus`。
 2. **输入框常驻**：底部多行实心黑面板（默认 3 行、上限 6 行滚动跟随光标；逐 cell 全黑含边框字形，CJK 按双倍宽对齐截断；常驻呼吸块光标，busy/审批时置灰 steady）；`Enter` 发送，`Shift+Enter` 换行（kitty `return+shift` 与 ConPTY LF 双通道），`/` 开头弹命令补全（Up/Down 选、Tab 应用、Esc 关、Enter 照常发送）；`isStreaming` 显示 `working…`。
-3. **状态栏**：`conversation · statusText · /help · ctrl+c cancel · ctrl+d exit`；header 另有 workspace·provider/model·approval。
-4. **消息与卡片**（灰橙主题，对齐 JanusX chat：橙 `#ff7830` / 次灰 `#8a8f98` / 正文 `#e8e8e8`）：`you ›` 灰 / `janus ›` 橙 + 流式 `▍`；回答正文无底色，工具卡整幅深暖底色带 `#241c12`（`◇` 灰 / `◐` 橙进行中 / `✔` 暖沙 `#d9c7a8` / `✘` 红），两者字色底色都不同；空态为双色 JANUSX 点阵（JANUS 灰白 + X 橙/灰）；输入框常驻橙边框（busy 置灰），审批框橙边；reasoning 折叠计数；无 `HH:mm` 时间戳（终端暂省）。
+3. **状态栏**（极简）：`conversation · statusText · /help · ctrl+p`；完整按键见 `/help`；header 另有 workspace·provider/model·approval。
+4. **消息与卡片**（灰橙主题，对齐 JanusX chat：橙 `#ff7830` / 次灰 `#8a8f98` / 正文 `#e8e8e8`）：`you ›` 灰 / `janus ›` 橙 + 流式 `▍`；单条时间线按流顺序交错 — thinking（`▸ thinking` 灰字，`/thinking` 可藏）→ 工具卡（`◇/◐/✔/✘` 整幅深暖底色 `#241c12`）→ 后续思考/正文；空态为双色 JANUSX 点阵；输入框常驻橙边框（busy 置灰），审批框橙边；无 `HH:mm` 时间戳（终端暂省）。
 5. 文案硬编码中文；i18n key 对齐以后再做。
 
 ---
@@ -127,11 +139,11 @@ $ janus
 |---|---|---|---|
 | `agent_start` | `thinking…` | `janus▸ ` 前缀 | 等待态 |
 | `text_delta` | 气泡追加 + `▍` | 原样直写 | 流式 markdown（壳侧保留 40ms 合批） |
-| `reasoning_delta` | 折叠计数 | 忽略 | 折叠 + 4k 截断 |
+| `reasoning_delta` | 时间线 thinking 块（默认折叠首行+字数，`ctrl+t` 展开） | 回合末折叠一行 `▸ thinking · …` | 折叠 + 4k 截断 |
 | `tool_call_start/delta` | 忽略 | 忽略 | 同 |
 | `tool_call_ready` | 建卡 `◇ name (keys)` | `◇ name (keys)` 行 | 卡片创建 |
 | `tool_execution_start/update` | `◐ running` | — | 同 |
-| `tool_execution_end` | `✔/✘`（只用 status） | `→ status` | 同 |
+| `tool_execution_end` | `✔/✘` + turn 末 `└ summary` 回填 + edit/create 的 git diff 预览 | 同（`└` 行） | 同 |
 | `model_finish(length)` | `output truncated (length)` | — | 同 |
 | `model_error/stream_error` | 红字 `code (+retryable)` | stderr 红字 | 同 |
 | `stream_end(cancelled)` | `cancelled — history kept` | `■ cancelled — history kept` | 静默中断不记错 |
@@ -226,6 +238,19 @@ node packages/cli/dist/cli.js tui -C .           # TTY→Ink
 回归：`chat` JSONL 契约、退出码、`chat` 恒 `auto-run` 不变。
 
 ---
+
+### 8.1 全屏历史滚动
+
+滚轮启用必须写入 `useStdout().stdout`，而不是 `useStdout()` 上下文对象；后者没有 `isTTY`，会让鼠标模式初始化静默跳过。挂载时启用 SGR，卸载时恢复；`JANUS_NO_MOUSE=1` 可关闭鼠标捕获。
+
+讨论区通过 `measureElement` 读取实际内容高度与视口高度，在固定视口中移动并裁剪完整内容。自动换行、工具预览和输入区域变化均使用 Ink 的实际布局，不再依赖文本行数估算。`scrollTop=null` 表示跟随末尾，上滚后固定绝对行位置，继续生成和任务完成不会把视图推走；滚回底部、Ctrl+End 或提交新输入恢复跟随。
+
+参考源码（2026-09-09 读取）：
+
+* [OpenCode session](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/routes/session/index.tsx)：`scrollbox`、`stickyScroll`、`stickyStart="bottom"`。
+* [pi-agent ScrollView](https://github.com/badlogic/pi-mono/blob/main/packages/tui/src/components/scroll-view.ts)：`currentScrollTop`、`followingEnd`、内容与视口高度分别维护。
+
+回归覆盖：真实 Ink TTY 流上的鼠标启停、分段 SGR 输入、流式生成时固定历史位置、完成后的逐行可达性、翻页及回到底部。物理鼠标在 Windows Terminal / JanusX 面板中的手动验收仍需在对应宿主执行。
 
 ## 9. 风险与对策（含已踩坑）
 

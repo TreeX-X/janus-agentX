@@ -74,7 +74,9 @@ describe('executeCommand', () => {
 
   it('shows and switches approval modes', async () => {
     const session = await openSession()
-    expect((await executeCommand(session, 'approval', [])).stdout).toEqual(['approval: auto-run'])
+    const shown = (await executeCommand(session, 'approval', [])).stdout.join('\n')
+    expect(shown).toContain('approval: auto-run')
+    expect(shown).toContain('per-action')
     expect((await executeCommand(session, 'approval', ['per-action'])).stdout.join('')).toContain('per-action')
     expect((await executeCommand(session, 'approval', ['sometimes'])).stderr).toEqual(['usage: /approval [auto-run|per-action]'])
     await session.close()
@@ -83,10 +85,10 @@ describe('executeCommand', () => {
   it('shows api-key status and sets it without echoing', async () => {
     const session = await openSession()
     expect((await executeCommand(session, 'key', [])).stdout).toEqual([
-      'api key: set (flags > env > /key, memory only)',
+      'api key: set (/key > --api-key > <apiKeyEnv> > JANUS_API_KEY, memory only)',
     ])
     const set = await executeCommand(session, 'key', ['sk-rotated'])
-    expect(set.stdout).toEqual(['api key set for this run (memory only, never written to disk).'])
+    expect(set.stdout).toEqual(['api key set for this run (memory only, never written to disk). Use /connect to persist per-provider keys.'])
     expect(set.stdout.join('')).not.toContain('sk-rotated')
     expect(session.getApiKey()).toBe('sk-rotated')
     await session.close()
@@ -109,9 +111,50 @@ describe('executeCommand', () => {
     await session.close()
   })
 
+  it('lists connect key status and defers wizard runs to the host', async () => {
+    const session = await openSession()
+    const list = await executeCommand(session, 'connect', [])
+    expect(list.stdout.join('\n')).toContain('key ✗ (missing)')
+    expect(list.stdout.join('')).not.toContain('sk-')
+    const wizard = await executeCommand(session, 'connect', ['a', 'sk-x'])
+    expect(wizard.connect).toEqual({ ref: 'a', key: 'sk-x', baseURL: undefined })
+    expect(wizard.stdout).toEqual([])
+    await session.close()
+  })
+
+  it('removes providers via /provider rm with guards', async () => {
+    const session = await openSession()
+    expect((await executeCommand(session, 'provider', ['rm'])).stderr.join('')).toContain('unknown provider')
+    expect((await executeCommand(session, 'provider', ['rm', 'a'])).stderr.join('')).toContain('active provider')
+    const removed = await executeCommand(session, 'provider', ['rm', 'b'])
+    expect(removed.stdout).toEqual(['provider removed: b'])
+    expect((await executeCommand(session, 'provider', [])).stdout.join('')).not.toContain(' b')
+    await session.close()
+  })
+
   it('rejects unknown commands', async () => {
     const session = await openSession()
     expect((await executeCommand(session, 'frobnicate', [])).stderr).toEqual(['unknown command: /frobnicate (type /help)'])
+    await session.close()
+  })
+
+  it('shows the effective provider/model/baseURL/key/config in /status', async () => {
+    const session = await openSession()
+    const out = (await executeCommand(session, 'status', [])).stdout.join('\n')
+    expect(out).toContain('provider: a')
+    expect(out).toContain('model: m')
+    expect(out).toContain('baseURL: https://api.openai.com/v1')
+    expect(out).toContain('api key: set (via --api-key)')
+    expect(out).toContain('config: (memory only, no file)')
+    expect(out).not.toContain('sk-')
+    expect(out).not.toContain(' k\n')
+    await session.close()
+  })
+
+  it('hints close matches for unknown provider/model ids', async () => {
+    const session = await openSession()
+    // Single-char catalog (a/b, m/m2/n): short inputs get no fuzzy hint.
+    expect((await executeCommand(session, 'provider', ['c'])).stderr.join('')).not.toContain('Did you mean')
     await session.close()
   })
 })

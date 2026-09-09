@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CliSession, isSessionValidationError } from '../src/session.js'
+import { memoryConversationStore } from '../src/conversations.js'
 import type { ChatTurnPorts } from '@janus-agent/janus-agent'
 
 type StreamFn = ChatTurnPorts['streamTextFn']
@@ -59,6 +60,71 @@ describe('CliSession.create', () => {
     expect(result.cancelled).toBe(false)
     expect(result.text).toContain('unblocked')
     await session.close()
+  })
+})
+
+describe('CliSession provider keys', () => {
+  it('resolves <apiKeyEnv> per provider; /key unlocks every provider', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-provkey-'))
+    const catalog = {
+      version: 1 as const,
+      providers: [
+        { id: 'ds', baseURL: 'http://ds/v1', modelId: 'm-ds', apiKeyEnv: 'DEEPSEEK_API_KEY' },
+        { id: 'oa', baseURL: 'http://oa/v1', modelId: 'm-oa' },
+      ],
+    }
+    const session = await CliSession.create({
+      workspace: dir,
+      catalog,
+      store: memoryConversationStore(),
+      streamTextFn: textStub('ok'),
+      env: { DEEPSEEK_API_KEY: 'k-ds' } as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    expect(session.getProviderId()).toBe('ds')
+    expect(session.hasApiKey()).toBe(true)
+    expect(session.getApiKeySource()).toBe('DEEPSEEK_API_KEY')
+    expect(session.getEffectiveBaseUrl()).toBe('http://ds/v1')
+    session.setProvider('oa')
+    expect(session.hasApiKey()).toBe(false)
+    expect(session.getApiKeySource()).toBeNull()
+    expect(session.getEffectiveBaseUrl()).toBe('http://oa/v1')
+    session.setApiKey('k-run')
+    expect(session.getApiKeySource()).toBe('/key')
+    session.setProvider('ds')
+    expect(session.getApiKeySource()).toBe('/key')
+    await session.close()
+  })
+
+  it('lets --api-key win over provider env and reports its source', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-flagkey-'))
+    const session = await CliSession.create({
+      workspace: dir,
+      apiKey: 'k-flag',
+      catalog: { version: 1 as const, providers: [{ id: 'ds', modelId: 'm', apiKeyEnv: 'DEEPSEEK_API_KEY' }] },
+      store: memoryConversationStore(),
+      streamTextFn: textStub('ok'),
+      env: { DEEPSEEK_API_KEY: 'k-env' } as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    expect(session.getApiKey()).toBe('k-flag')
+    expect(session.getApiKeySource()).toBe('--api-key')
+    await session.close()
+  })
+
+  it('hints the intended provider/model on typos', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-hint-'))
+    const catalog = { version: 1 as const, providers: [{ id: 'deepseek', models: ['deepseek-chat'] }] }
+    const badProvider = await CliSession.create({
+      workspace: dir, providerId: 'depseek', catalog,
+      store: memoryConversationStore(), streamTextFn: textStub('ok'), env: {} as NodeJS.ProcessEnv,
+    })
+    expect(isSessionValidationError(badProvider) && badProvider.message).toContain('Did you mean "deepseek"?')
+    const badModel = await CliSession.create({
+      workspace: dir, model: 'deepseek-cha', catalog,
+      store: memoryConversationStore(), streamTextFn: textStub('ok'), env: {} as NodeJS.ProcessEnv,
+    })
+    expect(isSessionValidationError(badModel) && badModel.message).toContain('Did you mean "deepseek-chat"?')
   })
 })
 

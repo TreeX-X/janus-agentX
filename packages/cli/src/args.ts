@@ -16,8 +16,11 @@ export type ApprovalModeOption = 'auto-run' | 'per-action'
 export interface ChatOptions {
   workspace: string
   model?: string
+  provider?: string
   baseUrl?: string
   apiKey?: string
+  /** Explicit catalog file. Undefined = headless stays file-free (flags/env only). */
+  config?: string
   maxTurns?: number
   timeoutMs?: number
   conversationId?: string
@@ -27,8 +30,12 @@ export interface ChatOptions {
 export interface TuiOptions {
   workspace: string
   model?: string
+  provider?: string
   baseUrl?: string
   apiKey?: string
+  /** Explicit catalog file. Undefined = default file; --no-config disables it. */
+  config?: string
+  noConfig?: boolean
   maxTurns?: number
   timeoutMs?: number
   conversationId?: string
@@ -47,8 +54,11 @@ export interface ParsedArgs {
 interface SharedOptions {
   workspace: string
   model?: string
+  provider?: string
   baseUrl?: string
   apiKey?: string
+  config?: string
+  noConfig?: boolean
   maxTurns?: number
   timeoutMs?: number
   conversationId?: string
@@ -83,6 +93,23 @@ function parseSharedFlag(
       const value = takeValue()
       if (!value) return 'Missing --model value'
       shared.model = value
+      return undefined
+    }
+    case '--provider':
+    case '-p': {
+      const value = takeValue()
+      if (!value) return 'Missing --provider value'
+      shared.provider = value
+      return undefined
+    }
+    case '--config': {
+      const value = takeValue()
+      if (!value) return 'Missing --config value'
+      shared.config = value
+      return undefined
+    }
+    case '--no-config': {
+      shared.noConfig = true
       return undefined
     }
     case '--base-url': {
@@ -164,14 +191,17 @@ function parseChat(argv: string[], cwd: string): ParsedArgs {
   }
 
   const prompt = promptParts.join(' ').trim()
+  if (shared.noConfig && shared.config) return { command: 'help', error: 'Cannot combine --config with --no-config' }
   if (!prompt) return { command: 'help', error: 'Missing prompt. Usage: janus chat [--workspace <dir>] [--model <id>] [--] "prompt"' }
   return {
     command: 'chat',
     chat: {
       workspace: shared.workspace,
       model: shared.model,
+      provider: shared.provider,
       baseUrl: shared.baseUrl,
       apiKey: shared.apiKey,
+      config: shared.config,
       maxTurns: shared.maxTurns,
       timeoutMs: shared.timeoutMs,
       conversationId: shared.conversationId,
@@ -196,13 +226,18 @@ function parseTui(argv: string[], cwd: string): ParsedArgs {
     if (error) return { command: 'help', error }
   }
 
+  if (shared.noConfig && shared.config) return { command: 'help', error: 'Cannot combine --config with --no-config' }
+
   return {
     command: 'tui',
     tui: {
       workspace: shared.workspace,
       model: shared.model,
+      provider: shared.provider,
       baseUrl: shared.baseUrl,
       apiKey: shared.apiKey,
+      config: shared.config,
+      noConfig: shared.noConfig,
       maxTurns: shared.maxTurns,
       timeoutMs: shared.timeoutMs,
       conversationId: shared.conversationId,
@@ -238,17 +273,21 @@ export function helpText(): string {
   return [
     'janus - standalone Janus agent CLI (dialogue + workspace tools, no Electron)',
     '',
-    '  janus [tui] [-C <dir>] [-m <id>] [--base-url <url>] [--api-key <key>]',
+    '  janus [tui] [-C <dir>] [-m <id>] [-p <provider>] [--base-url <url>] [--api-key <key>]',
+    '            [--config <path> | --no-config]',
     '            [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run|per-action]',
     '            [--conversation <id>] [--fullscreen] [--plain]',
     '      Resident interactive loop (default with no argv); human-readable streaming.',
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
+    '      Provider keys: --api-key > <apiKeyEnv> > JANUS_API_KEY. Inspect with /status.',
     '      Starts without a model/API key; chat turns then fail until set (/model <id>, /key <key>).',
-    '  janus chat [--workspace <dir>] [--model <id>] [--base-url <url>] [--api-key <key>]',
+    '  janus chat [--workspace <dir>] [--model <id>] [--provider <id>] [--base-url <url>] [--api-key <key>]',
+    '             [--config <path>]',
     '             [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run]',
     '             [--conversation <id>] [--] "prompt"',
     '      Run one agent turn against a workspace; ChatAgentEvents stream as JSONL on stdout.',
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
+    '      Headless stays file-free unless --config <path> is given.',
     '  janus version            Print the CLI version.',
     '',
     'Exit codes: 0 done · 1 agent/model error · 2 usage/config error · 130 interrupted.',

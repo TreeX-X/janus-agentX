@@ -215,6 +215,7 @@ describe('runRepl conversations', () => {
         env: {} as NodeJS.ProcessEnv,
         store: memoryConversationStore(),
         configPath: null,
+        authPath: null,
         lines: arrayLineSource([
           '/new research',
           'deep question here',
@@ -252,6 +253,7 @@ describe('runRepl conversations', () => {
         env: {} as NodeJS.ProcessEnv,
         store,
         configPath: null,
+        authPath: null,
         lines: arrayLineSource(['/list', '/exit']),
         streamTextFn: textStub(() => 'unused'),
       },
@@ -277,6 +279,7 @@ describe('runRepl conversations', () => {
         env: {} as NodeJS.ProcessEnv,
         store,
         configPath: null,
+        authPath: null,
         lines: arrayLineSource(['/exit']),
         streamTextFn: textStub(() => 'unused'),
       },

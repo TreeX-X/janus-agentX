@@ -1,24 +1,45 @@
 /**
  * @file Pure TUI state reducer (no Ink, no IO, unit tested).
- * @description Mirrors the §4.3 ChatAgentEvent→UI table shared with the plain
- * loop. JanusX chat cards follow the same transitions on the Electron side.
+ * @description A single ordered timeline per discussion: user / assistant /
+ * thinking / tool / info / error / notice blocks in stream order (pi and
+ * opencode render the same interleaving — thinking, then the tool it led to,
+ * then more thinking — instead of dumping all tool cards at the end).
+ * Mirrors the §4.3 ChatAgentEvent→UI table shared with the plain loop.
  */
 import type { ChatAgentEvent } from '@janus-agent/chat-core'
+import type { TracePreview } from '../trace-preview.js'
+import type { CliDisplayEvent, ToolDisplay } from '../tool-display.js'
 
-export interface ChatMessageView {
+export type TimelineKind =
+  | 'user'
+  | 'assistant'
+  | 'thinking'
+  | 'tool'
+  | 'info'
+  | 'error'
+  | 'notice'
+
+export interface TimelineBlock {
   id: string
-  role: 'user' | 'assistant' | 'info' | 'error' | 'notice'
+  kind: TimelineKind
+  /** Streamed body for user/assistant/thinking/info/error/notice blocks. */
   text: string
+  callId?: string
+  toolName?: string
+  toolStatus?: ToolCardStatus
+  /** Argument keys while running; kept as the card caption when done. */
+  toolDetail?: string
+  /** Post-turn outcome caption from tool traces (e.g. path + sha). */
+  toolSummary?: string
+  /** Post-turn file preview: compact diff/stat lines for edits and creates. */
+  toolPreview?: string[]
+  display?: ToolDisplay
+  startedAt?: number
+  endedAt?: number
+  argumentChars?: number
 }
 
-export type ToolCardStatus = 'ready' | 'running' | 'completed' | 'failed'
-
-export interface ToolCardView {
-  callId: string
-  toolName: string
-  status: ToolCardStatus
-  detail?: string
-}
+export type ToolCardStatus = 'preparing' | 'ready' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface ApprovalView {
   toolName: string
@@ -26,6 +47,7 @@ export interface ApprovalView {
   actionRisk: string
   summary?: string
   paths?: string[]
+  detail?: string
 }
 
 export type TuiStatus = 'idle' | 'thinking' | 'error'
@@ -38,10 +60,15 @@ export interface TuiContextLabels {
 }
 
 export interface TuiState extends TuiContextLabels {
-  messages: ChatMessageView[]
-  pendingText: string
-  pendingReasoningChars: number
-  toolCards: ToolCardView[]
+  blocks: TimelineBlock[]
+  /** Thinking expansion (pi ctrl+t style). Collapsed by default, always shown. */
+  thinkingExpanded: boolean
+  toolsExpanded: boolean
+  activeBlockId?: string
+  turnStartedAt?: number
+  turnEndedAt?: number
+  promptTokens: number
+  completionTokens: number
   status: TuiStatus
   statusText: string
   awaitingApproval: ApprovalView | null
@@ -51,17 +78,21 @@ export type TuiAction =
   | { type: 'turn-start' }
   | { type: 'agent-event'; event: ChatAgentEvent }
   | { type: 'turn-done'; cancelled: boolean; assistantText: string }
+  | { type: 'turn-traces'; traces: TracePreview[] }
   | { type: 'user-message'; text: string }
   | { type: 'info'; text: string }
   | { type: 'error'; text: string }
   | { type: 'notice'; text: string }
+  | { type: 'toggle-thinking' }
+  | { type: 'toggle-tools' }
+  | CliDisplayEvent
   | { type: 'approval-requested'; approval: ApprovalView }
   | { type: 'approval-resolved' }
   | { type: 'hydrate'; messages: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> }
   | { type: 'context'; labels: Partial<TuiContextLabels> }
   | { type: 'clear' }
 
-const MAX_CARDS = 30
+const MAX_TOOL_BLOCKS = 30
 
 let nextId = 0
 function viewId(): string {
@@ -71,10 +102,11 @@ function viewId(): string {
 
 export function createInitialState(): TuiState {
   return {
-    messages: [],
-    pendingText: '',
-    pendingReasoningChars: 0,
-    toolCards: [],
+    blocks: [],
+    thinkingExpanded: false,
+    toolsExpanded: false,
+    promptTokens: 0,
+    completionTokens: 0,
     status: 'idle',
     statusText: '',
     awaitingApproval: null,
@@ -85,12 +117,110 @@ export function createInitialState(): TuiState {
   }
 }
 
-function upsertCard(cards: ToolCardView[], card: ToolCardView): ToolCardView[] {
-  const index = cards.findIndex((item) => item.callId === card.callId)
-  const next = index >= 0
-    ? cards.map((item, i) => (i === index ? { ...item, ...card } : item))
-    : [...cards, card]
-  return next.slice(-MAX_CARDS)
+/** Append a streamed delta to the trailing block of the same kind, else open one. */
+function appendStream(blocks: TimelineBlock[], kind: 'assistant' | 'thinking', delta: string): TimelineBlock[] {
+  if (!delta) return blocks
+  const last = blocks[blocks.length - 1]
+  if (last && last.kind === kind && last.endedAt === undefined) {
+    return [...blocks.slice(0, -1), { ...last, text: last.text + delta }]
+  }
+  return [...blocks, { id: viewId(), kind, text: delta, startedAt: Date.now() }]
+}
+
+function closeActive(state: TuiState): TimelineBlock[] {
+  return state.blocks.map((block) => block.id === state.activeBlockId && block.endedAt === undefined
+    ? { ...block, endedAt: Date.now() } : block)
+}
+
+function currentTurnStart(blocks: TimelineBlock[]): number {
+  let index = blocks.length - 1
+  while (index >= 0 && blocks[index].kind !== 'user') index -= 1
+  return index
+}
+
+function streamDelta(state: TuiState, kind: 'assistant' | 'thinking', delta: string): TuiState {
+  if (!delta) return state
+  const active = state.blocks.find((block) => block.id === state.activeBlockId)
+  const blocks = appendStream(active?.kind === kind ? state.blocks : closeActive(state), kind, delta)
+  return { ...state, blocks, activeBlockId: blocks.at(-1)?.id, status: 'thinking', statusText: kind === 'thinking' ? 'thinking…' : 'writing…' }
+}
+
+function upsertToolBlock(
+  blocks: TimelineBlock[],
+  update: { callId: string; toolName?: string; status?: ToolCardStatus; detail?: string },
+): TimelineBlock[] {
+  const turnStart = currentTurnStart(blocks)
+  const index = blocks.findIndex((item, i) => i >= turnStart && item.kind === 'tool' && item.callId === update.callId)
+  let next: TimelineBlock[]
+  if (index >= 0) {
+    const current = blocks[index]
+    next = blocks.map((item, i) => (i === index
+      ? {
+        ...item,
+        toolName: update.toolName ?? current.toolName,
+        toolStatus: update.status ?? current.toolStatus,
+        toolDetail: update.detail ?? current.toolDetail,
+        endedAt: update.status === 'completed' || update.status === 'failed' ? Date.now() : current.endedAt,
+      }
+      : item))
+  } else {
+    next = [...blocks, {
+      id: viewId(),
+      kind: 'tool' as const,
+      text: '',
+      callId: update.callId,
+      toolName: update.toolName,
+      toolStatus: update.status ?? 'ready',
+      toolDetail: update.detail,
+      startedAt: Date.now(),
+      endedAt: update.status === 'completed' || update.status === 'failed' ? Date.now() : undefined,
+    }]
+  }
+  // Bound memory on long tool-heavy turns: drop the oldest *finished* cards.
+  const toolBlocks = next.filter((item) => item.kind === 'tool')
+  if (toolBlocks.length <= MAX_TOOL_BLOCKS) return next
+  let drop = toolBlocks.length - MAX_TOOL_BLOCKS
+  return next.filter((item) => {
+    if (drop > 0 && item.kind === 'tool' && (item.toolStatus === 'completed' || item.toolStatus === 'failed')) {
+      drop -= 1
+      return false
+    }
+    return true
+  })
+}
+
+/** True when the current turn already streamed an assistant block (scan back to the last user block). */
+function turnHasAssistantText(blocks: TimelineBlock[]): boolean {
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    if (blocks[i].kind === 'user') return false
+    if (blocks[i].kind === 'assistant' && blocks[i].text.trim()) return true
+  }
+  return false
+}
+
+function normalizeToolName(name: string): string {
+  // Model-facing names use underscores (workspace_edit) while trace entries
+  // carry runtime names (workspace.edit): compare punctuation-insensitively.
+  return name.replace(/[._-]+/g, '').toLowerCase()
+}
+
+/**
+ * Attach post-turn trace previews to tool blocks in stream order: same
+ * (normalized) tool name pairs nth-with-nth, leftovers pair by position.
+ */
+function applyTracePreviews(blocks: TimelineBlock[], traces: TracePreview[]): TimelineBlock[] {
+  const remaining = [...traces]
+  const turnStart = currentTurnStart(blocks)
+  return blocks.map((block, blockIndex) => {
+    if (blockIndex < turnStart) return block
+    if (block.kind !== 'tool' || block.toolSummary || remaining.length === 0) return block
+    const name = normalizeToolName(block.toolName ?? '')
+    let index = remaining.findIndex((trace) => normalizeToolName(trace.toolName) === name)
+    if (index < 0) index = 0
+    const [preview] = remaining.splice(index, 1)
+    if (!preview) return block
+    return { ...block, toolSummary: preview.summary, toolPreview: preview.diff }
+  })
 }
 
 function reduceAgentEvent(state: TuiState, event: ChatAgentEvent): TuiState {
@@ -98,13 +228,21 @@ function reduceAgentEvent(state: TuiState, event: ChatAgentEvent): TuiState {
     case 'agent_start':
       return { ...state, status: 'thinking', statusText: 'thinking…' }
     case 'text_delta':
-      return { ...state, pendingText: state.pendingText + (event.delta ?? '') }
+      return streamDelta(state, 'assistant', event.delta ?? '')
     case 'reasoning_delta':
-      return { ...state, pendingReasoningChars: state.pendingReasoningChars + (event.delta?.length ?? 0) }
+      return streamDelta(state, 'thinking', event.delta ?? '')
+    case 'tool_call_start':
+      return { ...state, activeBlockId: undefined, statusText: 'preparing tool…',
+        blocks: upsertToolBlock(closeActive(state), { callId: event.callId, toolName: event.toolName, status: 'preparing' }) }
+    case 'tool_call_delta':
+      return { ...state, blocks: state.blocks.map((block, i) => i >= currentTurnStart(state.blocks) && block.kind === 'tool' && block.callId === event.callId
+        ? { ...block, argumentChars: (block.argumentChars ?? 0) + event.argumentDeltaLength } : block) }
     case 'tool_call_ready':
       return {
         ...state,
-        toolCards: upsertCard(state.toolCards, {
+        activeBlockId: undefined,
+        statusText: 'preparing tool…',
+        blocks: upsertToolBlock(closeActive(state), {
           callId: event.callId,
           toolName: event.toolName,
           status: 'ready',
@@ -115,12 +253,14 @@ function reduceAgentEvent(state: TuiState, event: ChatAgentEvent): TuiState {
     case 'tool_execution_update':
       return {
         ...state,
-        toolCards: upsertCard(state.toolCards, { callId: event.callId, toolName: event.toolName, status: 'running' }),
+        status: 'thinking',
+        statusText: `running ${event.toolName}…`,
+        blocks: upsertToolBlock(state.blocks, { callId: event.callId, toolName: event.toolName, status: 'running' }),
       }
     case 'tool_execution_end':
       return {
         ...state,
-        toolCards: upsertCard(state.toolCards, {
+        blocks: upsertToolBlock(state.blocks, {
           callId: event.callId,
           toolName: event.toolName,
           status: event.status === 'completed' ? 'completed' : 'failed',
@@ -129,21 +269,27 @@ function reduceAgentEvent(state: TuiState, event: ChatAgentEvent): TuiState {
     case 'model_finish':
       return {
         ...state,
-        status: 'idle',
-        statusText: event.reason === 'length' ? 'output truncated (length)' : '',
+        blocks: event.reason === 'length'
+          ? [...closeActive(state), { id: viewId(), kind: 'info', text: 'Output truncated: model token limit reached.' }]
+          : closeActive(state),
+        activeBlockId: undefined,
+        statusText: event.reason === 'length' ? 'output truncated (length)' : event.reason === 'tool_calls' ? 'running tools…' : 'finishing…',
       }
     case 'model_error':
       return {
         ...state,
+        blocks: [...closeActive(state), { id: viewId(), kind: 'error', text: `model error ${event.code}${event.retryable ? ' (retryable)' : ''}` }],
+        activeBlockId: undefined,
         status: 'error',
         statusText: `model error ${event.code}${event.retryable ? ' (retryable)' : ''}`,
       }
     case 'stream_error':
-      return { ...state, status: 'error', statusText: `stream error: ${event.error}` }
+      return { ...state, blocks: [...closeActive(state), { id: viewId(), kind: 'error', text: `stream error: ${event.error}` }],
+        activeBlockId: undefined, status: 'error', statusText: `stream error: ${event.error}` }
     case 'stream_end':
       return {
         ...state,
-        status: 'idle',
+        status: state.status === 'error' ? 'error' : 'idle',
         statusText: event.cancelled ? 'cancelled — history kept' : state.statusText,
       }
     default:
@@ -151,38 +297,60 @@ function reduceAgentEvent(state: TuiState, event: ChatAgentEvent): TuiState {
   }
 }
 
+function pushBlock(state: TuiState, block: Omit<TimelineBlock, 'id'>): TuiState {
+  return { ...state, blocks: [...state.blocks, { ...block, id: viewId() }] }
+}
+
 export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
     case 'turn-start':
-      return { ...state, status: 'thinking', statusText: 'thinking…', pendingText: '', pendingReasoningChars: 0 }
+      return { ...state, status: 'thinking', statusText: 'thinking…', activeBlockId: undefined,
+        turnStartedAt: Date.now(), turnEndedAt: undefined, promptTokens: 0, completionTokens: 0 }
     case 'agent-event':
       return reduceAgentEvent(state, action.event)
     case 'turn-done': {
-      const messages = action.assistantText.trim()
-        ? [...state.messages, { id: viewId(), role: 'assistant' as const, text: action.assistantText }]
-        : state.messages
+      // Body text already streamed into timeline blocks; only backfill when
+      // the stream carried no assistant text (defensive: stub transports).
+      const text = action.assistantText.trim()
+      const finalBlocks = closeActive(state).map((block) => block.kind === 'tool' && !block.endedAt
+        ? { ...block, toolStatus: 'cancelled' as const, endedAt: Date.now() } : block)
+      const blocks = text && !turnHasAssistantText(state.blocks)
+        ? [...finalBlocks, { id: viewId(), kind: 'assistant' as const, text: action.assistantText }]
+        : finalBlocks
       return {
         ...state,
-        messages,
-        pendingText: '',
-        pendingReasoningChars: 0,
-        status: action.cancelled ? state.status : 'idle',
-        statusText: action.cancelled ? 'cancelled — history kept' : '',
+        blocks,
+        status: state.status === 'error' ? 'error' : 'idle',
+        activeBlockId: undefined,
+        turnEndedAt: Date.now(),
+        statusText: action.cancelled ? 'cancelled — history kept' : state.statusText === 'output truncated (length)' ? state.statusText : 'done',
       }
     }
+    case 'turn-traces':
+      return { ...state, blocks: applyTracePreviews(state.blocks, action.traces) }
     case 'user-message':
-      return { ...state, messages: [...state.messages, { id: viewId(), role: 'user', text: action.text }] }
+      return pushBlock(state, { kind: 'user', text: action.text })
     case 'info':
-      return { ...state, messages: [...state.messages, { id: viewId(), role: 'info', text: action.text }] }
+      return pushBlock(state, { kind: 'info', text: action.text })
     case 'notice':
-      return { ...state, messages: [...state.messages, { id: viewId(), role: 'notice', text: action.text }] }
+      return pushBlock(state, { kind: 'notice', text: action.text })
     case 'error':
       return {
         ...state,
         status: 'error',
         statusText: action.text,
-        messages: [...state.messages, { id: viewId(), role: 'error', text: action.text }],
+        blocks: [...state.blocks, { id: viewId(), kind: 'error', text: action.text }],
       }
+    case 'toggle-thinking':
+      return { ...state, thinkingExpanded: !state.thinkingExpanded }
+    case 'toggle-tools':
+      return { ...state, toolsExpanded: !state.toolsExpanded }
+    case 'tool-display':
+      return { ...state, blocks: state.blocks.map((block, i) => i >= currentTurnStart(state.blocks) && block.kind === 'tool' && block.callId === action.callId
+        ? { ...block, display: { ...block.display, ...action.display },
+          toolStatus: action.display.failed ? 'failed' : block.toolStatus } : block) }
+    case 'usage':
+      return { ...state, promptTokens: state.promptTokens + action.promptTokens, completionTokens: state.completionTokens + action.completionTokens }
     case 'approval-requested':
       return { ...state, awaitingApproval: action.approval }
     case 'approval-resolved':
@@ -190,30 +358,34 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
     case 'hydrate':
       return {
         ...state,
-        messages: action.messages.map((message) => ({
+        blocks: action.messages.map((message) => ({
           id: viewId(),
-          role: message.role === 'system' ? ('info' as const) : message.role,
+          kind: (message.role === 'system' ? 'info' : message.role) as TimelineBlock['kind'],
           text: message.text,
         })),
-        pendingText: '',
-        pendingReasoningChars: 0,
-        toolCards: [],
         status: 'idle',
         statusText: '',
         awaitingApproval: null,
+        activeBlockId: undefined,
+        turnStartedAt: undefined,
+        turnEndedAt: undefined,
+        promptTokens: 0,
+        completionTokens: 0,
       }
     case 'context':
       return { ...state, ...action.labels }
     case 'clear':
       return {
         ...state,
-        messages: [],
-        pendingText: '',
-        pendingReasoningChars: 0,
-        toolCards: [],
+        blocks: [],
         status: 'idle',
         statusText: '',
         awaitingApproval: null,
+        activeBlockId: undefined,
+        turnStartedAt: undefined,
+        turnEndedAt: undefined,
+        promptTokens: 0,
+        completionTokens: 0,
       }
     default:
       return state

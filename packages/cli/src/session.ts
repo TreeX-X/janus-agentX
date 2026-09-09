@@ -13,7 +13,8 @@
 import { statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, resolve } from 'node:path'
-import { streamText } from 'ai'
+import { streamChatModel } from './model-stream.js'
+import { toDisplayEvent, type CliDisplayEvent } from './tool-display.js'
 import {
   createAgentRuntime,
   createToolManifests,
@@ -22,6 +23,7 @@ import {
 import { TOOL_TRACE_MAX_ENTRIES } from '@janus-agent/chat-core'
 import { runChatTurn, type ChatTurnPorts, type ChatTurnResult } from '@janus-agent/janus-agent'
 import { createChatModel } from './model.js'
+import { saveAuthFile } from './auth.js'
 import { JobManager, registerNodeHostTools } from '@janus-agent/node-hosts'
 import type { ApprovalModeOption } from './args.js'
 import {
@@ -34,10 +36,13 @@ import {
 } from './conversations.js'
 import {
   effectiveModelId,
+  formatDidYouMean,
   listProviderModels,
   resolveActiveProvider,
+  resolveApiKey,
   resolveProviderRef,
   saveCatalogFile,
+  suggestSimilar,
   synthesizeCatalog,
   validateModelId,
   type ProviderCatalog,
@@ -47,7 +52,7 @@ import {
 export const CLI_WORKSPACE_ID = 'cli'
 /** Shown when a turn needs the model transport but no key is configured. */
 export const MISSING_API_KEY_MESSAGE =
-  'janus: missing API key. Pass --api-key <key>, set JANUS_API_KEY, or run /key <key> in this session.'
+  'janus: missing API key. Pass --api-key <key>, set JANUS_API_KEY, or run /connect (or /key <key>) in this session.'
 /** Shown when a turn needs a model but none is configured. */
 export const MISSING_MODEL_MESSAGE =
   'janus: missing model. Pass --model <id>, set JANUS_MODEL, or run /model <id> in this session.'
@@ -62,6 +67,8 @@ export interface ApprovalPrompt {
   actionRisk: string
   summary?: string
   paths?: string[]
+  /** Bounded replacement/diff preview for file mutations (already redacted upstream). */
+  detail?: string
 }
 
 export interface CliSessionConfig {
@@ -81,6 +88,11 @@ export interface CliSessionConfig {
   providerId?: string
   /** Persist provider/model defaults on switch. Null/undefined = skip. */
   configPath?: string | null
+  /** Per-provider keys (auth.json). Undefined = none. */
+  authKeys?: Record<string, string>
+  /** Where auth keys persist on /connect. Null/undefined = memory only. */
+  authPath?: string | null
+  onAuthError?: (error: unknown) => void
   /** Per-action approval UI. Absent = fail-closed deny. */
   onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
   onCatalogError?: (error: unknown) => void
@@ -95,6 +107,7 @@ export interface SessionValidationError {
 
 export interface TurnEventCallbacks {
   onEvent?: (event: { requestId: string; event: unknown }) => void
+  onDisplayEvent?: (event: CliDisplayEvent) => void
 }
 
 type Runtime = ReturnType<typeof createAgentRuntime>
@@ -106,7 +119,7 @@ interface ApprovalRequestShape {
   correlationId: string
   toolName: string
   actionRisk: unknown
-  preview?: { summary?: unknown; paths?: unknown }
+  preview?: { summary?: unknown; paths?: unknown; detail?: unknown }
 }
 
 export class CliSession {
@@ -119,10 +132,16 @@ export class CliSession {
   private readonly catalog: ProviderCatalog
   private readonly configPath: string | null
   private readonly onCatalogError?: (error: unknown) => void
+  private readonly authKeys: Record<string, string>
+  private readonly authPath: string | null
+  private readonly onAuthError?: (error: unknown) => void
   private onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
   private readonly baseUrlOverride?: string
-  /** Undefined until a key arrives via flags/env/file-defaults or /key (memory only). */
-  private apiKey: string | undefined
+  /** From the --api-key flag (wins over env; /key wins over this). */
+  private readonly flagApiKey: string | undefined
+  /** From /key for this run (memory only, wins over flag and env). */
+  private sessionKey: string | undefined
+  private readonly env: NodeJS.ProcessEnv
   /** True when the host injected its own model transport (tests/dev): no key needed. */
   private readonly hasCustomTransport: boolean
   private readonly envModel?: string
@@ -144,9 +163,14 @@ export class CliSession {
     catalog: ProviderCatalog
     configPath: string | null
     onCatalogError?: (error: unknown) => void
+    authKeys: Record<string, string>
+    authPath: string | null
+    onAuthError?: (error: unknown) => void
     onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
     baseUrlOverride?: string
-    apiKey: string | undefined
+    flagApiKey: string | undefined
+    sessionKey: string | undefined
+    env: NodeJS.ProcessEnv
     hasCustomTransport: boolean
     envModel?: string
     activeProviderId: string
@@ -163,9 +187,14 @@ export class CliSession {
     this.catalog = init.catalog
     this.configPath = init.configPath
     this.onCatalogError = init.onCatalogError
+    this.authKeys = init.authKeys
+    this.authPath = init.authPath
+    this.onAuthError = init.onAuthError
     this.onApproval = init.onApproval
     this.baseUrlOverride = init.baseUrlOverride
-    this.apiKey = init.apiKey
+    this.flagApiKey = init.flagApiKey
+    this.sessionKey = init.sessionKey
+    this.env = init.env
     this.hasCustomTransport = init.hasCustomTransport
     this.envModel = init.envModel
     this.activeProviderId = init.activeProviderId
@@ -179,8 +208,8 @@ export class CliSession {
     const env = config.env ?? process.env
     // No key is fine here: interactive hosts (tui/repl) enter normally and
     // only fail when a turn actually needs the model transport. Headless
-    // `chat` still refuses to run without one (see runChat).
-    const apiKey = config.apiKey ?? env.JANUS_API_KEY
+    // `chat` still refuses to run without one (see runChat). Key resolution
+    // is per active provider: /key > --api-key > <apiKeyEnv> > JANUS_API_KEY.
 
     const workspaceRoot = resolve(config.workspace)
     try {
@@ -193,16 +222,17 @@ export class CliSession {
     const activeEntry = resolveActiveProvider(catalog, config.providerId)
     if (!activeEntry) {
       if (config.providerId) {
-        const ids = catalog.providers.map((candidate) => candidate.id).join(', ') || '(none)'
-        return { code: 'unknown-provider', message: `janus: unknown provider "${config.providerId}". Available: ${ids}.` }
+        const ids = catalog.providers.map((candidate) => candidate.id)
+        return { code: 'unknown-provider', message: `janus: unknown provider "${config.providerId}". Available: ${ids.join(', ') || '(none)'}.${formatDidYouMean(suggestSimilar(ids, config.providerId))}` }
       }
       return { code: 'no-providers', message: 'janus: no enabled providers. Add one to ~/.janus/config.json or pass --model <id>.' }
     }
     const modelOverride = config.model
     if (modelOverride && !validateModelId(activeEntry, modelOverride)) {
+      const models = listProviderModels(activeEntry)
       return {
         code: 'unknown-model',
-        message: `janus: unknown model "${modelOverride}" for provider "${activeEntry.id}". Available: ${listProviderModels(activeEntry).join(', ') || '(none)'}.`,
+        message: `janus: unknown model "${modelOverride}" for provider "${activeEntry.id}". Available: ${models.join(', ') || '(none)'}.${formatDidYouMean(suggestSimilar(models, modelOverride))}`,
       }
     }
     const modelId = modelOverride ?? env.JANUS_MODEL ?? catalog.defaultModel ?? effectiveModelId(activeEntry)
@@ -233,9 +263,8 @@ export class CliSession {
     }
 
     const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS
-    type StreamResult = Awaited<ReturnType<ChatTurnPorts['streamTextFn']>>
     const streamTextFn: ChatTurnPorts['streamTextFn'] = config.streamTextFn
-      ?? ((opts) => streamText(opts as Parameters<typeof streamText>[0]) as unknown as Promise<StreamResult>)
+      ?? streamChatModel
     const ports: ChatTurnPorts = {
       model: {
         // Placeholder until a model arrives: sendTurn refuses turns while
@@ -281,9 +310,14 @@ export class CliSession {
       catalog,
       configPath: config.configPath ?? null,
       onCatalogError: config.onCatalogError,
+      authKeys: config.authKeys ? { ...config.authKeys } : {},
+      authPath: config.authPath ?? null,
+      onAuthError: config.onAuthError,
       onApproval: config.onApproval,
       baseUrlOverride: config.baseUrl ?? env.JANUS_BASE_URL,
-      apiKey,
+      flagApiKey: config.apiKey,
+      sessionKey: undefined,
+      env,
       hasCustomTransport: config.streamTextFn !== undefined,
       envModel: env.JANUS_MODEL,
       activeProviderId: activeEntry.id,
@@ -313,6 +347,51 @@ export class CliSession {
     return effectiveModelId(entry)
   }
 
+  /** Precedence: /key > --api-key > auth.json > <apiKeyEnv> > JANUS_API_KEY. */
+  private effectiveKey(): string | undefined {
+    if (this.sessionKey) return this.sessionKey
+    if (this.flagApiKey) return this.flagApiKey
+    try {
+      const entry = this.activeEntry()
+      if (this.authKeys[entry.id]) return this.authKeys[entry.id]
+      return resolveApiKey(this.env, entry).key
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Where the effective key came from:
+   * '/key' | '--api-key' | 'auth.json' | env var name | null.
+   */
+  getApiKeySource(): string | null {
+    if (this.sessionKey) return '/key'
+    if (this.flagApiKey) return '--api-key'
+    try {
+      const entry = this.activeEntry()
+      if (this.authKeys[entry.id]) return 'auth.json'
+      return resolveApiKey(this.env, entry).source ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Key source for any provider id (auth file or env only; the ACTIVE
+   * provider may additionally resolve /key or --api-key — see getApiKeySource).
+   * Used by /connect and /status lists. Never returns key material.
+   */
+  keySourceFor(providerId: string): string | null {
+    if (this.authKeys[providerId]) return 'auth.json'
+    const entry = this.catalog.providers.find((candidate) => candidate.id === providerId)
+    if (!entry) return null
+    return resolveApiKey(this.env, entry).source ?? null
+  }
+
+  getEffectiveBaseUrl(): string {
+    return this.baseUrlOverride ?? this.activeEntry().baseURL ?? DEFAULT_BASE_URL
+  }
+
   private rebuildTransport(): void {
     const entry = this.activeEntry()
     const modelId = this.resolveModelId(entry)
@@ -323,9 +402,12 @@ export class CliSession {
     if (!modelId) return
     // Without a key there is nothing to build yet: sendTurn refuses turns
     // until one arrives, so the placeholder resolver below is never used.
-    if (!this.apiKey) return
-    const baseURL = this.baseUrlOverride ?? entry.baseURL ?? DEFAULT_BASE_URL
-    const model = createChatModel({ baseURL, apiKey: this.apiKey, modelId })
+    // Switching providers re-resolves the env key, so each provider can
+    // carry its own <apiKeyEnv> credential.
+    const apiKey = this.effectiveKey()
+    if (!apiKey) return
+    const baseURL = this.getEffectiveBaseUrl()
+    const model = createChatModel({ baseURL, apiKey, modelId })
     const previous = this.ports.model
     this.ports.model = {
       resolve: async () => ({ model, modelId, supportsFunctionCalling: true }),
@@ -373,6 +455,7 @@ export class CliSession {
             paths: Array.isArray(preview?.paths)
               ? (preview.paths as unknown[]).filter((path): path is string => typeof path === 'string')
               : undefined,
+            detail: typeof preview?.detail === 'string' && preview.detail ? preview.detail : undefined,
           }, this.approvalSignal ?? new AbortController().signal) ?? false)
         } catch {
           approved = false
@@ -414,6 +497,20 @@ export class CliSession {
     return this.configPath
   }
 
+  getAuthPath(): string | null {
+    return this.authPath
+  }
+
+  /** Live key map snapshot for host session recreation (workspace switch). */
+  getAuthKeys(): Record<string, string> {
+    return { ...this.authKeys }
+  }
+
+  /** Unique-prefix lookup over enabled providers (null when unknown/ambiguous). */
+  findProvider(ref: string): ProviderEntry | null {
+    return resolveProviderRef(this.catalog, ref)
+  }
+
   getApprovalHandler(): ((prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>) | undefined {
     return this.onApproval
   }
@@ -443,14 +540,15 @@ export class CliSession {
     return this.approvalMode
   }
 
-  /** True once a key arrived via flags/env or /key (memory only). */
+  /** True once a key is available via /key, flags, or provider env. */
   hasApiKey(): boolean {
-    return this.apiKey !== undefined && this.apiKey.length > 0
+    const key = this.effectiveKey()
+    return key !== undefined && key.length > 0
   }
 
   /** Runtime key for host session recreation (workspace switch). */
   getApiKey(): string | undefined {
-    return this.apiKey
+    return this.effectiveKey()
   }
 
   /**
@@ -460,7 +558,7 @@ export class CliSession {
   setApiKey(key: string): void {
     const trimmed = key.trim()
     if (!trimmed) throw new Error('usage: /key <api-key>')
-    this.apiKey = trimmed
+    this.sessionKey = trimmed
     this.rebuildTransport()
   }
 
@@ -504,10 +602,43 @@ export class CliSession {
   setModel(modelId: string): void {
     const entry = this.activeEntry()
     if (!validateModelId(entry, modelId)) {
-      throw new Error(`janus: unknown model "${modelId}" for provider "${entry.id}". Available: ${listProviderModels(entry).join(', ') || '(none)'}.`)
+      const models = listProviderModels(entry)
+      throw new Error(`janus: unknown model "${modelId}" for provider "${entry.id}". Available: ${models.join(', ') || '(none)'}.${formatDidYouMean(suggestSimilar(models, modelId))}`)
     }
     this.modelOverride = modelId
     this.rebuildTransport()
+    this.persistCatalog()
+  }
+
+  /**
+   * Persist a provider key to the auth file (and memory). Throws on empty
+   * input; never writes key material anywhere except the auth file.
+   * Rebuilds the transport when it targets the active provider.
+   */
+  saveProviderKey(providerId: string, key: string): void {
+    const trimmed = key.trim()
+    if (!trimmed) throw new Error('usage: /connect <provider> <key>')
+    this.authKeys[providerId] = trimmed
+    if (this.authPath) {
+      try {
+        saveAuthFile(this.authPath, { version: 1, keys: this.authKeys })
+      } catch (error) {
+        this.onAuthError?.(error)
+      }
+    }
+    if (providerId === this.activeProviderId) this.rebuildTransport()
+    this.persistCatalog()
+  }
+
+  /**
+   * Add a new provider (or replace the entry with the same id) and persist
+   * the catalog. The model override is left alone: callers switch explicitly.
+   */
+  upsertProvider(entry: ProviderEntry): void {
+    if (!entry.id.trim()) throw new Error('janus: provider id must not be empty.')
+    const index = this.catalog.providers.findIndex((candidate) => candidate.id === entry.id)
+    if (index >= 0) this.catalog.providers[index] = entry
+    else this.catalog.providers.push(entry)
     this.persistCatalog()
   }
 
@@ -518,13 +649,44 @@ export class CliSession {
   setProvider(ref: string): void {
     const entry = resolveProviderRef(this.catalog, ref)
     if (!entry) {
-      const ids = this.catalog.providers.map((candidate) => candidate.id).join(', ') || '(none)'
-      throw new Error(`janus: unknown provider "${ref}". Available: ${ids}.`)
+      const ids = this.catalog.providers.map((candidate) => candidate.id)
+      throw new Error(`janus: unknown provider "${ref}". Available: ${ids.join(', ') || '(none)'}.${formatDidYouMean(suggestSimilar(ids, ref))}`)
     }
     this.activeProviderId = entry.id
     this.modelOverride = undefined
     this.rebuildTransport()
     this.persistCatalog()
+  }
+
+  /**
+   * Hard-remove a provider: drops the catalog entry and its auth.json key.
+   * Refuses the active provider (switch first) so the session never strands
+   * itself mid-run. Removing the last provider is allowed — turns then fail
+   * with the usual missing-model hint until /connect adds one back.
+   */
+  removeProvider(ref: string): { id: string; removedKey: boolean } {
+    const entry = resolveProviderRef(this.catalog, ref)
+    if (!entry) {
+      const ids = this.catalog.providers.map((candidate) => candidate.id)
+      throw new Error(`janus: unknown provider "${ref}". Available: ${ids.join(', ') || '(none)'}.${formatDidYouMean(suggestSimilar(ids, ref))}`)
+    }
+    if (entry.id === this.activeProviderId) {
+      throw new Error(`janus: cannot remove the active provider "${entry.id}". Switch first (/provider <id>).`)
+    }
+    this.catalog.providers = this.catalog.providers.filter((candidate) => candidate.id !== entry.id)
+    if (this.catalog.defaultProvider === entry.id) delete this.catalog.defaultProvider
+    // NOTE: `delete` is true for absent keys too — check first.
+    const removedKey = Object.prototype.hasOwnProperty.call(this.authKeys, entry.id)
+    if (removedKey) delete this.authKeys[entry.id]
+    if (removedKey && this.authPath) {
+      try {
+        saveAuthFile(this.authPath, { version: 1, keys: this.authKeys })
+      } catch (error) {
+        this.onAuthError?.(error)
+      }
+    }
+    this.persistCatalog()
+    return { id: entry.id, removedKey }
   }
 
   setApprovalMode(mode: ApprovalModeOption): void {
@@ -585,7 +747,14 @@ export class CliSession {
           chatSession: record.chatSession,
         },
         this.ports,
-        { onEvent: (event) => callbacks.onEvent?.({ requestId, event }) },
+        {
+          onEvent: (event) => callbacks.onEvent?.({ requestId, event }),
+          onStreamEvent: (event) => {
+            if (!callbacks.onDisplayEvent) return
+            const display = toDisplayEvent(event)
+            if (display) callbacks.onDisplayEvent(display)
+          },
+        },
         this.approvalSignal,
       )
       if (!result.cancelled) {

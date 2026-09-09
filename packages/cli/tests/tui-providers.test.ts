@@ -9,13 +9,17 @@ import { describe, expect, it } from 'vitest'
 import {
   effectiveModelId,
   emptyCatalog,
+  formatDidYouMean,
   listProviderModels,
   loadCatalogFile,
   loadEffectiveCatalog,
   parseCatalog,
   resolveActiveProvider,
+  resolveApiKey,
   resolveProviderRef,
   saveCatalogFile,
+  serializeCatalog,
+  suggestSimilar,
   synthesizeCatalog,
   validateModelId,
   type ProviderCatalog,
@@ -116,6 +120,39 @@ describe('resolution', () => {
     expect(fromFlags.configPath).toBeNull()
     expect(readFileSync(path, 'utf8')).toContain('m-a1')
   })
+
+  it('keeps apiKeyEnv names and drops malformed ones', () => {
+    const catalog = parseCatalog({
+      providers: [
+        { id: 'a', apiKeyEnv: 'DEEPSEEK_API_KEY' },
+        { id: 'b', apiKeyEnv: 'not a var!' },
+      ],
+    })
+    expect(catalog.providers[0]).toMatchObject({ id: 'a', apiKeyEnv: 'DEEPSEEK_API_KEY' })
+    expect(catalog.providers[1].apiKeyEnv).toBeUndefined()
+  })
+
+  it('resolves keys per provider: <apiKeyEnv> wins over JANUS_API_KEY', () => {
+    const entry = { id: 'a', apiKeyEnv: 'DEEPSEEK_API_KEY' }
+    expect(resolveApiKey({ DEEPSEEK_API_KEY: 'k1', JANUS_API_KEY: 'k2' } as NodeJS.ProcessEnv, entry))
+      .toEqual({ key: 'k1', source: 'DEEPSEEK_API_KEY' })
+    expect(resolveApiKey({ JANUS_API_KEY: 'k2' } as NodeJS.ProcessEnv, entry))
+      .toEqual({ key: 'k2', source: 'JANUS_API_KEY' })
+    expect(resolveApiKey({} as NodeJS.ProcessEnv, entry))
+      .toEqual({ key: undefined, source: undefined })
+  })
+
+  it('serializes catalogs pretty-printed for hand editing', () => {
+    expect(serializeCatalog(closedCatalog())).toContain('\n  "providers"')
+  })
+
+  it('suggests close matches and formats the hint', () => {
+    expect(suggestSimilar(['deepseek', 'openai'], 'depseek')).toEqual(['deepseek'])
+    expect(suggestSimilar(['m-b1', 'm-b2'], 'm-b3')).toEqual(['m-b1', 'm-b2'])
+    expect(suggestSimilar(['a', 'b'], 'c')).toEqual([])
+    expect(formatDidYouMean(['deepseek'])).toBe(' Did you mean "deepseek"?')
+    expect(formatDidYouMean([])).toBe('')
+  })
 })
 
 describe('CliSession providers', () => {
@@ -214,6 +251,7 @@ describe('runRepl providers', () => {
         env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv,
         store: memoryConversationStore(),
         configPath,
+        authPath: null,
         lines: arrayLineSource(['/provider', '/model', '/provider b', '/model', '/model m-b2', '/exit']),
         streamTextFn: textStub(),
       },
@@ -243,6 +281,7 @@ describe('runRepl providers', () => {
         env: { JANUS_API_KEY: 'k', JANUS_MODEL: 'm' } as NodeJS.ProcessEnv,
         store: memoryConversationStore(),
         configPath: null,
+        authPath: null,
         lines: arrayLineSource(['/provider nope', '/model nope', '/exit']),
         streamTextFn: textStub(),
       },

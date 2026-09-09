@@ -2,7 +2,7 @@
  * Cursor-ownership mechanism: the TUI positions the REAL native cursor on
  * the caret cell through Ink's official `useCursor` channel (opencode-style
  * renderer-owned cursor), so the OS IME candidate window follows the caret.
- * Hiding (`undefined`) is only used while busy/disabled, before the first
+ * Hiding (`undefined`) is only used while disabled, before the first
  * `measureElement` pass, or when the approval gate unmounts the composer.
  * The suite spies on the channel and asserts at least one real `{x,y}`
  * intent appears and that typing moves it.
@@ -65,6 +65,39 @@ async function openSession(): Promise<CliSession> {
 }
 
 describe('cursor ownership', () => {
+  it('keeps the native caret active while a turn is running', async () => {
+    const session = await openSession()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const original = session.sendTurn.bind(session)
+    const send = vi.spyOn(session, 'sendTurn').mockImplementation(async (...args) => {
+      await gate
+      return original(...args)
+    })
+    const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={() => {}} />)
+    try {
+      app.stdin.write('first')
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('first'))
+      app.stdin.write('\r')
+      await waitForFrame(() => send.mock.calls.length === 1)
+      app.stdin.write('next input')
+      await waitForFrame(() => {
+        const lines = (app.lastFrame() ?? '').split('\n')
+        const y = lines.findIndex((line) => line.includes('next input'))
+        const line = lines[y] ?? ''
+        const intent = cursorIntents.at(-1) as { x: number; y: number } | undefined
+        return y >= 0 && intent?.y === y && intent.x === displayWidth(line.slice(0, line.indexOf('next input')) + 'next input')
+      })
+      expect(send).toHaveBeenCalledTimes(1)
+      release()
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('stub-answer'))
+    } finally {
+      release()
+      app.unmount()
+      await session.close()
+    }
+  })
+
   it('uses the same terminal origin for paints and cursor-only updates', { timeout: 15000 }, async () => {
     const session = await openSession()
     const writes: string[] = []
@@ -79,7 +112,7 @@ describe('cursor ownership', () => {
       { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream,
         interactive: true, patchConsole: false, exitOnCtrlC: false },
     )
-    const latestPaint = (): string => stripVTControlCharacters(writes.filter((chunk) => chunk.includes('ctrl+d exit')).at(-1) ?? '')
+    const latestPaint = (): string => stripVTControlCharacters(writes.filter((chunk) => chunk.includes('ctrl+p')).at(-1) ?? '')
     const expectPaintCaret = async (text: string, before: string): Promise<void> => {
       await waitForFrame(() => {
         const paint = latestPaint()

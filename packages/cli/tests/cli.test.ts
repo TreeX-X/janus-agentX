@@ -46,6 +46,12 @@ describe('parseArgs', () => {
     expect(parseArgs([], '/b').command).toBe('tui')
   })
 
+  it('parses provider/config selection for headless chat', () => {
+    const parsed = parseArgs(['chat', '--provider', 'ds', '--config', '/tmp/c.json', 'hi'], '/base')
+    expect(parsed.chat).toMatchObject({ provider: 'ds', config: '/tmp/c.json', prompt: 'hi' })
+    expect(parseArgs(['chat', '--config', 'a', '--no-config', 'hi'], '/b').error).toMatch(/Cannot combine/)
+  })
+
   it('parses version', () => {
     expect(parseArgs(['version']).command).toBe('version')
   })
@@ -105,6 +111,31 @@ describe('runChat', () => {
     const events = lines.map((line) => JSON.parse(line).event)
     expect(events.some((e) => e.type === 'text_delta' && e.delta === 'hello')).toBe(true)
     expect(events.at(-1)?.type).toBe('stream_end')
+  })
+
+  it('honors an explicit --config catalog for provider/model defaults', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-cli-cfg-'))
+    const cfgPath = join(mkdtempSync(join(tmpdir(), 'janus-cli-cfgfile-')), 'config.json')
+    writeFileSync(cfgPath, JSON.stringify({
+      version: 1,
+      providers: [{ id: 'ds', modelId: 'm-ds' }],
+      defaultProvider: 'ds',
+    }))
+    const lines: string[] = []
+    const code = await runChat(
+      { workspace: dir, config: cfgPath, prompt: 'hi' },
+      {
+        env: { JANUS_API_KEY: 'k' },
+        stdout: (line) => { lines.push(line) },
+        stderr: () => undefined,
+        authPath: null,
+        streamTextFn: async () => ({
+          textStream: (async function* () { yield 'hello' })(),
+        }),
+      },
+    )
+    expect(code).toBe(0)
+    expect(lines.length).toBeGreaterThan(0)
   })
 
   it('executes real workspace tools through the runtime', async () => {

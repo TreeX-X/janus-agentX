@@ -29,6 +29,7 @@ function collect() {
       env: {} as NodeJS.ProcessEnv,
       store: memoryConversationStore(),
       configPath: null,
+      authPath: null,
     },
   }
 }
@@ -132,6 +133,7 @@ describe('runRepl', () => {
         env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv,
         store: memoryConversationStore(),
         configPath: null,
+        authPath: null,
         lines: arrayLineSource(['/model m2', '/workspace /definitely/not/here-404', 'hi', '/exit']),
         streamTextFn: textStub('still-here'),
       },
@@ -140,5 +142,38 @@ describe('runRepl', () => {
     expect(c.out.join('')).toContain('model switched: m2')
     expect(c.err.join('')).toMatch(/not a directory/)
     expect(c.out.join('')).toContain('still-here')
+  })
+
+  it('streams thinking before each answer without moving it to the end', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-thinking-'))
+    const c = collect()
+    let calls = 0
+    const code = await runRepl(
+      { workspace: dir, model: 'm', apiKey: 'k', plain: true },
+      {
+        ...c.io,
+        authPath: null,
+        lines: arrayLineSource(['first', 'second', '/exit']),
+        streamTextFn: (async () => {
+          calls += 1
+          const n = calls
+          return {
+            fullStream: (async function* () {
+              yield { type: 'reasoning-delta', textDelta: `hmm-${n}\n` }
+              yield { type: 'text-delta', textDelta: `answer-${n}` }
+              yield { type: 'finish', finishReason: 'stop' }
+            })(),
+            textStream: (async function* () { })(),
+          }
+        }) as StreamFn,
+      },
+    )
+    expect(code).toBe(0)
+    const all = c.out.join('')
+    expect(all).toContain('▸ thinking · hmm-1')
+    expect(all).toContain('▸ thinking · hmm-2')
+    expect(all.indexOf('hmm-1')).toBeLessThan(all.indexOf('answer-1'))
+    expect(all.indexOf('hmm-2')).toBeLessThan(all.indexOf('answer-2'))
+    expect(all).toContain('answer-2')
   })
 })

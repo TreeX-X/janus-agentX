@@ -2,8 +2,9 @@
  * @file Multiline Ink composer for the TUI (replaces single-line ink-text-input).
  * @description Transparent black input panel pinned to the bottom: no
  * background fill anywhere (the terminal's own black shows through), a thin
- * `╭─╮/│ │/╰─╯` frame that is orange while focused and gray while busy or
- * disabled. Panel height and width derive from the live terminal size
+ * `╭─╮/│ │/╰─╯` frame that is orange while focused and gray while
+ * disabled. Streaming keeps the editor focused. Panel dimensions follow
+ * the live terminal size
  * (opencode-style responsive): the visible window shrinks on tiny terminals
  * and every resize re-renders via `useTerminalSize`. Enter submits,
  * Shift+Enter inserts a newline (kitty `return+shift`, legacy ConPTY LF),
@@ -36,6 +37,7 @@ import {
   visibleStart,
 } from './composer-state.js'
 import { useTerminalSize } from './terminal-size.js'
+import { containsMouseSequence } from './scroll.js'
 import { useSyncedCaret, type CaretDebugSnapshot } from './native-cursor.js'
 import { LOGO_TONE } from '../logo.js'
 
@@ -66,7 +68,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   // `useSyncedCaret`, dumped to a log file on Ctrl+G (see `useInput` below).
   const caretDebugRef = useRef<CaretDebugSnapshot | null>(null)
 
-  const active = !disabled && !busy
+  const active = !disabled
 
   // Clamp synchronously for render (no transient out-of-range frame) and
   // converge state right after, so the visible cursor never jumps.
@@ -89,6 +91,10 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   }
 
   useInput((input, key) => {
+    // SGR mouse reporting (enabled by `App` for wheel scrolling) arrives as
+    // escape text that Ink 7 cannot parse — swallow it so wheel/click bytes
+    // never land in the buffer. `App` consumes the wheel part for scrolling.
+    if (containsMouseSequence(input)) return
     // Forensic dump (see `writeCaretDebug` below): never blocks input.
     // BEL (`\x07`) is Ctrl+G on the wire; accept both parser mappings.
     if ((key.ctrl && input === 'g') || input === '\x07') {
@@ -194,7 +200,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   const textW = Math.max(4, totalW - 6) // '│ ' + prompt(2) + text + ' │'
   const itemW = Math.max(4, totalW - 4) // '│ ' + item + ' │'
   const frameColor = active ? ACCENT : 'gray'
-  const promptColor = busy ? 'gray' : active ? ACCENT : MUTED
+  const promptColor = active ? ACCENT : MUTED
 
   const rawLines = value.split('\n')
   const position = cursorLineOf(value, safeCursor)
@@ -225,7 +231,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   const caretDx = 4 + caretBeforeWidth // '│ ' (2) + prompt '› '/'  ' (2)
   const caretDy = 1 + Math.max(0, position.line - start) // top border + row
 
-  // Position the REAL cursor while focused; hide while busy/disabled (and
+  // Position the REAL cursor while focused; hide while disabled (and
   // on the first frame before measurement). No painted breathing block
   // while active — the terminal's own block IS the caret, so IME and sight
   // can never desync. No timers: native blink needs zero re-renders.
@@ -276,13 +282,9 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   const renderTextRow = (line: string, lineIndex: number): React.JSX.Element => {
     const prompt = lineIndex === start ? '› ' : '  '
     if (value === '' && lineIndex === 0) {
-      const hint = busy ? 'working…' : 'message (/help)'
-      // Single-cursor rule (opencode-style): the REAL cursor is the only
-      // caret. While `active` the terminal draws it; while `busy` the
-      // discussion's orange `▍` is the activity indicator, so the composer
-      // renders plain with NO fake block. A dim block is kept only for the
-      // disabled-but-mounted edge (approval gate usually unmounts us).
-      if (active || busy) {
+      const hint = busy ? 'message' : 'message (/help)'
+      // The native caret stays visible during turns; disabled overlays own focus.
+      if (active) {
         // Real cursor sits on the first hint cell; render plain and let the
         // terminal draw the block (opencode-style, IME follows it).
         return (
@@ -308,9 +310,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
         </Text>
       )
     }
-    // Caret line: single-cursor rule — active renders PLAIN text (native
-    // block is the caret); busy renders plain too (the discussion `▍` owns
-    // attention); only disabled-but-mounted keeps a dim fake block.
+    // Only a disabled, idle composer paints a dim placeholder caret.
     const sliced = sliceAroundCursor(line, textW, caretExpandedCol)
     if (active || busy) {
       return (

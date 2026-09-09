@@ -13,6 +13,8 @@ export interface ProviderEntry {
   id: string
   name?: string
   baseURL?: string
+  /** Env var holding this provider's key (e.g. "DEEPSEEK_API_KEY"). Secrets never touch disk. */
+  apiKeyEnv?: string
   modelId?: string
   models?: string[]
   defaultModelId?: string
@@ -40,10 +42,15 @@ function sanitizeEntry(value: unknown): ProviderEntry | null {
   }
   const optionalString = (input: unknown): string | undefined =>
     typeof input === 'string' && input.trim() ? input : undefined
+  const optionalEnvName = (input: unknown): string | undefined => {
+    const name = optionalString(input)
+    return name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : undefined
+  }
   return {
     id: record.id.trim(),
     name: optionalString(record.name),
     baseURL: optionalString(record.baseURL),
+    apiKeyEnv: optionalEnvName(record.apiKeyEnv),
     modelId: optionalString(record.modelId),
     models: strings(record.models),
     defaultModelId: optionalString(record.defaultModelId),
@@ -69,7 +76,7 @@ export function parseCatalog(value: unknown): ProviderCatalog {
 }
 
 export function serializeCatalog(catalog: ProviderCatalog): string {
-  return JSON.stringify(catalog)
+  return JSON.stringify(catalog, null, 2)
 }
 
 export function defaultConfigPath(): string {
@@ -174,4 +181,69 @@ export function effectiveModelId(entry: ProviderEntry, override?: string): strin
 export function validateModelId(entry: ProviderEntry, modelId: string): boolean {
   if (!entry.models || entry.models.length === 0) return true
   return listProviderModels(entry).includes(modelId)
+}
+
+export interface ResolvedApiKey {
+  key: string | undefined
+  /** Env var name the key came from (`apiKeyEnv` or JANUS_API_KEY); undefined when absent. */
+  source: string | undefined
+}
+
+/**
+ * Per-provider key lookup (env only, never disk):
+ * `<apiKeyEnv>` > `JANUS_API_KEY`. Flag (`--api-key`) and `/key` overrides
+ * live in the session and win over this.
+ */
+export function resolveApiKey(
+  env: NodeJS.ProcessEnv,
+  entry: ProviderEntry,
+): ResolvedApiKey {
+  const varName = entry.apiKeyEnv
+  if (varName) {
+    const value = env[varName]
+    if (value) return { key: value, source: varName }
+  }
+  if (env.JANUS_API_KEY) return { key: env.JANUS_API_KEY, source: 'JANUS_API_KEY' }
+  return { key: undefined, source: undefined }
+}
+
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = prev[0]
+    prev[0] = i
+    for (let j = 1; j <= b.length; j += 1) {
+      const next = prev[j]
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1))
+      diagonal = next
+    }
+  }
+  return prev[b.length]
+}
+
+/** Typo-tolerant suggestions for unknown provider/model ids (up to `limit`). */
+export function suggestSimilar(candidates: string[], input: string, limit = 2): string[] {
+  const trimmed = input.trim().toLowerCase()
+  if (!trimmed) return []
+  const scored: Array<{ candidate: string; score: number }> = []
+  for (const candidate of candidates) {
+    const lower = candidate.toLowerCase()
+    if (lower.includes(trimmed) || trimmed.includes(lower)) {
+      scored.push({ candidate, score: 0 })
+      continue
+    }
+    const distance = editDistance(lower, trimmed)
+    // Short inputs only match by substring (edit distance is noise there).
+    const threshold = trimmed.length <= 2 ? 0 : Math.min(2, Math.floor(trimmed.length / 3))
+    if (distance <= threshold && distance > 0) scored.push({ candidate, score: distance })
+  }
+  scored.sort((x, y) => x.score - y.score)
+  return scored.slice(0, limit).map((row) => row.candidate)
+}
+
+/** ` Did you mean "a" (or "b")?` or '' when there is nothing close. */
+export function formatDidYouMean(suggestions: string[]): string {
+  if (suggestions.length === 0) return ''
+  const quoted = suggestions.map((s) => `"${s}"`).join(' or ')
+  return ` Did you mean ${quoted}?`
 }

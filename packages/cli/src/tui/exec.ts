@@ -5,6 +5,7 @@
  * byte-identical without duplicating command semantics.
  */
 import { commandHelpText } from '../commands.js'
+import { formatConnectList } from '../connect.js'
 import { listProviderModels, type ProviderEntry } from '../providers.js'
 import type { ApprovalModeOption } from '../args.js'
 import type { ConversationSummary } from '../conversations.js'
@@ -22,8 +23,15 @@ export interface CommandSession {
   setModel(modelId: string): void
   listProviders(): { entries: ProviderEntry[]; activeId: string }
   setProvider(ref: string): void
+  removeProvider(ref: string): { id: string; removedKey: boolean }
   getProviderId(): string
   hasApiKey(): boolean
+  /** Key origin: '/key' | '--api-key' | 'auth.json' | env var name | null. */
+  getApiKeySource(): string | null
+  /** Key source for any provider id (auth file or env); never key material. */
+  keySourceFor(providerId: string): string | null
+  getEffectiveBaseUrl(): string
+  getConfigPath(): string | null
   setApiKey(key: string): void
   getWorkspaceRoot(): string
   getApprovalMode(): ApprovalModeOption
@@ -42,6 +50,8 @@ export interface CommandOutcome {
   exit?: boolean
   /** True when the host replaced the session (workspace switch): reset UI. */
   workspaceSwitched?: boolean
+  /** The host should run the /connect wizard with these prefilled args. */
+  connect?: { ref?: string; key?: string; baseURL?: string }
 }
 
 export function formatConversation(index: number, summary: ConversationSummary): string {
@@ -63,14 +73,14 @@ export async function executeCommand(
       return continued([commandHelpText()])
     case 'key': {
       if (args.length === 0) {
-        return continued([`api key: ${session.hasApiKey() ? 'set' : 'missing'} (flags > env > /key, memory only)`])
+        return continued([`api key: ${session.hasApiKey() ? 'set' : 'missing'} (/key > --api-key > <apiKeyEnv> > JANUS_API_KEY, memory only)`])
       }
       try {
         session.setApiKey(args[0])
       } catch (error) {
         return continued([], [error instanceof Error ? error.message : String(error)])
       }
-      return continued(['api key set for this run (memory only, never written to disk).'])
+      return continued(['api key set for this run (memory only, never written to disk). Use /connect to persist per-provider keys.'])
     }
     case 'exit':
       return { stdout: [], stderr: [], exit: true }
@@ -134,6 +144,15 @@ export async function executeCommand(
           ? 'providers: (none)'
           : entries.map((entry) => `${entry.id === activeId ? '*' : ' '} ${entry.id}${entry.name ? ` (${entry.name})` : ''} — ${listProviderModels(entry).length} model(s)`).join('\n')])
       }
+      const [sub, ...rest] = args
+      if ((sub === 'rm' || sub === 'remove' || sub === 'del') && rest.length === 1) {
+        try {
+          const removed = session.removeProvider(rest[0])
+          return continued([`provider removed: ${removed.id}${removed.removedKey ? ' (key cleared from auth.json)' : ''}`])
+        } catch (error) {
+          return continued([], [error instanceof Error ? error.message : String(error)])
+        }
+      }
       try {
         session.setProvider(args[0])
       } catch (error) {
@@ -141,8 +160,31 @@ export async function executeCommand(
       }
       return continued([`provider switched: ${session.getProviderId()} · model ${session.getModelId() ?? '(no model)'}`])
     }
+    case 'status': {
+      const keySource = session.getApiKeySource()
+      return continued([
+        `provider: ${session.getProviderId()} · model: ${session.getModelId() ?? '(no model)'}`,
+        `baseURL: ${session.getEffectiveBaseUrl()}`,
+        `api key: ${keySource ? `set (via ${keySource})` : 'missing (/connect, /key, --api-key, <apiKeyEnv>, or JANUS_API_KEY)'}`,
+        `config: ${session.getConfigPath() ?? '(memory only, no file)'}`,
+      ])
+    }
+    case 'connect': {
+      // Bare /connect renders inline; anything else needs host prompts.
+      if (args.length === 0) return continued(formatConnectList(session))
+      const [ref, key, baseURL] = args
+      return continued([], [], { connect: { ref, key, baseURL } })
+    }
     case 'approval': {
-      if (args.length === 0) return continued([`approval: ${session.getApprovalMode()}`])
+      if (args.length === 0) {
+        const mode = session.getApprovalMode()
+        return continued([[
+          `approval: ${mode}`,
+          '  auto-run — tools run immediately',
+          '  per-action — each write/create will ask y/N',
+          'switch with /approval <mode>',
+        ].join('\n')])
+      }
       const mode = args[0].toLowerCase()
       if (mode !== 'auto-run' && mode !== 'per-action') return continued([], ['usage: /approval [auto-run|per-action]'])
       session.setApprovalMode(mode as ApprovalModeOption)

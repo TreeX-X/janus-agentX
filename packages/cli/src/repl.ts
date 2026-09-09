@@ -6,11 +6,15 @@
  * in M1 on top of the same session/commands.
  */
 import { createInterface } from 'node:readline'
-import type { ChatTurnPorts } from '@janus-agent/janus-agent'
+import type { ChatTurnPorts, ChatTurnResult } from '@janus-agent/janus-agent'
 import type { TuiOptions } from './args.js'
 import { CliSession, isSessionValidationError, type ApprovalPrompt } from './session.js'
 import { defaultHistoryDir, fileConversationStore, type ConversationStorePort } from './conversations.js'
+import { defaultAuthPath, loadAuthFile } from './auth.js'
 import { loadEffectiveCatalog } from './providers.js'
+import { buildTracePreviews } from './trace-preview.js'
+import { displayText } from './tool-display.js'
+import { runConnectWizard, type ConnectAsk, type TestConnectionFn } from './connect.js'
 import { executeCommand } from './tui/exec.js'
 import { parseInputLine } from './commands.js'
 import { renderLogoAscii, renderLogoPlain } from './logo.js'
@@ -29,6 +33,10 @@ export interface ReplIO {
   store?: ConversationStorePort
   /** Provider config path. Undefined = default file, null = no file. */
   configPath?: string | null
+  /** Auth (key) file path. Undefined = default file unless --no-config, null = no file. */
+  authPath?: string | null
+  /** Test seam: stub the /connect reachability probe (default hits the network). */
+  testConnection?: TestConnectionFn
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
@@ -107,6 +115,8 @@ interface ReplState {
   store: ConversationStorePort
   lines: ReplLineSource
   streamTextFn?: ChatTurnPorts['streamTextFn']
+  testConnection?: TestConnectionFn
+  outputKind?: 'text' | 'thinking' | 'tool'
 }
 
 function renderEvent(state: ReplState, event: unknown): void {
@@ -114,20 +124,35 @@ function renderEvent(state: ReplState, event: unknown): void {
   const typed = event as { type?: string; delta?: string; toolName?: string; argumentKeys?: string[]; status?: string; code?: string; retryable?: boolean; cancelled?: boolean }
   switch (typed.type) {
     case 'text_delta':
-      if (typed.delta) stdout(typed.delta)
+      if (typed.delta) {
+        if (state.outputKind !== 'text') stdout('\njanus▸ ')
+        state.outputKind = 'text'
+        stdout(displayText(typed.delta))
+      }
       return
+    case 'reasoning_delta': {
+      if (typed.delta) {
+        if (state.outputKind !== 'thinking') stdout('\n▸ thinking · ')
+        state.outputKind = 'thinking'
+        stdout(displayText(typed.delta))
+      }
+      return
+    }
     case 'tool_call_ready':
+      state.outputKind = 'tool'
       stdout(`\n◇ ${typed.toolName ?? 'tool'}${typed.argumentKeys?.length ? ` (${typed.argumentKeys.join(', ')})` : ''}`)
       return
     case 'tool_execution_end':
-      stdout(` → ${typed.status ?? 'done'}`)
+      state.outputKind = 'tool'
+      stdout(`\n${typed.status === 'completed' ? '✔' : '✘'} ${typed.toolName ?? 'tool'} · ${typed.status ?? 'done'}`)
       return
     case 'model_error':
       stderr(`\njanus: model error ${typed.code ?? 'unknown'}${typed.retryable ? ' (retryable)' : ''}`)
       return
-    case 'stream_end':
+    case 'stream_end': {
       if (typed.cancelled) stdout('\n■ cancelled — history kept')
       return
+    }
     default:
       return
   }
@@ -135,12 +160,33 @@ function renderEvent(state: ReplState, event: unknown): void {
 
 async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): Promise<void> {
   state.stdout('janus▸ ')
+  state.outputKind = 'text'
   try {
-    await state.session.sendTurn(
+    const result: ChatTurnResult = await state.session.sendTurn(
       prompt,
-      { onEvent: ({ event }) => renderEvent(state, event) },
+      {
+        onEvent: ({ event }) => renderEvent(state, event),
+        onDisplayEvent: (event) => {
+          if (event.type !== 'tool-display') return
+          const { display } = event
+          if (display.output) {
+            if (display.summary) state.stdout(`\n  └ ${display.summary}`)
+            for (const line of display.output?.slice(0, 6) ?? []) state.stdout(`\n    ${line}`)
+          } else if (display.target && !display.output) state.stdout(`\n  ${display.category} › ${display.target}`)
+        },
+      },
       signal,
     )
+    // Post-turn outcome captions + file previews (same data as the Ink cards).
+    try {
+      for (const preview of buildTracePreviews(state.session.getWorkspaceRoot(), result.toolTraces)) {
+        if (!preview.diff.length) continue
+        state.stdout(`\n  diff › ${preview.toolName}`)
+        for (const line of preview.diff) state.stdout(`\n    ${line}`)
+      }
+    } catch {
+      // Best effort: previews must never fail a turn.
+    }
   } catch (error) {
     state.stderr(`\njanus: chat turn failed: ${error instanceof Error ? error.message : String(error)}`)
   }
@@ -158,7 +204,13 @@ async function askApproval(
   const summary = prompt.summary ? ` — ${prompt.summary}` : ''
   // The question goes through stdout (not the line prompt) so injected
   // line sources in tests and pipes render it identically to a TTY.
-  stdout(`◇ approve ${prompt.toolName}[${prompt.workspaceId}] risk=${prompt.actionRisk}${summary}${paths}\nAllow? [y/N] `)
+  stdout(`◇ approve ${prompt.toolName}[${prompt.workspaceId}] risk=${prompt.actionRisk}${summary}${paths}\n`)
+  if (prompt.detail) {
+    const lines = prompt.detail.split('\n')
+    for (const line of lines.slice(0, 8)) stdout(`  ${line}\n`)
+    if (lines.length > 8) stdout(`  … (${lines.length - 8} more)\n`)
+  }
+  stdout('Allow? [y/N] ')
   const answer = await lines.next('', { signal })
   if (answer === null) return false
   return /^(y|yes)$/i.test(answer.trim())
@@ -180,6 +232,8 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         catalog: state.session.getCatalog(),
         providerId: state.session.getProviderId(),
         configPath: state.session.getConfigPath(),
+        authKeys: state.session.getAuthKeys(),
+        authPath: state.session.getAuthPath(),
         onApproval: state.session.getApprovalHandler(),
         onCatalogError: state.session.getCatalogErrorHandler(),
         streamTextFn: state.streamTextFn,
@@ -193,6 +247,24 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
   for (const line of outcome.stdout) state.stdout(`${line}\n`)
   for (const line of outcome.stderr) state.stderr(`${line}\n`)
   if (outcome.exit) return 'exit'
+  if (outcome.connect) {
+    const ask: ConnectAsk = async (prompt, opts) => {
+      // Plain readline cannot mask input: say so once per secret prompt.
+      if (opts?.secret) state.stdout(`${prompt}(input is visible here; the key is still only saved to auth.json)\n`)
+      return state.lines.next(opts?.secret ? '' : prompt)
+    }
+    await runConnectWizard(state.session, {
+      ask,
+      print: (line) => state.stdout(`${line}\n`),
+      warn: (line) => state.stderr(`${line}\n`),
+    }, {
+      ref: outcome.connect.ref,
+      key: outcome.connect.key,
+      baseURL: outcome.connect.baseURL,
+      testConnection: state.testConnection,
+    })
+    return 'continue'
+  }
   return outcome.workspaceSwitched ? 'recreated' : 'continue'
 }
 
@@ -226,11 +298,21 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     })
   }
   const catalogInput = loadEffectiveCatalog({
-    configPath: io.configPath,
+    // Explicit test seam wins (null = no file, even when flags exist);
+    // otherwise --config/--no-config, else the default file.
+    configPath: io.configPath !== undefined
+      ? io.configPath
+      : (options.noConfig ? null : (options.config ?? undefined)),
     model: options.model,
     baseUrl: options.baseUrl,
     onError: () => warnOnce('janus: provider config unreadable, using flags/env only.\n'),
   })
+  // Keys are user-global (auth.json), independent of the catalog file choice;
+  // --no-config opts out of every file. Same null/undefined seam as above.
+  const authPath = io.authPath !== undefined
+    ? io.authPath
+    : (options.noConfig ? null : defaultAuthPath())
+  const auth = authPath ? loadAuthFile(authPath, () => warnOnce('janus: auth file unreadable, using env only.\n')) : { version: 1 as const, keys: {} }
   const state: ReplState = {
     session: undefined as unknown as CliSession,
     options,
@@ -240,6 +322,8 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     store,
     lines,
     streamTextFn: io.streamTextFn,
+    testConnection: io.testConnection,
+    outputKind: undefined,
   }
 
   const created = await CliSession.create({
@@ -248,6 +332,10 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     store,
     catalog: catalogInput.catalog,
     configPath: catalogInput.configPath,
+    providerId: options.provider,
+    authKeys: auth.keys,
+    authPath,
+    onAuthError: () => warnOnce('janus: auth file not writable, keys last this run only.\n'),
     onApproval: (prompt, signal) => askApproval(lines, stdout, prompt, signal),
     onCatalogError: () => warnOnce('janus: provider config not writable, switches last this run only.\n'),
     streamTextFn: io.streamTextFn,
@@ -260,7 +348,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     stderr('janus: no model — entering without model access. Set one with /model <id>, --model, or JANUS_MODEL.\n')
   }
   if (!created.hasApiKey()) {
-    stderr('janus: no API key — entering without model access. Set one with /key <key>, --api-key, or JANUS_API_KEY.\n')
+    stderr('janus: no API key — entering without model access. Set one with /connect, /key <key>, --api-key, or JANUS_API_KEY.\n')
   }
   // Every restart begins with a new empty conversation; previous ones are
   // dropped. An explicit --conversation id opts back into resume.

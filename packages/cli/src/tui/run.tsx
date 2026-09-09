@@ -11,12 +11,18 @@ import type { ChatTurnPorts } from '@janus-agent/janus-agent'
 import type { TuiOptions } from '../args.js'
 import { CliSession, isSessionValidationError } from '../session.js'
 import { defaultHistoryDir, fileConversationStore } from '../conversations.js'
+import { defaultAuthPath, loadAuthFile } from '../auth.js'
 import { loadEffectiveCatalog } from '../providers.js'
+import type { TestConnectionFn } from '../connect.js'
 import { App } from './App.js'
 import { CARET_BLOCK, CARET_DEFAULT, restoreNativeCaret, setCaretShape } from './terminal-size.js'
 
 export interface FullscreenIO {
   env?: NodeJS.ProcessEnv
+  /** Auth (key) file path. Undefined = default file unless --no-config, null = no file. */
+  authPath?: string | null
+  /** Test seam: stub the /connect reachability probe (default hits the network). */
+  testConnection?: TestConnectionFn
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: ChatTurnPorts['streamTextFn']
 }
@@ -34,16 +40,23 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
     if (!appStarted) pushNotice('janus: history file unavailable, this run keeps memory only.')
   })
   const catalogInput = loadEffectiveCatalog({
+    configPath: options.noConfig ? null : (options.config ?? undefined),
     model: options.model,
     baseUrl: options.baseUrl,
     onError: () => pushNotice('janus: provider config unreadable, using flags/env only.'),
   })
+  const authPath = io.authPath !== undefined ? io.authPath : (options.noConfig ? null : defaultAuthPath())
+  const auth = authPath ? loadAuthFile(authPath, () => pushNotice('janus: auth file unreadable, using env only.')) : { version: 1 as const, keys: {} }
   const created = await CliSession.create({
     ...options,
     env,
     store,
     catalog: catalogInput.catalog,
     configPath: catalogInput.configPath,
+    providerId: options.provider,
+    authKeys: auth.keys,
+    authPath,
+    onAuthError: () => pushNotice('janus: auth file not writable, keys last this run only.'),
     onCatalogError: () => pushNotice('janus: provider config not writable, switches last this run only.'),
     streamTextFn: io.streamTextFn,
   })
@@ -55,7 +68,7 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
     pushNotice('janus: no model — entering without model access. Set one with /model <id>, --model, or JANUS_MODEL.')
   }
   if (!created.hasApiKey()) {
-    pushNotice('janus: no API key — entering without model access. Set one with /key <key>, --api-key, or JANUS_API_KEY.')
+    pushNotice('janus: no API key — entering without model access. Set one with /connect, /key <key>, --api-key, or JANUS_API_KEY.')
   }
   // Every restart begins with a new empty conversation; previous ones are
   // dropped. An explicit --conversation id opts back into resume.
@@ -75,6 +88,8 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
       catalog: created.getCatalog(),
       providerId: created.getProviderId(),
       configPath: catalogInput.configPath,
+      authKeys: created.getAuthKeys(),
+      authPath: created.getAuthPath(),
       // Post-render: never write to console (would corrupt fullscreen Ink);
       // the switch itself still succeeds for this run.
       onCatalogError: () => undefined,
@@ -108,7 +123,7 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
       app = render(
         <App
           initialSession={created}
-          host={{ createSession: makeSession }}
+          host={{ createSession: makeSession, testConnection: io.testConnection }}
           onExit={resolve}
           initialNotices={notices}
         />,

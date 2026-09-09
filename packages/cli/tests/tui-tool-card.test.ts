@@ -2,12 +2,11 @@
  * Tool-card presentation: glyph/fg mapping per status and single-line text.
  */
 import { describe, expect, it } from 'vitest'
-import { TOOL_CARD_BG, TOOL_CARD_DONE, toolCardFg, toolCardGlyph, toolCardLine } from '../src/tui/tool-card.js'
+import { TOOL_CARD_BG, TOOL_CARD_DONE, toolCardFg, toolCardGlyph, toolCardLine, type ToolCardFace } from '../src/tui/tool-card.js'
 import { displayWidth, padToWidth } from '../src/tui/composer-state.js'
-import type { ToolCardView } from '../src/tui/store.js'
 
-function card(partial: Partial<ToolCardView> = {}): ToolCardView {
-  return { callId: 'c1', toolName: 'workspace_read', status: 'completed', ...partial }
+function card(partial: Partial<ToolCardFace> = {}): ToolCardFace {
+  return { toolName: 'workspace_read', status: 'completed', ...partial }
 }
 
 describe('toolCardGlyph/toolCardFg', () => {

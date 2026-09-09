@@ -10,6 +10,8 @@
 import { helpText, parseArgs } from './args.js'
 import type { ChatOptions } from './args.js'
 import { CliSession, MISSING_API_KEY_MESSAGE, MISSING_MODEL_MESSAGE, isSessionValidationError } from './session.js'
+import { defaultAuthPath, emptyAuth, loadAuthFile } from './auth.js'
+import { loadEffectiveCatalog } from './providers.js'
 import { runRepl } from './repl.js'
 import { runFullscreen } from './tui/run.js'
 import type { TuiOptions } from './args.js'
@@ -19,6 +21,8 @@ export interface ChatRunIO {
   stderr?: (line: string) => void
   env?: NodeJS.ProcessEnv
   onSigint?: (handler: () => void) => void
+  /** Auth (key) file path. Undefined = default file iff --config is given, null = no file. */
+  authPath?: string | null
   /** Test seam: bypasses the real model transport. */
   streamTextFn?: Parameters<typeof CliSession.create>[0]['streamTextFn']
 }
@@ -27,7 +31,29 @@ export async function runChat(options: ChatOptions, io: ChatRunIO = {}): Promise
   const stdout = io.stdout ?? ((line: string) => console.log(line))
   const stderr = io.stderr ?? ((line: string) => console.error(line))
 
-  const session = await CliSession.create({ ...options, env: io.env, streamTextFn: io.streamTextFn })
+  // Headless stays file-free unless --config points at a catalog: tests and
+  // scripts must never depend on the developer's ~/.janus/config.json.
+  const catalogInput = loadEffectiveCatalog({
+    configPath: options.config ?? null,
+    model: options.model,
+    baseUrl: options.baseUrl,
+  })
+  // Headless honors saved keys only alongside an explicit catalog: without
+  // --config there is no provider context for auth.json ids to mean anything.
+  const authPath = io.authPath !== undefined ? io.authPath : (options.config ? defaultAuthPath() : null)
+  const auth = authPath
+    ? loadAuthFile(authPath, (error) => stderr(`janus: auth file unreadable, using env only (${error instanceof Error ? error.message : String(error)})`))
+    : emptyAuth()
+  const session = await CliSession.create({
+    ...options,
+    catalog: catalogInput.catalog,
+    configPath: catalogInput.configPath,
+    providerId: options.provider,
+    authKeys: auth.keys,
+    authPath,
+    env: io.env,
+    streamTextFn: io.streamTextFn,
+  })
   if (isSessionValidationError(session)) {
     stderr(session.message)
     return 2

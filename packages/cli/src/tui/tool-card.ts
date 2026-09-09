@@ -1,20 +1,29 @@
 /**
  * @file Tool-card presentation for the Ink discussion (no React/Ink).
- * @description Cards ride on a dark warm band (`TOOL_CARD_BG`) so tool
+ * @description Cards ride on a neutral dark band (`TOOL_CARD_BG`) so tool
  * activity never reads as assistant prose: answers are body text on the
  * terminal background, cards are status-colored text on the band. Pure
  * helpers, unit tested; `App.tsx` only paints rows full-width.
  */
 import { LOGO_TONE } from '../logo.js'
-import type { ToolCardStatus, ToolCardView } from './store.js'
+import type { ToolCardStatus } from './store.js'
 
-/** Dark warm band behind every tool-card row. */
-export const TOOL_CARD_BG = '#241c12'
-/** Completed-card foreground: warm sand, distinct from answer body text. */
-export const TOOL_CARD_DONE = '#d9c7a8'
+/** Structural card face: satisfied by timeline `tool` blocks. */
+export interface ToolCardFace {
+  status: ToolCardStatus
+  toolName?: string
+  detail?: string
+}
+
+/** Neutral band behind every tool-card row. */
+export const TOOL_CARD_BG = '#202224'
+/** Completed-card foreground, distinct from answer body text. */
+export const TOOL_CARD_DONE = '#9acbb4'
 
 export function toolCardGlyph(status: ToolCardStatus): string {
   switch (status) {
+    case 'preparing': return '·'
+    case 'cancelled': return '■'
     case 'ready': return '◇'
     case 'running': return '◐'
     case 'completed': return '✔'
@@ -24,6 +33,8 @@ export function toolCardGlyph(status: ToolCardStatus): string {
 
 export function toolCardFg(status: ToolCardStatus): string {
   switch (status) {
+    case 'preparing':
+    case 'cancelled': return LOGO_TONE.dim
     case 'completed': return TOOL_CARD_DONE
     case 'failed': return 'red'
     case 'running': return LOGO_TONE.orange
@@ -32,8 +43,8 @@ export function toolCardFg(status: ToolCardStatus): string {
 }
 
 /** Single-line card text (status glyph + tool + argument keys). */
-export function toolCardLine(card: ToolCardView): string {
+export function toolCardLine(card: ToolCardFace): string {
   const detail = card.detail ? ` (${card.detail})` : ''
   const tail = card.status === 'running' ? '…' : ''
-  return `${toolCardGlyph(card.status)} ${card.toolName}${detail}${tail}`
+  return `${toolCardGlyph(card.status)} ${card.toolName ?? 'tool'}${detail}${tail}`
 }

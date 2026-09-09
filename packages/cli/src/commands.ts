@@ -11,6 +11,8 @@ export type BuiltinCommandName =
   | 'key'
   | 'model'
   | 'provider'
+  | 'connect'
+  | 'status'
   | 'workspace'
   | 'clear'
   | 'exit'
@@ -37,6 +39,8 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'key',
   'model',
   'provider',
+  'connect',
+  'status',
   'workspace',
   'clear',
   'exit',
@@ -74,6 +78,10 @@ export function commandHelpText(): string {
     '  /key [api-key]        Show key status or set the API key (memory only).',
     '  /model [id]           List models or switch the model.',
     '  /provider [id]        List providers or switch provider.',
+    '  /provider rm <id>     Remove a provider (and its auth.json key).',
+    '  /connect [id] [key] [base-url]',
+    '                          Provider setup wizard (key lands in auth.json).',
+    '  /status               Show the effective provider/model/baseURL/key/config.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
     '  /clear                Clear this conversation history.',
     '  /new [title]          Start a conversation (and switch to it).',
@@ -83,6 +91,8 @@ export function commandHelpText(): string {
     '  /delete [n|id]        Delete a conversation (default: active).',
     '  /approval [mode]      Show or switch auto-run|per-action.',
     '  /exit                 Leave janus.',
-    'Keys: Enter send · Ctrl+C cancel current turn · Ctrl+D exit.',
+      'Keys: Enter send · Ctrl+C cancel current turn · Ctrl+D exit · Ctrl+T thinking · Ctrl+O tool output · wheel/PgUp/PgDn scroll · Ctrl+Home/End top/bottom · Ctrl+↑/↓ step.',
+    '      Mouse wheel needs a compatible terminal (tmux: `set -g mouse on`); JANUS_NO_MOUSE=1 keeps native selection and scrolls with keys.',
+    'Panels: Ctrl+P command palette (provider setup, status, …).',
   ].join('\n')
 }

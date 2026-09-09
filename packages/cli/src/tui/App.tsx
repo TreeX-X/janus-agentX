@@ -8,22 +8,38 @@
  * into the pure `store.ts` reducer; per-action approvals resolve through an
  * inline y/n gate. Plain loop (`repl.ts`) stays for pipes and `--plain`.
  */
-import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { Box, Text, useInput } from 'ink'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { Box, Text, measureElement, useInput, useStdout, type DOMElement } from 'ink'
 import type { ChatAgentEvent } from '@janus-agent/chat-core'
 import type { ApprovalPrompt, CliSession } from '../session.js'
 import {
   createInitialState,
   reduceTuiState,
-  type ChatMessageView,
+  type TimelineBlock,
 } from './store.js'
 import { executeCommand } from './exec.js'
+import type { TestConnectionFn } from '../connect.js'
+import { CommandPalette, ApprovalPanel, type PaletteItem } from './palette.js'
+import { ConnectPanel } from './connect-panel.js'
 import { parseInputLine } from '../commands.js'
 import { LOGO_TONE, renderLogoJanusLine, renderLogoXLine } from '../logo.js'
 import { Composer } from './Composer.js'
+import { Markdown } from './Markdown.js'
+import { Activity, duration } from './Activity.js'
+import { displayText } from '../tool-display.js'
 import { TOOL_CARD_BG, toolCardFg, toolCardLine } from './tool-card.js'
 import { padToWidth, truncateToWidth } from './composer-state.js'
 import { useTerminalSize } from './terminal-size.js'
+import {
+  clampScrollOffset,
+  containsMouseSequence,
+  disableMouseReporting,
+  enableMouseReporting,
+  isMouseCaptureDisabled,
+  LINE_SCROLL_LINES,
+  pageStep,
+  parseWheelDelta,
+} from './scroll.js'
 
 /**
  * Gray-orange theme, mirroring the JanusX chat palette:
@@ -37,6 +53,8 @@ const THEME = {
 
 export interface InkHost {
   createSession(workspaceDir: string): Promise<CliSession | { error: string }>
+  /** Reachability probe for /connect (defaults to a live GET /models). */
+  testConnection?: TestConnectionFn
 }
 
 interface AppProps {
@@ -85,36 +103,99 @@ function NoticeRow({ text, width }: { text: string; width: number }): React.JSX.
   )
 }
 
-function MessageRow({ message, width }: { message: ChatMessageView; width: number }) {
-  if (message.role === 'notice') {
-    return <NoticeRow text={message.text} width={width} />
+function TimelineRow({ block, width, live, thinkingExpanded, toolsExpanded = false }: {
+  block: TimelineBlock
+  width: number
+  live: boolean
+  thinkingExpanded: boolean
+  toolsExpanded?: boolean
+}): React.JSX.Element {
+  if (block.kind === 'notice') {
+    return <NoticeRow text={block.text} width={width} />
   }
-  if (message.role === 'user') {
+  if (block.kind === 'user') {
     return (
       <Box flexDirection="column" marginBottom={1}>
         <Text color={THEME.muted} bold>you ›</Text>
-        <Text color={THEME.body}>{message.text}</Text>
+        <Text color={THEME.body}>{displayText(block.text)}</Text>
       </Box>
     )
   }
-  if (message.role === 'info') {
+  if (block.kind === 'info') {
     return (
       <Box marginBottom={1}>
-        <Text color={THEME.muted}>{message.text}</Text>
+        <Text color={THEME.muted}>{displayText(block.text)}</Text>
       </Box>
     )
   }
-  if (message.role === 'error') {
+  if (block.kind === 'error') {
     return (
       <Box marginBottom={1}>
-        <Text color="red">✘ {message.text}</Text>
+        <Text color="red">✘ {displayText(block.text)}</Text>
+      </Box>
+    )
+  }
+  if (block.kind === 'thinking') {
+    const elapsed = block.startedAt && block.endedAt ? ` · ${duration(block.endedAt - block.startedAt)}` : ''
+    if (!thinkingExpanded) {
+      const firstLine = displayText(block.text).split('\n').find((line) => line.trim()) ?? ''
+      const gist = firstLine.replace(/^#+\s+|\*\*/g, '')
+      return (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text color="yellow">{truncateToWidth(`▸ thinking${elapsed} · ${gist}`, width)}</Text>
+          {live ? <Text color={THEME.muted} italic>{truncateToWidth(displayText(block.text).trim().split('\n').at(-1) ?? '', Math.max(1, width - 1))}▍</Text> : null}
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" marginBottom={1}>
+        <Text color="yellow">▸ thinking{elapsed}</Text>
+        <Markdown text={block.text} width={width} muted />
+        {live ? <Text color="yellow">▍</Text> : null}
+      </Box>
+    )
+  }
+  if (block.kind === 'tool') {
+    const face = {
+      status: block.toolStatus ?? 'ready',
+      toolName: block.toolName,
+      detail: undefined,
+    }
+    const category = block.display?.category ?? 'tool'
+    const categoryColors = { read: 'cyan', search: 'cyan', edit: 'magenta', command: 'green', git: 'green', project: 'yellow', tool: 'gray' }
+    const elapsed = block.display?.durationMs ?? (block.startedAt && block.endedAt ? block.endedAt - block.startedAt : undefined)
+    const summary = block.display?.summary ?? block.toolSummary
+    const output = block.toolPreview?.length ? block.toolPreview : block.display?.output ?? []
+    const limit = toolsExpanded ? output.length : category === 'edit' || face.status === 'failed' ? 6 : 3
+    const shown = output.slice(0, limit)
+    return (
+      <Box flexDirection="column" marginBottom={1}>
+        <Text backgroundColor={TOOL_CARD_BG}>
+          <Text backgroundColor={TOOL_CARD_BG} color={toolCardFg(face.status)}>
+            {padToWidth(truncateToWidth(`${toolCardLine(face)} · ${face.status}${elapsed !== undefined ? ` · ${duration(elapsed)}` : ''}`, width), width)}
+          </Text>
+        </Text>
+        {block.display?.target ? <Text color={categoryColors[category]}>  {category} › {block.display.target}</Text>
+          : face.status === 'preparing' ? <Text color={THEME.muted}>  arguments · {block.argumentChars ?? 0} chars</Text>
+            : block.toolDetail ? <Text color={THEME.muted}>  {block.toolDetail}</Text> : null}
+        {summary ? <Text color={face.status === 'failed' ? 'red' : THEME.muted}>  └ {displayText(summary)}</Text> : null}
+        {shown.map((line, index) => (
+          <Text
+            key={index}
+            color={line.startsWith('+') ? 'green' : line.startsWith('-') ? 'red' : THEME.muted}
+          >
+            {'    '}{displayText(line)}
+          </Text>
+        ))}
+        {output.length > shown.length ? <Text color={THEME.muted}>    … {output.length - shown.length} more lines</Text> : null}
       </Box>
     )
   }
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={THEME.accent} bold>janus ›</Text>
-      <Text color={THEME.body}>{message.text}</Text>
+      <Markdown text={block.text} width={width} />
+      {live ? <Text color={THEME.accent}>▍</Text> : null}
     </Box>
   )
 }
@@ -130,11 +211,54 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   const { columns, rows: termHeight } = useTerminalSize()
   // Discussion rows span the full width inside the root padding.
   const discW = Math.max(10, columns - 2)
+  const { stdout } = useStdout()
+  const viewportRef = useRef<DOMElement>(null)
+  const contentRef = useRef<DOMElement>(null)
+  const [{ totalLines, viewportRows }, setGeometry] = useState({ totalLines: 0, viewportRows: 1 })
+  // null follows output; an absolute row anchors history while more output arrives.
+  const [scrollTop, setScrollTop] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const total = contentRef.current ? measureElement(contentRef.current).height : 0
+    const viewport = Math.max(1, viewportRef.current ? measureElement(viewportRef.current).height : 1)
+    if (total !== totalLines || viewport !== viewportRows) {
+      setGeometry({ totalLines: total, viewportRows: viewport })
+    }
+  })
+  const maxScroll = Math.max(0, totalLines - viewportRows)
+  const visibleTop = scrollTop === null ? maxScroll : Math.min(scrollTop, maxScroll)
+  const scrollBy = (lines: number): void => {
+    setScrollTop((current) => {
+      const next = clampScrollOffset((current === null ? maxScroll : Math.min(current, maxScroll)) + lines, totalLines, viewportRows)
+      return next === maxScroll ? null : next
+    })
+  }
+  // Notices are system reminders (missing model/key…): they render as divider
+  // cards but must not hide the empty-state banner.
+  const visibleBlocks = useMemo(
+    () => state.blocks.filter((block) => block.kind !== 'notice'),
+    [state.blocks],
+  )
+  const noticeBlocks = useMemo(
+    () => state.blocks.filter((block) => block.kind === 'notice'),
+    [state.blocks],
+  )
+  const empty = visibleBlocks.length === 0
   // Full-height terminal: discussion flexGrows, composer stays pinned at bottom.
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
+  const pendingRef = useRef<string[]>([])
+  const [pending, setPending] = useState<string[]>([])
+  const mountedRef = useRef(true)
   const controllerRef = useRef<AbortController | null>(null)
   const approvalResolveRef = useRef<((approved: boolean) => void) | null>(null)
+  // Modal overlays (palette / provider setup). While open the composer is
+  // disabled and global keys are suspended; the overlay owns its input.
+  const [overlay, setOverlay] = useState<
+    | { kind: 'palette' }
+    | { kind: 'connect'; initial?: { ref?: string; key?: string; baseURL?: string } }
+    | { kind: 'approval' }
+    | null
+  >(null)
   const exitRef = useRef(onExit)
   exitRef.current = onExit
   const noticesRef = useRef<string[]>(initialNotices)
@@ -156,6 +280,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
 
   const hydrate = useCallback(() => {
     const current = sessionRef.current
+    // Switching conversations re-follows the tail.
+    setScrollTop(null)
     dispatch({
       type: 'hydrate',
       messages: current.getActiveMessages().map((message) => ({ role: message.role, text: message.content })),
@@ -173,6 +299,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
         actionRisk: prompt.actionRisk,
         summary: prompt.summary,
         paths: prompt.paths,
+        detail: prompt.detail,
       },
     })
     return new Promise<boolean>((resolve) => {
@@ -198,9 +325,31 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     }
   }, [bridgeApproval, hydrate])
 
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      pendingRef.current = []
+      controllerRef.current?.abort()
+    }
+  }, [])
+
+  // SGR mouse capture (opencode `tui.mouse` / pi `mouseScroll` shape): wheel
+  // ticks arrive as SGR sequences that `parseWheelDelta` turns into scroll
+  // steps in `useInput` below. TTY-gated and `JANUS_NO_MOUSE=1` opt-out so
+  // native selection/scrollback survives where capture hurts (tmux without
+  // `mouse on`, terminals where the wheel never reaches the app).
+  useEffect(() => {
+    if (isMouseCaptureDisabled()) return
+    enableMouseReporting(stdout)
+    return () => {
+      disableMouseReporting(stdout)
+    }
+  }, [stdout])
+
   // Note: no cursor code lives here. The mounted Composer owns the caret
   // through `useSyncedCaret()` (real native cursor while focused, hidden
-  // while busy/disabled); when the approval gate unmounts it, Ink clears
+  // while disabled); when the approval gate unmounts it, Ink clears
   // that intent itself, so no stale cursor can leak.
   const runTurn = useCallback(async (prompt: string): Promise<void> => {
     const current = sessionRef.current
@@ -210,13 +359,18 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     setBusy(true)
     const controller = new AbortController()
     controllerRef.current = controller
+    let completed = false
     try {
       const result = await current.sendTurn(
         prompt,
-        { onEvent: ({ event }) => dispatch({ type: 'agent-event', event: event as ChatAgentEvent }) },
+        {
+          onEvent: ({ event }) => dispatch({ type: 'agent-event', event: event as ChatAgentEvent }),
+          onDisplayEvent: (event) => dispatch(event),
+        },
         controller.signal,
       )
       dispatch({ type: 'turn-done', cancelled: result.cancelled, assistantText: result.text })
+      completed = !result.cancelled && !controller.signal.aborted
     } catch (error) {
       dispatch({ type: 'turn-done', cancelled: true, assistantText: '' })
       const raw = error instanceof Error ? error.message : String(error)
@@ -231,11 +385,36 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       busyRef.current = false
       setBusy(false)
       controllerRef.current = null
-      refreshContext()
+      if (mountedRef.current) {
+        refreshContext()
+        if (completed) {
+          const next = pendingRef.current.shift()
+          setPending([...pendingRef.current])
+          if (next !== undefined) void runTurn(next)
+        } else if (pendingRef.current.length > 0) {
+          const restored = pendingRef.current.join('\n\n')
+          pendingRef.current = []
+          setPending([])
+          setInput((draft) => draft ? `${restored}\n\n${draft}` : restored)
+          dispatch({ type: 'info', text: 'Pending messages restored to input.' })
+        }
+      }
     }
   }, [refreshContext])
 
   const runCommand = useCallback(async (command: string, args: string[]): Promise<void> => {
+    // /connect always opens the visual setup panel (the roster + wizard);
+    // the text wizard in executeCommand serves the plain loop only.
+    if (command === 'connect') {
+      const [ref, key, baseURL] = args
+      setOverlay({ kind: 'connect', initial: args.length > 0 ? { ref, key, baseURL } : {} })
+      return
+    }
+    // Bare /approval opens the mode switch panel; with an arg it switches directly.
+    if (command === 'approval' && args.length === 0) {
+      setOverlay({ kind: 'approval' })
+      return
+    }
     const outcome = await executeCommand(sessionRef.current, command, args, {
       recreateWorkspace: async (dir) => {
         const created = await host.createSession(dir)
@@ -265,10 +444,22 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   }, [host, hydrate, refreshContext])
 
   const submit = useCallback((raw: string): void => {
-    if (busyRef.current) return
     const parsed = parseInputLine(raw)
-    setInput('')
     if (parsed.kind === 'empty') return
+    if (busyRef.current) {
+      if (parsed.kind === 'command') {
+        dispatch({ type: 'info', text: 'Commands are available after the current turn finishes.' })
+        return
+      }
+      pendingRef.current.push(parsed.text ?? '')
+      setPending([...pendingRef.current])
+      setInput('')
+      setScrollTop(null)
+      return
+    }
+    // New input re-follows the tail.
+    setScrollTop(null)
+    setInput('')
     if (parsed.kind === 'command') {
       if (!parsed.known) {
         dispatch({ type: 'error', text: `unknown command: /${parsed.command} (type /help)` })
@@ -281,6 +472,11 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   }, [runCommand, runTurn])
 
   useInput((inputValue, key) => {
+    // An open overlay owns its keys; Ctrl+C / Ctrl+D dismiss it.
+    if (overlay) {
+      if (key.ctrl && (inputValue === 'c' || inputValue === 'd')) setOverlay(null)
+      return
+    }
     if (key.ctrl && inputValue === 'c') {
       if (controllerRef.current) controllerRef.current.abort()
       else exitRef.current(0)
@@ -288,6 +484,41 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     }
     if (key.ctrl && inputValue === 'd') {
       exitRef.current(0)
+      return
+    }
+    // Scroll measured terminal rows; plain arrows remain composer editing keys.
+    // Ink exposes SGR mouse events as text, which the composer also ignores.
+    const wheel = parseWheelDelta(inputValue)
+    if (wheel !== 0) {
+      scrollBy(wheel)
+      return
+    }
+    if (containsMouseSequence(inputValue)) return
+    if (key.pageUp || key.pageDown) {
+      const step = pageStep(viewportRows)
+      scrollBy(key.pageUp ? -step : step)
+      return
+    }
+    if ((key.home || key.end) && key.ctrl) {
+      setScrollTop(key.home ? 0 : null)
+      return
+    }
+    if ((key.upArrow || key.downArrow) && key.ctrl && !key.meta) {
+      scrollBy(key.upArrow ? -LINE_SCROLL_LINES : LINE_SCROLL_LINES)
+      return
+    }
+    // opencode-style command palette (not during turns or approvals).
+    if ((key.ctrl && inputValue === 'p') || inputValue === '\x10') {
+      if (!busyRef.current && !state.awaitingApproval) setOverlay({ kind: 'palette' })
+      return
+    }
+    // pi-style thinking expand/collapse (live, even mid-turn).
+    if ((key.ctrl && inputValue === 't') || inputValue === '\x14') {
+      dispatch({ type: 'toggle-thinking' })
+      return
+    }
+    if ((key.ctrl && inputValue === 'o') || inputValue === '\x0f') {
+      dispatch({ type: 'toggle-tools' })
       return
     }
     if (state.awaitingApproval) {
@@ -298,17 +529,24 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   })
 
   const approval = state.awaitingApproval
-  // Notices are system reminders (missing model/key…): they render as divider
-  // cards but must not hide the empty-state banner.
-  const contentMessages = state.messages.filter((message) => message.role !== 'notice')
-  const noticeMessages = state.messages.filter((message) => message.role === 'notice')
-  const empty = contentMessages.length === 0 && !state.pendingText
+  const hidden = maxScroll - visibleTop
+  const liveId = busy ? state.activeBlockId : undefined
   // Single-line status bar, truncated to the live width so narrow
-  // terminals never wrap it out of the pinned bottom chrome.
+  // terminals never wrap it out of the pinned bottom chrome. Deliberately
+  // minimal: live state plus two pointers; full keys live in /help.
   const footerText = truncateToWidth(
-    `${state.conversationLabel ? `${state.conversationLabel} · ` : ''}${state.statusText ? `${state.statusText} · ` : ''}/help · Tab 补全 · Shift+Enter 换行 · ctrl+c cancel · ctrl+d exit`,
+    `${state.conversationLabel ? `${state.conversationLabel} · ` : ''}${state.statusText ? `${state.statusText} · ` : ''}/help · ctrl+p · wheel/PgUp${hidden > 0 ? ` · ↑${hidden} PgDn/Ctrl+End` : ''}`,
     discW,
   )
+
+  const paletteItems: PaletteItem[] = [
+    { id: 'connect', label: 'Connect / manage providers', hint: 'keys + test' },
+    { id: 'status', label: 'Show status', hint: '/status' },
+    { id: 'model', label: 'List / switch model', hint: '/model' },
+    { id: 'provider', label: 'List / switch provider', hint: '/provider' },
+    { id: 'key', label: 'API key status', hint: '/key' },
+    { id: 'approval', label: 'Approval mode', hint: '/approval' },
+  ]
 
   return (
     // Ink's cursor protocol needs a trailing newline. Reserve its terminal row
@@ -319,38 +557,78 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
         <Text color="gray"> · {state.workspaceLabel} · {state.modelLabel} · {state.approvalLabel}</Text>
       </Box>
 
-      <Box flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden" justifyContent={empty ? 'flex-start' : 'flex-end'} marginY={1}>
+      <Box ref={viewportRef} flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden" marginY={1}>
         {empty ? (
           <Box flexDirection="column" marginY={1}>
             <EmptyBanner />
-            {noticeMessages.map((message) => <MessageRow key={message.id} message={message} width={discW} />)}
+            {noticeBlocks.map((block) => <TimelineRow key={block.id} block={block} width={discW} live={false} thinkingExpanded={state.thinkingExpanded} />)}
           </Box>
         ) : (
-          <Box flexDirection="column" flexShrink={0}>
-            {state.messages.map((message) => <MessageRow key={message.id} message={message} width={discW} />)}
-            {state.toolCards.map((card) => (
-              <Text key={card.callId} backgroundColor={TOOL_CARD_BG}>
-                <Text backgroundColor={TOOL_CARD_BG} color={toolCardFg(card.status)}>
-                  {padToWidth(truncateToWidth(toolCardLine(card), discW), discW)}
-                </Text>
-              </Text>
-            ))}
-            {state.pendingText ? <Text color={THEME.accent}>janus › {state.pendingText}▍</Text> : null}
-            {!state.pendingText && state.status === 'thinking' ? <Text color={THEME.muted}>janus › thinking…</Text> : null}
-            {state.pendingReasoningChars > 0 && !state.pendingText ? (
-              <Text color={THEME.muted}>▸ reasoning ({state.pendingReasoningChars} chars, folded)</Text>
-            ) : null}
+          <Box ref={contentRef} flexDirection="column" flexShrink={0} marginTop={-visibleTop}>
+            {visibleBlocks.map((block) => <TimelineRow key={block.id} block={block} width={discW} live={block.id === liveId} thinkingExpanded={state.thinkingExpanded} toolsExpanded={state.toolsExpanded} />)}
+            {busy ? <Activity text={approval ? `awaiting approval · ${approval.toolName}` : state.statusText || 'working…'} startedAt={state.turnStartedAt} />
+              : state.turnEndedAt && state.turnStartedAt ? <Text color={THEME.muted}>{state.statusText || 'done'} · {duration(state.turnEndedAt - state.turnStartedAt)}{state.promptTokens || state.completionTokens ? ` · ${state.promptTokens} in / ${state.completionTokens} out` : ''}</Text> : null}
           </Box>
         )}
       </Box>
 
       <Box flexShrink={0} flexDirection="column">
+        {pending.length > 0 ? (
+          <Text color={THEME.muted}>{truncateToWidth(`queued (${pending.length}): ${pending[0]?.replace(/\s+/g, ' ')}`, discW)}</Text>
+        ) : null}
+        {overlay?.kind === 'palette' ? (
+          <CommandPalette
+            items={paletteItems}
+            onPick={(item) => {
+              setOverlay(null)
+              if (item.id === 'connect') setOverlay({ kind: 'connect', initial: {} })
+              else void runCommand(item.id, [])
+            }}
+            onClose={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay?.kind === 'connect' ? (
+          <ConnectPanel
+            session={sessionRef.current}
+            initial={overlay.initial}
+            testConnection={host.testConnection}
+            notify={(line) => dispatch({ type: 'info', text: line })}
+            warn={(line) => dispatch({ type: 'error', text: line })}
+            onClose={() => {
+              setOverlay(null)
+              refreshContext()
+            }}
+          />
+        ) : null}
+        {overlay?.kind === 'approval' ? (
+          <ApprovalPanel
+            current={sessionRef.current.getApprovalMode()}
+            onPick={(mode) => {
+              sessionRef.current.setApprovalMode(mode)
+              dispatch({
+                type: 'info',
+                text: mode === 'per-action'
+                  ? 'approval: per-action (each write/create will ask y/N)'
+                  : 'approval: auto-run',
+              })
+              setOverlay(null)
+              refreshContext()
+            }}
+            onClose={() => setOverlay(null)}
+          />
+        ) : null}
         {approval ? (
           <Box borderStyle="round" borderColor={THEME.accent} paddingX={1} flexDirection="column">
             <Text color={THEME.accent} bold>
               ◇ approve {approval.toolName}[{approval.workspaceId}] risk={approval.actionRisk}
               {approval.summary ? ` — ${approval.summary}` : ''}{approval.paths?.length ? ` (${approval.paths.join(', ')})` : ''}
             </Text>
+            {approval.detail ? approval.detail.split('\n').slice(0, 8).map((line, index) => (
+              <Text key={index} color={THEME.body}>  {line || ' '}</Text>
+            )) : null}
+            {approval.detail && approval.detail.split('\n').length > 8 ? (
+              <Text color={THEME.muted}>  … ({approval.detail.split('\n').length - 8} more)</Text>
+            ) : null}
             <Text color={THEME.muted}>Allow? press <Text bold color={THEME.body}>y</Text> / <Text bold color={THEME.body}>n</Text></Text>
           </Box>
         ) : (
@@ -358,7 +636,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             value={input}
             onChange={setInput}
             onSubmit={submit}
-            disabled={busy || approval != null}
+            disabled={approval != null || overlay != null}
             busy={busy}
           />
         )}

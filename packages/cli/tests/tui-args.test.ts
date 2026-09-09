@@ -44,6 +44,16 @@ describe('parseArgs tui', () => {
     expect(parseArgs(['chat', '--fullscreen', 'y'], '/b').error).toMatch(/only supported by janus tui/)
   })
 
+  it('parses provider/config selection flags', () => {
+    expect(parseArgs(['tui', '-p', 'deepseek'], '/b').tui).toMatchObject({ provider: 'deepseek' })
+    expect(parseArgs(['tui', '--provider', 'oa', '--config', '/tmp/c.json'], '/b').tui)
+      .toMatchObject({ provider: 'oa', config: '/tmp/c.json' })
+    expect(parseArgs(['tui', '--no-config'], '/b').tui).toMatchObject({ noConfig: true })
+    expect(parseArgs(['tui', '--config', 'a', '--no-config'], '/b').error).toMatch(/Cannot combine/)
+    expect(parseArgs(['tui', '--provider'], '/b').error).toMatch(/Missing --provider/)
+    expect(parseArgs(['tui', '--config'], '/b').error).toMatch(/Missing --config/)
+  })
+
   it('help documents the tui entry', () => {
     expect(helpText()).toContain('janus [tui]')
     expect(helpText()).toContain('Resident interactive loop')

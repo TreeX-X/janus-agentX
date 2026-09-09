@@ -26,6 +26,7 @@ import {
   toAgentStreamEvent,
   type JanusAgentMessage,
   type ToolResult,
+  type AgentStreamEvent,
 } from '@janus-agent/agent-core'
 import {
   ChatSessionRuntime,
@@ -112,7 +113,11 @@ function resolveWorkspaceChatResources(
 export async function runChatTurn(
   request: ChatTurnRequest,
   ports: ChatTurnPorts,
-  callbacks: { onEvent?: (event: ChatAgentEvent) => void } = {},
+  callbacks: {
+    onEvent?: (event: ChatAgentEvent) => void
+    /** In-process host display adapter; raw events must not be forwarded to IPC. */
+    onStreamEvent?: (event: AgentStreamEvent) => void
+  } = {},
   signal?: AbortSignal,
 ): Promise<ChatTurnResult> {
   const {
@@ -158,12 +163,20 @@ export async function runChatTurn(
     )
     const allToolManifests = ports.tools.registry.listManifests?.()
       ?? createToolManifests(ports.tools.registry.list())
-    workspaceTools = createWorkspaceChatTools({
+    // Offer only what the host runtime implements. The static definition is
+    // the cross-repo name contract (all 21 tools), but a host may implement a
+    // subset — e.g. the janus CLI has no project.detect. Offering more would
+    // let the model call tools that can only fail at execution.
+    const implemented = new Set(allToolManifests.map((manifest) => manifest.providerName))
+    const offeredTools = createWorkspaceChatTools({
       runtime: { executeFunctionCall: (input) => ports.tools.executeFunctionCall(input, callerId) },
       resources: trustedResources,
       callerId,
       toolManifests: allToolManifests,
     })
+    workspaceTools = Object.fromEntries(
+      Object.entries(offeredTools).filter(([name]) => implemented.has(name)),
+    ) as typeof offeredTools
     const activeToolManifests = allToolManifests
       .filter((manifest) => Object.hasOwn(workspaceTools ?? {}, manifest.providerName))
     promptMessages = [
@@ -244,7 +257,10 @@ export async function runChatTurn(
     onEvent: (loopEvent) => {
       if (signal?.aborted) return
       const streamEvent = toAgentStreamEvent(requestId, loopEvent)
-      if (streamEvent) onEvent(toChatAgentEvent(streamEvent))
+      if (streamEvent) {
+        onEvent(toChatAgentEvent(streamEvent))
+        callbacks.onStreamEvent?.(streamEvent)
+      }
       if (loopEvent.type === 'message_update') {
         streamedText += loopEvent.delta
       }
