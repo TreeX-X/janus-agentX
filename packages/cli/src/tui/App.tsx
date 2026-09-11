@@ -42,11 +42,10 @@ import {
   clampScrollOffset,
   containsMouseSequence,
   maintainMouseReporting,
-  isMouseCaptureDisabled,
   LINE_SCROLL_LINES,
   pageStep,
   parseWheelDelta,
-  setMouseCaptureSuspended,
+  shouldCaptureMouse,
 } from './scroll.js'
 
 /**
@@ -337,8 +336,6 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   exitRef.current = onExit
   const noticesRef = useRef<string[]>(initialNotices)
   noticesRef.current = initialNotices
-  // Note: native box-selection mode releases mouse capture — see .agents/notes/implemented/feature/2026-09-11-composer-mouse-select-mode.md
-  const [selectMode, setSelectMode] = useState(false)
 
   const refreshContext = useCallback(() => {
     const current = sessionRef.current
@@ -430,13 +427,12 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     }
   }, [])
 
-  // SGR mouse capture (opencode `tui.mouse` / pi `mouseScroll` shape): wheel
-  // ticks arrive as SGR sequences that `parseWheelDelta` turns into scroll
-  // steps in `useInput` below. TTY-gated and `JANUS_NO_MOUSE=1` opt-out so
-  // native selection/scrollback survives where capture hurts (tmux without
-  // `mouse on`, terminals where the wheel never reaches the app).
+  // Mouse capture is opt-in (`JANUS_MOUSE=1`): by default the terminal owns
+  // the mouse, so plain drag box-selects natively and wheel falls back to
+  // PgUp/PgDn/Ctrl+arrows. Captured wheel ticks arrive as SGR sequences
+  // that `parseWheelDelta` turns into scroll steps in `useInput` below.
   useEffect(() => {
-    if (isMouseCaptureDisabled()) return
+    if (!shouldCaptureMouse()) return
     return maintainMouseReporting(stdout)
   }, [stdout])
 
@@ -612,29 +608,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     lastInterruptRef.current = null
   }, [])
 
-  // Native box-selection mode: mouse capture released, the terminal owns
-  // drag selection and its own copy; the draft and every keyboard flow stay
-  // live (wheel falls back to PgUp/PgDn/Ctrl+arrows while released).
-  const enterSelectMode = useCallback((): void => {
-    setMouseCaptureSuspended(true, stdout)
-    setSelectMode(true)
-    lastInterruptRef.current = null
-  }, [stdout])
-
-  const exitSelectMode = useCallback((): void => {
-    setMouseCaptureSuspended(false, stdout)
-    setSelectMode(false)
-    lastInterruptRef.current = null
-  }, [stdout])
-
   useInput((inputValue, key) => {
     if (key.ctrl && inputValue === 'c') {
-      // Selection mode owns the key: a copy-intent Ctrl+C only leaves the
-      // mode, it never wipes the draft or aborts a turn.
-      if (selectMode) {
-        exitSelectMode()
-        return
-      }
       // The mounted composer owns Ctrl+C (see `handleInterrupt`); overlays,
       // the approval gate and the question panel keep App-level behavior.
       if (overlay === null && state.awaitingApproval == null && !state.awaitingQuestion) return
@@ -643,18 +618,6 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     }
     // Mouse reports do not count as intervening keyboard input.
     if (!containsMouseSequence(inputValue)) lastInterruptRef.current = null
-    // Native box-selection toggle (also with overlays open: the discussion
-    // stays selectable). Without mouse capture there is nothing to release,
-    // so say so instead of flipping a dead switch.
-    if (key.ctrl && !key.meta && inputValue === 'b') {
-      if (isMouseCaptureDisabled()) {
-        dispatch({ type: 'info', text: 'Native selection is already active (JANUS_NO_MOUSE=1): drag to select, scroll with PgUp/PgDn.' })
-        return
-      }
-      if (selectMode) exitSelectMode()
-      else enterSelectMode()
-      return
-    }
     if (overlay || state.awaitingQuestion) {
       if (key.ctrl && inputValue === 'd') setOverlay(null)
       return
@@ -677,10 +640,6 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     // approval gate and the question panel own Esc above. Idle Esc stays
     // with the Composer (completion dismiss).
     if (key.escape) {
-      if (selectMode) {
-        exitSelectMode()
-        return
-      }
       if (busyRef.current) controllerRef.current?.abort()
       return
     }
@@ -765,36 +724,29 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     ? formatTokenUsage(state.sessionPromptTokens, state.sessionCompletionTokens)
     : ''
   const footerUp = hidden > 0 ? `↑${Math.floor(hidden)}` : ''
-  const selectBadge = selectMode ? '框选·Esc退出' : ''
   const rightSegs: FootSeg[] = []
   if (footerConv) rightSegs.push({ text: footerConv, color: THEME.muted })
   if (footerStatus) rightSegs.push({ text: footerStatus, color: busy ? THEME.accent : THEME.muted })
   if (footerUsage) rightSegs.push({ text: footerUsage, color: THEME.body })
   if (footerUp) rightSegs.push({ text: footerUp, color: TUI_CHROME.yellow })
-  if (selectBadge) rightSegs.push({ text: selectBadge, color: TUI_CHROME.yellow })
-  const footerLeftFull = '[Enter] Send · [Shift+Enter] Line · [Ctrl+B] 框选 · [Ctrl+P] Cmds · /help'
+  const footerLeftFull = '[Enter] Send · [Shift+Enter] Line · [Ctrl+P] Cmds · /help'
   const footerLeftShort = '[Enter] Send · [Shift+Enter] Line · [Ctrl+P] Cmds'
   // Single source for the right-side order/shape (also unit-tested in store).
-  const footerRightFull = [
-    buildFooterText({
-      conversationLabel: footerConv,
-      statusText: footerStatus,
-      sessionPromptTokens: state.sessionPromptTokens,
-      sessionCompletionTokens: state.sessionCompletionTokens,
-      hiddenRows: hidden,
-    }),
-    selectBadge,
-  ].filter((part) => part).join(' · ')
+  const footerRightFull = buildFooterText({
+    conversationLabel: footerConv,
+    statusText: footerStatus,
+    sessionPromptTokens: state.sessionPromptTokens,
+    sessionCompletionTokens: state.sessionCompletionTokens,
+    hiddenRows: hidden,
+  })
   const footerFits = (left: string): boolean =>
     displayWidth(left) + (footerRightFull ? displayWidth(footerRightFull) + 2 : 0) <= discW
   const footerMode = footerFits(footerLeftFull) ? 'full' : footerFits(footerLeftShort) ? 'short' : 'truncated'
   const footerRight = truncateToWidth(footerRightFull, Math.max(0, discW - displayWidth(footerLeftFull) - 3))
   const footerLeft = truncateToWidth(footerLeftFull, Math.max(0, discW - displayWidth(footerRight) - (footerRight ? 3 : 0)))
-  const renderFooterLeft = (withHelp: boolean, withSelect: boolean): React.JSX.Element => (
+  const renderFooterLeft = (withHelp: boolean): React.JSX.Element => (
     <Text color={THEME.muted}>
-      <Text color={THEME.body}>[Enter]</Text> Send · <Text color={THEME.body}>[Shift+Enter]</Text> Line{withSelect ? (
-        <> · <Text color={THEME.body}>[Ctrl+B]</Text> 框选</>
-      ) : null} · <Text color={THEME.body}>[Ctrl+P]</Text> Cmds{withHelp ? (
+      <Text color={THEME.body}>[Enter]</Text> Send · <Text color={THEME.body}>[Shift+Enter]</Text> Line · <Text color={THEME.body}>[Ctrl+P]</Text> Cmds{withHelp ? (
         <> · <Text color={THEME.body}>/help</Text></>
       ) : null}
     </Text>
@@ -971,7 +923,6 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             onHistoryRecall={handleHistoryRecall}
             onInterrupt={handleInterrupt}
             onSelectionAction={handleSelectionAction}
-            selectModeActive={selectMode}
           />
         )}
       </Box>
@@ -979,8 +930,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       <Box flexDirection="column" flexShrink={0}>
         <Text color={TUI_CHROME.subtleBorder}>{'─'.repeat(Math.max(8, discW))}</Text>
         <Box justifyContent="space-between">
-          {footerMode === 'full' ? renderFooterLeft(true, true)
-            : footerMode === 'short' ? renderFooterLeft(false, false)
+          {footerMode === 'full' ? renderFooterLeft(true)
+            : footerMode === 'short' ? renderFooterLeft(false)
               : <Text color={THEME.muted}>{footerLeft}</Text>}
           {footerMode === 'truncated'
             ? (footerRight ? <Text color={THEME.muted}>{footerRight}</Text> : null)

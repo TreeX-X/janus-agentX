@@ -43,7 +43,46 @@ async function openLongSession(stream?: AsyncGenerator<string>): Promise<CliSess
 }
 
 describe('App scrollback', () => {
-  it('enables mouse reporting on the actual TTY and restores it on unmount', async () => {
+  it('leaves mouse capture off by default so plain drag selects natively', async () => {
+    const session = await openLongSession()
+    const writes: string[] = []
+    const stdout = Object.assign(new Writable({
+      write(chunk, _encoding, done) { writes.push(chunk.toString()); done() },
+    }), { isTTY: true, columns: 100, rows: 24 })
+    const stdin = Object.assign(new PassThrough(), {
+      isTTY: true, setRawMode() {}, ref() {}, unref() {},
+    })
+    const app = renderInteractive(
+      <App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={() => {}} />,
+      { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream,
+        interactive: true, patchConsole: false, exitOnCtrlC: false },
+    )
+    try {
+      stdin.write('go')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      stdin.write('\r')
+      await waitForFrame(() => writes.join('').includes('scroll-line-29'))
+      // No capture bytes on a default mount: the terminal owns the mouse.
+      expect(writes.join('')).not.toContain(MOUSE_ENABLE)
+      expect(writes.join('')).not.toContain(MOUSE_DISABLE)
+      // Injected wheel bytes still parse (the JANUS_MOUSE=1 path reuses it).
+      writes.length = 0
+      stdin.write('\x1b[<64;')
+      stdin.write('1;1M')
+      await waitForFrame(() => writes.join('').includes('↑'))
+      expect(writes.join('')).not.toContain('[<64;')
+    } finally {
+      app.unmount()
+      await app.waitUntilExit()
+      app.cleanup()
+      await session.close()
+    }
+    expect(writes.join('')).not.toContain(MOUSE_DISABLE)
+  })
+
+  it('takes and restores mouse capture on JANUS_MOUSE=1', async () => {
+    const previous = process.env['JANUS_MOUSE']
+    process.env['JANUS_MOUSE'] = '1'
     const session = await openLongSession()
     const writes: string[] = []
     const stdout = Object.assign(new Writable({
@@ -59,20 +98,13 @@ describe('App scrollback', () => {
     )
     try {
       await waitForFrame(() => writes.join('').includes(MOUSE_ENABLE))
-      stdin.write('go')
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      stdin.write('\r')
-      await waitForFrame(() => writes.join('').includes('scroll-line-29'))
-      writes.length = 0
-      stdin.write('\x1b[<64;')
-      stdin.write('1;1M')
-      await waitForFrame(() => writes.join('').includes('↑'))
-      expect(writes.join('')).not.toContain('[<64;')
     } finally {
       app.unmount()
       await app.waitUntilExit()
       app.cleanup()
       await session.close()
+      if (previous === undefined) delete process.env['JANUS_MOUSE']
+      else process.env['JANUS_MOUSE'] = previous
     }
     expect(writes.join('')).toContain(MOUSE_DISABLE)
   })

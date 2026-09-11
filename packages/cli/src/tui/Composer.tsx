@@ -87,17 +87,10 @@ interface ComposerProps {
   onInterrupt: () => void
   /** Any copy/cut/paste/select-all gesture (lets `App` drop its exit window). */
   onSelectionAction?: () => void
-  /**
-   * Native box-selection mode (mouse capture released): `App` owns Ctrl+C
-   * there (it only leaves the mode), so the composer stands down even with
-   * no keyboard selection — otherwise a copy-intent Ctrl+C would wipe the
-   * draft through `onInterrupt` before `App` ever sees it.
-   */
-  selectModeActive?: boolean
 }
 
 // Note: keyboard selection + clipboard copy/cut/paste live in this composer — see .agents/notes/implemented/feature/2026-09-11-composer-select-copy-paste.md
-export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall, onInterrupt, onSelectionAction, selectModeActive = false }: ComposerProps): React.JSX.Element {
+export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall, onInterrupt, onSelectionAction }: ComposerProps): React.JSX.Element {
   const [cursor, setCursor] = useState(0)
   const [anchor, setAnchor] = useState<number | null>(null)
   const [highlight, setHighlight] = useState(0)
@@ -187,7 +180,6 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
         return
       }
       if (input === 'c') {
-        if (selectModeActive) return
         if (copySelection()) return
         onInterrupt()
         return

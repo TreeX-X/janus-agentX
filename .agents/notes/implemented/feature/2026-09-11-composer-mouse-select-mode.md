@@ -28,3 +28,5 @@ Status: implemented
 
 - **Gains**: 输入框与讨论区可原生拖拽框选，复制进真系统剪贴板，键盘选中高亮降暗。守卫为 `npx tsc --noEmit` 加 `npx vitest run`（均在 `packages/cli`，32 文件 283 用例全过，新增 5：暂停语义 2、App 开关 2、Composer 让位 1）。
 - **Costs and limits**: 模式内滚轮失效，只剩键盘滚动；原生选中色归终端主题所有，应用侧只降暗自有键盘高亮；模式需手动进出，徽标是唯一的防忘提醒；粘贴仍走终端原生。当渲染方案暴露点击坐标、框选成为高频动作或用户要求自动进出时重访本决策。
+
+本决策被部分取代，见 [2026-09-11-composer-native-select-default](./2026-09-11-composer-native-select-default.md)（上报改默认关闭，暂停语义与 Ctrl+B 开关退役，降暗选中色继续有效，两边互链）。

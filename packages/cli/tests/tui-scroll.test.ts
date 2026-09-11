@@ -11,6 +11,7 @@ import {
   LINE_SCROLL_LINES,
   pageStep,
   parseWheelDelta,
+  shouldCaptureMouse,
   sliceVisualLines,
   sliceWindow,
   totalTimelineLines,
@@ -108,6 +109,14 @@ describe('viewport math', () => {
     expect(isMouseCaptureDisabled({} as NodeJS.ProcessEnv)).toBe(false)
     expect(isMouseCaptureDisabled({ JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(true)
     expect(LINE_SCROLL_LINES).toBeGreaterThan(0)
+  })
+
+  it('leaves capture off by default and takes it only on JANUS_MOUSE=1', () => {
+    expect(shouldCaptureMouse({} as NodeJS.ProcessEnv)).toBe(false)
+    expect(shouldCaptureMouse({ JANUS_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(true)
+    // The legacy opt-out wins on conflict.
+    expect(shouldCaptureMouse({ JANUS_MOUSE: '1', JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(shouldCaptureMouse({ JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(false)
   })
 })
 

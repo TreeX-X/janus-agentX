@@ -50,29 +50,15 @@ export function isMouseCaptureDisabled(env: NodeJS.ProcessEnv = process.env): bo
   return env['JANUS_NO_MOUSE'] === '1'
 }
 
-/* ── Capture suspension (native terminal box-selection mode) ─────────────
-   While suspended, the recovery timer below skips its reassert and no new
-   capture is written, so the terminal owns the mouse: plain drag selects
-   text natively and the terminal's own copy (Ctrl+Shift+C / right-click)
-   lands in the real system clipboard. Keyboard flows are untouched (wheel
-   falls back to PgUp/PgDn/Ctrl+arrows). `App` owns the toggle; the flag is
-   module state so the timer and the toggle never fight each other. */
-
-let mouseCaptureSuspended = false
-
-/** True while native-selection mode holds the mouse. */
-export function isMouseCaptureSuspended(): boolean {
-  return mouseCaptureSuspended
-}
-
 /**
- * Release (`true`) or reclaim (`false`) mouse capture. Writes go through
- * the TTY-gated helpers, so pipes and test doubles never see mode bytes.
+ * Mouse capture is opt-in: by default the terminal owns the mouse, so plain
+ * drag box-selects natively and copy/paste stay terminal-native. `JANUS_MOUSE=1`
+ * takes capture for wheel scrolling (tmux needs `mouse on`); `JANUS_NO_MOUSE=1`
+ * keeps forcing it off and wins on conflict.
  */
-export function setMouseCaptureSuspended(suspended: boolean, stdout?: TTYGatedStream | null): void {
-  mouseCaptureSuspended = suspended
-  if (suspended) disableMouseReporting(stdout ?? null)
-  else enableMouseReporting(stdout ?? null)
+export function shouldCaptureMouse(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env['JANUS_NO_MOUSE'] === '1') return false
+  return env['JANUS_MOUSE'] === '1'
 }
 
 interface TTYGatedStream {
@@ -85,11 +71,7 @@ interface TTYGatedStream {
 /** A host can recreate its emulator without restarting the PTY process. */
 export function maintainMouseReporting(stdout: TTYGatedStream): () => void {
   if (stdout.isTTY !== true) return () => undefined
-  // A suspended capture stays released: the timer skips its reassert so a
-  // native-selection session survives idle periods and resizes.
-  const restore = () => {
-    if (!isMouseCaptureSuspended()) enableMouseReporting(stdout)
-  }
+  const restore = () => enableMouseReporting(stdout)
   restore()
   stdout.on?.('resize', restore)
   // Reassert even when an idle/recreated host keeps the same dimensions.
@@ -98,7 +80,6 @@ export function maintainMouseReporting(stdout: TTYGatedStream): () => void {
   return () => {
     clearInterval(timer)
     stdout.off?.('resize', restore)
-    mouseCaptureSuspended = false
     disableMouseReporting(stdout)
   }
 }

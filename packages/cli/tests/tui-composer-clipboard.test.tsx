@@ -43,7 +43,7 @@ interface Harness {
   unmount: () => void
 }
 
-function mountComposer(selectModeActive = false): Harness {
+function mountComposer(): Harness {
   let current = ''
   let interruptCount = 0
   let selectionCount = 0
@@ -63,7 +63,6 @@ function mountComposer(selectModeActive = false): Harness {
         onSelectionAction={() => {
           selectionCount += 1
         }}
-        selectModeActive={selectModeActive}
         disabled={false}
         busy={false}
       />
@@ -178,21 +177,6 @@ describe('Composer selection + clipboard', () => {
       composer.stdin.write(CTRL_C)
       await waitForFrame(() => composer.interrupts() === 1)
       expect(composer.latest()).toBe('hello')
-    } finally {
-      composer.unmount()
-    }
-  })
-
-  it('stands down on Ctrl+C while native select mode is active', async () => {
-    const composer = mountComposer(true)
-    try {
-      await typeHello(composer)
-      await press(composer, CTRL_C)
-      await tick(150)
-      // App owns the key in select mode: no interrupt, no copy, text intact.
-      expect(composer.interrupts()).toBe(0)
-      expect(composer.latest()).toBe('hello')
-      expect(composer.selections()).toBe(0)
     } finally {
       composer.unmount()
     }
