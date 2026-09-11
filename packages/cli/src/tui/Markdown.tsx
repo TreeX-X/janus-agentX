@@ -2,7 +2,7 @@ import React, { memo, useMemo } from 'react'
 import { Box, Text } from 'ink'
 import { marked, type Token, type Tokens } from 'marked'
 import { displayText } from '../tool-display.js'
-import { LOGO_TONE } from '../logo.js'
+import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 
 function inline(tokens: Token[]): React.ReactNode {
   return tokens.map((token, index) => {
@@ -11,8 +11,8 @@ function inline(tokens: Token[]): React.ReactNode {
       case 'strong': return <Text key={index} bold>{children}</Text>
       case 'em': return <Text key={index} italic>{children}</Text>
       case 'del': return <Text key={index} strikethrough>{children}</Text>
-      case 'codespan': return <Text key={index} color="cyan">{token.text}</Text>
-      case 'link': return <Text key={index} color="cyan" underline>{children}{token.href !== token.text ? ` (${token.href})` : ''}</Text>
+      case 'codespan': return <Text key={index} color={TUI_CHROME.cyan}>{token.text}</Text>
+      case 'link': return <Text key={index} color={TUI_CHROME.cyan} underline>{children}{token.href !== token.text ? ` (${token.href})` : ''}</Text>
       case 'br': return '\n'
       case 'image': return <Text key={index}>{token.text} ({token.href})</Text>
       default: return <Text key={index}>{children}</Text>
@@ -26,7 +26,7 @@ function blocks(tokens: Token[], width: number, muted: boolean): React.ReactNode
     switch (token.type) {
       case 'space': return null
       case 'checkbox': return null
-      case 'heading': return <Text key={index} bold color={muted ? color : 'cyan'}>{inline(token.tokens ?? [])}</Text>
+      case 'heading': return <Text key={index} bold color={muted ? color : TUI_CHROME.cyan}>{inline(token.tokens ?? [])}</Text>
       case 'paragraph':
       case 'text': return <Text key={index} color={color} wrap="wrap">{'tokens' in token && token.tokens ? inline(token.tokens) : token.text}</Text>
       case 'code': {
@@ -37,7 +37,7 @@ function blocks(tokens: Token[], width: number, muted: boolean): React.ReactNode
           <Text color={LOGO_TONE.dim}>{`┌ ${code.lang?.split(/\s/)[0] || 'code'}`}</Text>
           {lines.map((line, row) => <Box key={row}>
             <Box width={digits + 3} flexShrink={0}><Text color={LOGO_TONE.dim}>{`${String(row + 1).padStart(digits)} │ `}</Text></Box>
-            <Box width={Math.max(1, width - digits - 3)}><Text color={code.lang === 'diff' && line.startsWith('+') ? 'green' : code.lang === 'diff' && line.startsWith('-') ? 'red' : muted ? color : 'cyan'} wrap="wrap">{line || ' '}</Text></Box>
+            <Box width={Math.max(1, width - digits - 3)}><Text color={code.lang === 'diff' && line.startsWith('+') ? TUI_CHROME.green : code.lang === 'diff' && line.startsWith('-') ? TUI_CHROME.red : muted ? color : TUI_CHROME.cyan} wrap="wrap">{line || ' '}</Text></Box>
           </Box>)}
           <Text color={LOGO_TONE.dim}>└</Text>
         </Box>
@@ -66,7 +66,7 @@ function blocks(tokens: Token[], width: number, muted: boolean): React.ReactNode
         </Box>
         return <Box key={index} flexDirection="column" marginY={1}>
           {[table.header, ...table.rows].map((row, r) => <Box key={r}>
-            {row.map((cell, c) => <Box key={c} width={cellWidth} paddingRight={1}><Text bold={r === 0} color={r === 0 ? 'cyan' : color}>{inline(cell.tokens)}</Text></Box>)}
+            {row.map((cell, c) => <Box key={c} width={cellWidth} paddingRight={1}><Text bold={r === 0} color={r === 0 ? TUI_CHROME.cyan : color}>{inline(cell.tokens)}</Text></Box>)}
           </Box>)}
         </Box>
       }

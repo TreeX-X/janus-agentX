@@ -1,15 +1,18 @@
 /**
  * @file Multiline Ink composer for the TUI (replaces single-line ink-text-input).
- * @description Transparent black input panel pinned to the bottom: no
- * background fill anywhere (the terminal's own black shows through), a thin
- * `╭─╮/│ │/╰─╯` frame that is orange while focused and gray while
- * disabled. Streaming keeps the editor focused. Panel dimensions follow
+ * @description Card-style input panel pinned to the bottom: a
+ * `╭─╮/│ │/╰─╯` frame with an accent left edge while focused and neutral
+ * edges while disabled, transparent fill (pure black shows through). Command completion
+ * floats as a popover above the card (dark highlight, never an orange
+ * block). Streaming keeps the editor focused. Panel dimensions follow
  * the live terminal size
  * (opencode-style responsive): the visible window shrinks on tiny terminals
  * and every resize re-renders via `useTerminalSize`. Enter submits,
  * Shift+Enter inserts a newline (kitty `return+shift`, legacy ConPTY LF),
  * and a leading `/` opens command completion (Up/Down navigate, Tab apply,
- * Esc dismiss, Enter submits). The caret is the REAL terminal block
+ * Esc dismiss, Enter submits). At the first/last line, Up/Down recalls
+ * submitted-input history shell-style (draft preserved, Down past newest
+ * restores it); inner lines still move the cursor. The caret is the REAL terminal block
  * (opencode-style, `useSyncedCaret` + `measureElement`): the OS IME follows
  * the native cursor, so CJK composition lands on the caret instead of the
  * frame bottom. Buffer rules and cursor math live in `composer-state.ts`;
@@ -31,15 +34,16 @@ import {
   insertText,
   offsetOfLine,
   padToWidth,
+  recallInputHistory,
   resolveComposerWindow,
   sliceAroundCursor,
   truncateToWidth,
   visibleStart,
 } from './composer-state.js'
-import { useTerminalSize } from './terminal-size.js'
+import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
 import { containsMouseSequence } from './scroll.js'
 import { useSyncedCaret, type CaretDebugSnapshot } from './native-cursor.js'
-import { LOGO_TONE } from '../logo.js'
+import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 
 const ACCENT = LOGO_TONE.orange
 const MUTED = LOGO_TONE.dim
@@ -51,9 +55,16 @@ interface ComposerProps {
   onSubmit: (value: string) => void
   disabled: boolean
   busy: boolean
+  /** Submitted inputs for shell-style ↑/↓ recall (oldest-first). */
+  history?: readonly string[]
+  /** Null browses the draft; otherwise an index into `history`. */
+  historyIndex?: number | null
+  /** Unsent draft preserved when recall starts. */
+  historyDraft?: string
+  onHistoryRecall?: (next: { value: string; index: number | null; draft: string }) => void
 }
 
-export function Composer({ value, onChange, onSubmit, disabled, busy }: ComposerProps): React.JSX.Element {
+export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall }: ComposerProps): React.JSX.Element {
   const [cursor, setCursor] = useState(0)
   const [highlight, setHighlight] = useState(0)
   const [dismissedFor, setDismissedFor] = useState<string | null>(null)
@@ -181,7 +192,28 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
     }
     if (key.upArrow || key.downArrow) {
       const { line, column } = cursorLineOf(value, cursor)
-      move(offsetOfLine(value, line + (key.upArrow ? -1 : 1), column))
+      const totalLines = value.split('\n').length
+      if (key.upArrow && line > 0) {
+        move(offsetOfLine(value, line - 1, column))
+        return
+      }
+      if (key.downArrow && line < totalLines - 1) {
+        move(offsetOfLine(value, line + 1, column))
+        return
+      }
+      // Edge line: shell-style history recall (draft preserved, Down past
+      // newest restores it). Completion list above takes precedence.
+      const next = recallInputHistory(
+        history,
+        { index: historyIndex, draft: historyDraft },
+        value,
+        key.upArrow ? 'up' : 'down',
+      )
+      if (next.value !== value || next.index !== historyIndex) {
+        onHistoryRecall?.(next)
+        if (!onHistoryRecall) onChange(next.value)
+        setCursor(next.value.length)
+      }
       return
     }
     // Remaining control keys carry no text.
@@ -193,13 +225,14 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   }, { isActive: !disabled })
 
   // Frame geometry from the live terminal size (never frozen, never
-  // wrapping): the panel always fits the current width. No background fill
-  // — the terminal's own black is the panel background.
+  // wrapping): the panel always fits the current width. Accent left edge
+  // while focused, neutral edges elsewhere, transparent fill so the
+  // terminal stays pure black; geometry is unchanged.
   const windowRows = resolveComposerWindow(termRows)
-  const totalW = Math.max(10, columns - 2)
+  const totalW = Math.max(10, columns - TUI_HORIZONTAL_PADDING * 2)
   const textW = Math.max(4, totalW - 6) // '│ ' + prompt(2) + text + ' │'
   const itemW = Math.max(4, totalW - 4) // '│ ' + item + ' │'
-  const frameColor = active ? ACCENT : 'gray'
+  const frameIdle = TUI_CHROME.cardBorder
   const promptColor = active ? ACCENT : MUTED
 
   const rawLines = value.split('\n')
@@ -267,15 +300,21 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
     }
   }
 
+  const edgeColor = active ? ACCENT : MUTED
+
   const frameRow = (left: string, middle: string, right: string, key: string): React.JSX.Element => (
-    <Text key={key} color={frameColor}>{`${left}${middle}${right}`}</Text>
+    <Text key={key}>
+      <Text color={edgeColor}>{left}</Text>
+      <Text color={frameIdle}>{middle}</Text>
+      <Text color={frameIdle}>{right}</Text>
+    </Text>
   )
 
   const contentRow = (body: React.ReactNode, key: string): React.JSX.Element => (
     <Text key={key}>
-      <Text color={frameColor}>│ </Text>
+      <Text color={edgeColor}>│ </Text>
       {body}
-      <Text color={frameColor}> │</Text>
+      <Text color={frameIdle}> │</Text>
     </Text>
   )
 
@@ -338,13 +377,16 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
     )
   }
 
-  const renderItemRow = (name: string, hint: string, selected: boolean): React.JSX.Element => {
+  const renderItemRow = (name: string, hint: string, selected: boolean, key: string): React.JSX.Element => {
     const label = `/${name}  ${hint}`
+    // Borderless popover rows above the card: same row budget as the old
+    // in-frame list (no extra chrome rows on small terminals); selection is
+    // a dark highlight, everything else stays transparent on pure black.
     if (selected) {
-      return <Text backgroundColor={ACCENT} color="black">{padToWidth(truncateToWidth(label, itemW), itemW)}</Text>
+      return <Text key={key} backgroundColor={TUI_CHROME.selectBg} color={BODY}>{padToWidth(truncateToWidth(label, itemW), itemW)}</Text>
     }
     return (
-      <Text>
+      <Text key={key}>
         <Text color={ACCENT}>/{name}</Text>
         <Text color={MUTED}>{padToWidth(`  ${hint}`, itemW - name.length - 1)}</Text>
       </Text>
@@ -352,13 +394,15 @@ export function Composer({ value, onChange, onSubmit, disabled, busy }: Composer
   }
 
   return (
-    <Box flexDirection="column" ref={frameRef}>
-      {frameRow('╭', '─'.repeat(totalW - 2), '╮', 'top')}
-      {rows.map((line, index) => contentRow(renderTextRow(line, start + index), `line-${start + index}`))}
+    <Box flexDirection="column">
       {showList
-        ? candidates.slice(completionStart, completionStart + completionRows).map((item, index) => contentRow(renderItemRow(item.name, item.hint, completionStart + index === highlight), `cmd-${item.name}`))
+        ? candidates.slice(completionStart, completionStart + completionRows).map((item, index) => renderItemRow(item.name, item.hint, completionStart + index === highlight, `cmd-${item.name}`))
         : null}
-      {frameRow('╰', '─'.repeat(totalW - 2), '╯', 'bottom')}
+      <Box flexDirection="column" ref={frameRef}>
+        {frameRow('╭', '─'.repeat(totalW - 2), '╮', 'top')}
+        {rows.map((line, index) => contentRow(renderTextRow(line, start + index), `line-${start + index}`))}
+        {frameRow('╰', '─'.repeat(totalW - 2), '╯', 'bottom')}
+      </Box>
     </Box>
   )
 }

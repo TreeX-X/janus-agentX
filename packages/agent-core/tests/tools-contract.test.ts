@@ -9,6 +9,7 @@ import { createToolPreview, createWorkspaceChatTools } from '../src/main/agent/c
 
 const ALL_MODEL_TOOLS = [
   'workspace_list', 'workspace_search', 'workspace_read', 'workspace_edit', 'workspace_create',
+  'workspace_delete',
   'project_detect', 'project_generate_config', 'project_apply_config',
   'project_list_processes', 'project_process_output',
   'project_start_process', 'project_stop_process',
@@ -33,7 +34,7 @@ function buildTools() {
 }
 
 describe('model tool-name contract', () => {
-  it('exposes exactly the 21 documented model tools', () => {
+  it('exposes exactly the 22 documented model tools', () => {
     expect(Object.keys(buildTools()).sort()).toEqual([...ALL_MODEL_TOOLS].sort())
   })
 
@@ -60,5 +61,14 @@ describe('model tool-name contract', () => {
     expect(preview?.summary).toContain('Edit a.ts')
     expect((preview?.detail?.length ?? 0)).toBeLessThanOrEqual(4_000)
     expect(createToolPreview('workspace.read', { path: 'a.ts' })).toBeUndefined()
+  })
+
+  it('builds a bounded delete preview naming the target and scope', () => {
+    const preview = createToolPreview('workspace.delete', { path: 'old/', recursive: true })
+    expect(preview?.summary).toBe('Delete old/ (recursive)')
+    expect(preview?.paths).toEqual(['old/'])
+    expect((preview?.detail?.length ?? 0)).toBeLessThanOrEqual(4_000)
+    const plain = createToolPreview('workspace.delete', { path: 'old.md' })
+    expect(plain?.summary).toBe('Delete old.md')
   })
 })

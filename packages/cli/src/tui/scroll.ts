@@ -53,6 +53,24 @@ export function isMouseCaptureDisabled(env: NodeJS.ProcessEnv = process.env): bo
 interface TTYGatedStream {
   isTTY?: unknown
   write: (data: string) => unknown
+  on?: (event: 'resize', listener: () => void) => unknown
+  off?: (event: 'resize', listener: () => void) => unknown
+}
+
+/** A host can recreate its emulator without restarting the PTY process. */
+export function maintainMouseReporting(stdout: TTYGatedStream): () => void {
+  if (stdout.isTTY !== true) return () => undefined
+  const restore = () => enableMouseReporting(stdout)
+  restore()
+  stdout.on?.('resize', restore)
+  // Reassert even when an idle/recreated host keeps the same dimensions.
+  const timer = setInterval(restore, 2000)
+  timer.unref()
+  return () => {
+    clearInterval(timer)
+    stdout.off?.('resize', restore)
+    disableMouseReporting(stdout)
+  }
 }
 
 /** Write SGR mouse reporting on. No-op unless `stdout` is a live TTY. */

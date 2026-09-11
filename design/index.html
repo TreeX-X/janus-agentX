@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<!-- ============================================================================
+  JANUS TUI · 高保真 HTML 原型 · design/index.html
+  ----------------------------------------------------------------------------
+  Assumptions（先展示假设，再执行）:
+  - 还原目标 = packages/cli/src/tui/App.tsx 全屏三段式：header / discussion
+    (flexGrow) / composer+statusbar pinned bottom。终端自身黑色即背景，
+    全局无 background fill（Composer.tsx / tool-card.ts 注释均强调）。
+  - 配色严格取自 logo.ts LOGO_TONE + tool-card.ts：
+    accent #ff7830 / muted #8a8f98 / body #e8e8e8 / card带 #202224 /
+    done #9acbb4。assistant markdown heading/link/code 用 cyan 系。
+  - 字体用等宽终端栈，还原 Ink 按 cell 排布的观感；ASCII banner 用 ██/░░
+    双宽块，还原 renderLogoJanusLine / renderLogoXLine。
+  - Reasoning: 做成“状态切换台 + 终端复刻”单文件，方便你围绕 HTML 改 UI，
+    改完把结论反馈回 App.tsx / Composer.tsx / palette.tsx / store.ts。
+  - Placeholders: 真实 workspace/model 名用示例值，可在顶部 Tweaks 里改；
+    图片素材无（TUI 本来就没有配图，不引入 AI slop）。
+  用法：双击用浏览器打开即可，无需 server、无外部依赖。
+============================================================================= -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>janus TUI · Hi-Fi Prototype</title>
+<style>
+  :root{
+    --accent:#ff7830; --muted:#8a8f98; --body:#e8e8e8;
+    --cardbg:#202224; --done:#9acbb4;
+    --cyan:#4dd6ff; --yellow:#f5c518; --red:#ff5c5c; --green:#4ade80;
+    --magenta:#e879f9; --term:#000000; --panel:#0b0b0c; --line:#2a2d31;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#111114;color:var(--body);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"JetBrains Mono","Noto Sans Mono CJK SC",monospace;}
+  /* ---- 设计控制台（终端之外，仅用于改稿，不属于 TUI 本体） ---- */
+  .desk{max-width:1180px;margin:0 auto;padding:20px 20px 40px}
+  .desk h1{font-size:15px;font-weight:700;margin:0 0 4px}
+  .desk h1 span{color:var(--accent)}
+  .desk .sub{color:var(--muted);font-size:12px;line-height:1.7;margin-bottom:12px}
+  .desk .sub code{color:var(--body);background:#1c1e20;padding:0 5px;border-radius:4px}
+  .bar{background:#17181a;border:1px solid #26282c;border-radius:12px;padding:12px 14px;
+    display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+  .seg{display:flex;background:#0e0f11;border:1px solid #2b2e33;border-radius:9px;overflow:hidden}
+  .seg button{border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;
+    padding:7px 11px;cursor:pointer;white-space:nowrap}
+  .seg button.on{background:var(--accent);color:#000;font-weight:700}
+  .tweak{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+  .tweak input[type=text]{background:#0e0f11;border:1px solid #2b2e33;color:var(--body);
+    font:inherit;font-size:12px;border-radius:7px;padding:6px 8px;width:170px}
+  .switch{position:relative;width:34px;height:19px;background:#2b2e33;border-radius:99px;cursor:pointer;border:1px solid #3a3e44;flex:none}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#777;transition:.15s}
+  .switch.on{background:#3a2a1e;border-color:var(--accent)}
+  .switch.on::after{left:17px;background:var(--accent)}
+  .hint{font-size:11px;color:#5c6169;width:100%;line-height:1.6}
+  .hint b{color:var(--muted)}
+  /* ---- 终端复刻 ---- */
+  .termwrap{background:#000;border:1px solid #2c2e33;border-radius:14px;overflow:hidden;
+    box-shadow:0 24px 80px rgba(0,0,0,.6)}
+  .termchrome{display:flex;align-items:center;gap:8px;padding:9px 14px;background:#0c0d0e;
+    border-bottom:1px solid #202224;font-size:12px;color:var(--muted)}
+  .dots{display:flex;gap:6px}
+  .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .term{padding:14px 16px 10px;min-height:640px;display:flex;flex-direction:column;font-size:13.5px;line-height:1.62}
+  /* header: App.tsx round border gray */
+  .hd{border:1px solid #6b7280;border-radius:9px;padding:3px 12px;display:flex;gap:0;flex-wrap:wrap;
+    font-size:13px;margin:0 2px}
+  .hd b{color:var(--accent);font-weight:700}
+  .hd span{color:var(--muted)}
+  .disc{flex:1;margin:12px 2px;min-height:380px}
+  .blk{margin-bottom:14px}
+  .you{color:var(--muted);font-weight:700}
+  .janus{color:var(--accent);font-weight:700}
+  .muted{color:var(--muted)} .body{color:var(--body)} .acc{color:var(--accent)}
+  .cyan{color:var(--cyan)} .yellow{color:var(--yellow)} .red{color:var(--red)}
+  .green{color:var(--green)} .mag{color:var(--magenta)} .done{color:var(--done)}
+  /* 空态 banner */
+  .banner{font-size:12px;line-height:1.15;letter-spacing:0;white-space:pre;margin:6px 0 4px;
+    font-family:inherit}
+  .banner .x-o{color:var(--accent)} .banner .x-d{color:var(--muted)}
+  /* notice divider card: NoticeRow */
+  .notice{margin:10px 0}
+  .notice .rule{color:var(--muted);white-space:nowrap;overflow:hidden}
+  /* thinking */
+  .think-live{font-style:italic}
+  .caret{display:inline-block;width:8px;height:15px;background:var(--accent);vertical-align:-2px;
+    animation:blink 1.06s steps(1) infinite}
+  .caret.dim{background:var(--muted);animation:none;opacity:.8}
+  @keyframes blink{50%{opacity:0}}
+  /* markdown */
+  .md h3{color:var(--cyan);font-size:13.5px;margin:6px 0 4px}
+  .md p{margin:4px 0;color:var(--body)}
+  .md code{background:rgba(77,214,255,.12);color:var(--cyan);padding:0 4px;border-radius:4px;font:inherit}
+  .md a{color:var(--cyan)}
+  .codebox{margin:8px 0;border:0}
+  .codebox .cap{color:var(--muted)}
+  .codebox .row{display:flex}
+  .codebox .ln{color:var(--muted);flex:none;text-align:right;padding-right:8px;user-select:none}
+  .bq{display:flex;margin:6px 0}
+  .bq .bar2{color:var(--muted);padding-right:8px}
+  ul.tight{margin:4px 0;padding-left:18px;color:var(--body)}
+  /* tool card: TOOL_CARD_BG #202224 整行色带 */
+  .tool{margin-bottom:14px}
+  .tool .band{background:var(--cardbg);display:block;padding:1px 8px;white-space:pre-wrap;word-break:break-all}
+  .tool .meta{padding-left:10px}
+  .tool .out{padding-left:22px;color:var(--muted);white-space:pre-wrap;word-break:break-all}
+  .tool .out .add{color:var(--green)} .tool .out .del{color:var(--red)}
+  /* todo sticky */
+  .todo{margin:4px 2px 8px}
+  .todo .t{color:var(--accent)}
+  /* composer frame ╭─╮ orange/gray */
+  .composer{color:var(--accent);margin:0 2px}
+  .composer.disabled{color:#6b7280}
+  .composer pre{margin:0;font:inherit;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+  .composer .inner{color:var(--body)}
+  .composer .prompt{color:inherit}
+  .composer .ghost{color:var(--muted)}
+  .compl{color:var(--body)}
+  .compl .sel{background:var(--accent);color:#000;display:block}
+  .compl .row{display:block;padding:0 6px}
+  /* PanelFrame orange round */
+  .panel{border:1px solid var(--accent);border-radius:9px;padding:8px 12px;margin:8px 2px;max-width:640px}
+  .panel h4{margin:0 0 6px;color:var(--accent);font-size:13px}
+  .panel .foot{color:var(--muted);font-size:12px;margin-top:6px}
+  .pick{display:block;padding:1px 8px;border-radius:2px}
+  .pick.sel{background:var(--accent);color:#000;font-weight:700}
+  .field{background:#0e0f11;border:1px solid #33363b;border-radius:6px;padding:4px 8px;margin-top:4px;
+    display:flex;gap:6px;align-items:center}
+  .footer{color:#6b7280;font-size:12.5px;margin:10px 2px 4px;white-space:nowrap;overflow:hidden}
+  .kbd{border:1px solid #33363b;border-bottom-width:2px;border-radius:5px;padding:0 5px;font-size:11px;
+    background:#151619;color:var(--body)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+  .note{font-size:11.5px;color:#5c6169;line-height:1.7;margin-top:10px}
+  .note b{color:var(--muted)}
+  a{color:var(--cyan)}
+</style>
+</head>
+<body>
+<div class="desk">
+  <h1>janus TUI <span>·</span> 高保真原型 <span style="color:#5c6169;font-weight:400">design/index.html</span></h1>
+  <div class="sub">
+    1:1 还原 <code>packages/cli/src/tui/App.tsx</code>（header / discussion / composer+statusbar）+
+    <code>Composer.tsx</code>（╭─╮ 橙框）+ <code>palette.tsx</code>（PanelFrame）+
+    <code>tool-card.ts</code>（<code>#202224</code> 色带）+ <code>store.ts</code>（footer 文案）。
+    上方是<strong style="color:var(--body)">改稿控制台（不属于 TUI）</strong>：切场景、开合 thinking/tools、改 header 字段。
+    改完把结论按「场景 → 改了什么 → 对应源码行」反馈，我再落到工程实现。
+  </div>
+
+  <div class="bar">
+    <div class="seg" id="scenes">
+      <button data-s="empty">空态 empty</button>
+      <button data-s="conv" class="on">会话 conversation</button>
+      <button data-s="working">运行中 working</button>
+      <button data-s="approval">审批 approval</button>
+      <button data-s="question">提问 question</button>
+      <button data-s="overlays">浮层 palette</button>
+    </div>
+    <label class="tweak"><span class="switch on" id="swThink"></span> thinking 展开 <span class="kbd">Ctrl+T</span></label>
+    <label class="tweak"><span class="switch" id="swTools"></span> tool 输出展开 <span class="kbd">Ctrl+O</span></label>
+    <label class="tweak"><span class="switch on" id="swTodo"></span> TodoStickyBar</label>
+    <label class="tweak"><span class="switch on" id="swPending"></span> queued 提示</label>
+    <input type="text" id="inModel" value="openai/gpt-5 · medium" title="modelLabel">
+    <input type="text" id="inWs" value="janus-agentX" title="workspaceLabel">
+    <input type="text" id="inAppr" value="auto-run" title="approvalLabel" style="width:110px">
+    <span class="hint"><b>改稿建议：</b>直接在浏览器 DevTools 里改 CSS（<code>:root</code> 色板 / <code>.term</code> 字号行高 /
+    <code>.tool .band</code> 色带 / <code>.composer</code> 边框），截图 + 文字描述发回即可。
+    场景按钮只是把同一套 DOM 按 <code>App.tsx: empty / approval / awaitingQuestion / overlay</code> 四个分支做了显隐。</span>
+  </div>
+
+  <div class="termwrap">
+    <div class="termchrome"><span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span><span>janus — resident TUI（opencode-style）· 80×24 复刻 · 黑色即背景，无填充</span></div>
+    <div class="term">
+      <!-- header -->
+      <div class="hd"><b>janus</b><span>&nbsp;· <span id="hWs">janus-agentX</span> · <span id="hModel">openai/gpt-5 · medium</span> · <span id="hAppr">auto-run</span></span></div>
+
+      <div class="disc" id="disc"><!-- JS 按场景渲染 --></div>
+
+      <!-- 底部常驻：todo + composer/浮层 + footer -->
+      <div id="bottom"></div>
+      <div class="footer" id="footer">my-feature · /help · ctrl+p · 12.4k in / 3.1k out</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="note"><b>对照源码（改完要落回去的位置）：</b><br>
+    · 顶栏 → <code>App.tsx:665-668</code> round 边框 + 三段 label<br>
+    · 空 banner → <code>App.tsx:74-93 EmptyBanner</code> + <code>logo.ts:PIXEL_WORDMARK</code><br>
+    · thinking 行 → <code>App.tsx:172-191</code>（折叠 gist / 展开 Markdown muted）<br>
+    · tool 卡 → <code>App.tsx:192-227</code> + <code>tool-card.ts:TOOL_CARD_BG/toolCardFg</code><br>
+    · todo 条 → <code>App.tsx:100-123 TodoStickyBar</code>（只读镜像）<br>
+    · 审批 → <code>App.tsx:748-761</code> y/n 门；提问 → <code>question-panel.tsx</code><br>
+    · 浮层 → <code>palette.tsx:PanelFrame/CommandPalette/ApprovalPanel/EffortPanel</code> + <code>connect-panel.tsx</code><br>
+    · 输入框 → <code>Composer.tsx:385-394</code> ╭─╮ + <code>composer-state.ts:COMMAND_COMPLETIONS</code><br>
+    · 底栏 → <code>store.ts:117-128 buildFooterText</code></div>
+    <div class="note"><b>反馈模板（你后续照这个格式给我）：</b><br>
+    场景：conversation / working / approval …<br>
+    改动：如「tool 卡色带太重，改为仅首行色带 + 左侧 2px accent」<br>
+    位置：<code>.tool .band</code> → 落回 <code>App.tsx:207 TOOL_CARD_BG</code><br>
+    我收到后按 <code>.codex/skills/orchestrateX</code> 走 xdo 直接改工程 + 跑单测验证。</div>
+  </div>
+</div>
+
+<script>
+/* 高保真内容：与源码同一文案、同一顺序（store.ts timeline 交错：thinking→tool→thinking→answer） */
+const PIXEL = {
+  J:['0011','0001','0001','1001','0110'], A:['0110','1001','1111','1001','1001'],
+  N:['1001','1101','1011','1001','1001'], U:['1001','1001','1001','1001','0110'],
+  S:['0111','1000','0110','0001','1110'], X:['10002','01020','00100','02010','20001']};
+function cellRow(pat){return [...pat].map(c=>c==='1'?'██':c==='2'?'░░':'  ').join('');}
+function bannerHTML(){
+  let h='<div class="banner body" aria-label="JANUS X">';
+  for(let r=0;r<5;r++){
+    h+='<div>'+['J','A','N','U','S'].map(L=>cellRow(PIXEL[L][r])).join('  ')+'  ';
+    h+=[...PIXEL.X[r]].map(c=>c==='1'?'<span class="x-o">██</span>':c==='2'?'<span class="x-d">░░</span>':'  ').join('')+'</div>';
+  }
+  return h+'</div>';
+}
+const RULE='─'.repeat(72);
+const state={scene:'conv',thinkEx:false,toolsEx:true,todo:true,pending:true};
+
+const convDisc = `
+  <div class="blk"><div class="you">you ›</div><div class="body">把 TUI 的视觉状态完整复刻成 HTML，我要围绕它改 UI</div></div>
+  <div class="blk"><div class="yellow">▸ thinking · 2.3s · 先列 timeline block 类型再排 composer 几何</div></div>
+  <div class="tool">
+    <span class="band done">✔ workspace.read · completed · 1.2s</span>
+    <div class="meta cyan">read › packages/cli/src/tui/App.tsx</div>
+    <div class="meta muted">&nbsp;&nbsp;└ App.tsx + Composer.tsx + palette.tsx + store.ts 已读</div>
+    <div class="out">    packages/cli/src/tui/App.tsx:665 header round 边框
+    packages/cli/src/tui/Composer.tsx:387 ╭─╮ 输入框
+    packages/cli/src/tui/palette.tsx:22 PanelFrame
+    <span class="toolmore">    … 2 more lines</span></div>
+  </div>
+  <div class="blk"><div class="janus">janus ›</div>
+    <div class="md">
+      <h3>复刻完成，三段式 Character 对齐源码</h3>
+      <p>顶栏是 <code>round</code> 边框，讨论区 <code>flexGrow</code>，输入框 pin 底。
+      终端黑即背景，tool 卡走 <code>#202224</code> 中性带，与正文区分。</p>
+      <div class="codebox"><div class="cap">┌ tsx</div>
+        <div class="row"><span class="ln" style="width:28px">1 │ </span><span class="cyan">&lt;Box paddingX={2} height={termHeight - 1}&gt;</span></div>
+        <div class="row"><span class="ln" style="width:28px">2 │ </span><span class="body">&nbsp;&nbsp;&lt;Header /&gt; &lt;Discussion flexGrow /&gt; &lt;Composer /&gt;</span></div>
+        <div class="cap">└</div></div>
+      <ul class="tight"><li>thinking 默认折叠，只留一行 gist</li><li>tool 输出默认只露 3 行，其余折叠</li></ul>
+      <div class="bq"><span class="bar2">│ </span><span class="muted">改稿时只动 HTML/CSS，定稿后再回写 Ink。</span></div>
+    </div>
+  </div>
+  <div class="blk"><div class="you">you ›</div><div class="body">/effort 也加进 palette 看看？</div></div>
+  <div class="tool">
+    <span class="band" style="color:var(--magenta)">◇ workspace.edit (path, content) · running…</span>
+    <div class="meta" style="color:var(--magenta)">edit › packages/cli/src/tui/palette.tsx</div>
+    <div class="meta muted">&nbsp;&nbsp;└ + EffortPanel · 8 levels</div>
+    <div class="out">    <span class="add">+  { id: 'xhigh', hint: 'very deep' }</span>
+    <span class="del">-  { id: 'ultra', hint: 'legacy' }</span></div>
+  </div>`;
+
+const workingDisc = `
+  <div class="blk"><div class="you">you ›</div><div class="body">把登录态的 provider 列表过一遍，顺手把超时重试加上</div></div>
+  <div class="blk"><div class="yellow">▸ thinking</div><div class="muted think-live">正在比对 session.listProviders() 与面板 roster…<span class="caret dim"></span></div></div>
+  <div class="tool">
+    <span class="band" style="color:var(--muted)">· command.run · preparing</span>
+    <div class="meta muted">&nbsp;&nbsp;arguments · 312 chars</div>
+  </div>
+  <div class="tool">
+    <span class="band" style="color:var(--accent)">◐ workspace.search… · running</span>
+    <div class="meta cyan">&nbsp;&nbsp;search › query: listProviders roster probe</div>
+    <div class="out">    src/session.ts:88  getApiKeySource()
+    src/providers.ts:41  isProviderEnabled()
+    src/connect.ts:102  testConnection()</div>
+  </div>
+  <div class="blk muted"><span id="spin">⠋</span> running workspace.search… · <span id="secs">4.2s</span></div>`;
+
+const emptyDisc = bannerHTML() + `
+  <div class="notice"><div class="rule">${RULE}</div>
+    <div><span class="acc">○ </span><span class="body">missing model — pick one with /model, then retry.</span></div>
+    <div><span class="acc">○ </span><span class="body">no API key — /connect openai to add one (lands in auth.json).</span></div>
+    <div class="rule">${RULE}</div></div>
+  <div class="blk muted">空态只剩 banner + notice 分隔卡，不输出裸 console 日志（App.tsx:273）。在下方输入框打字或按 <span class="kbd">Ctrl+P</span> 呼出 palette。</div>`;
+
+function bottomFor(s){
+  const todo = state.todo ? `<div class="todo"><div class="t">○ 待办 1/3 · 当前: 复刻 TUI 为 HTML</div>
+    <div class="muted">&nbsp;&nbsp;● 读 App/Composer/palette/store 源码</div>
+    <div style="color:var(--yellow)">&nbsp;&nbsp;◐ 输出 design/index.html 高保真</div>
+    <div class="muted">&nbsp;&nbsp;○ 围绕 HTML 改 UI 并回写工程</div></div>` : '';
+  const queued = state.pending ? `<div class="muted" style="margin:0 2px 6px">queued (1): /model openai/gpt-5-mini</div>` : '';
+  const composer = (ghost, extra='') => `
+    <div class="composer" style="margin-top:2px"><pre>╭${'─'.repeat(66)}╮
+│ <span class="prompt">› </span><span class="inner">${ghost?'<span class="ghost">'+ghost+'</span>':'<span id="cin"></span><span class="caret"></span>'}</span>${' '.repeat(Math.max(0,60-(ghost?ghost.length:0)))} │
+${extra}╰${'─'.repeat(66)}╯</pre></div>`;
+  const compl = `
+│ <span class="compl"><span class="row"><span class="acc">/effort</span><span class="muted">  Show or switch reasoning effort.</span></span>
+<span class="row sel">/connect  Provider setup wizard.                                      </span>
+<span class="row"><span class="acc">/status</span><span class="muted">  Show provider/model/key/config.</span></span></span> │`;
+  if(s==='empty') return todo + `<div class="panel"><h4>◇ command palette</h4>
+      <div><span class="muted">› </span><span class="body">con</span><span class="caret dim"></span></div>
+      <div><span class="pick sel">Connect / manage providers  keys + test</span></div>
+      <div><span class="body">Show status</span><span class="muted">  /status</span></div>
+      <div class="foot">↑↓ move · Enter run · Esc close</div></div>`
+    + composer('message (/help)');
+  if(s==='approval') return todo + queued + `
+    <div class="panel" style="max-width:720px"><h4>◇ approve workspace.edit[janus-agentX] risk=medium — update palette EffortPanel</h4>
+      <div class="body">&nbsp;&nbsp;packages/cli/src/tui/palette.tsx:146 +18/-4</div>
+      <div class="body">&nbsp;&nbsp;packages/cli/src/effort.ts:48 EFFORT_META</div>
+      <div class="muted">&nbsp;&nbsp;… (2 more)</div>
+      <div class="muted" style="margin-top:4px">Allow? press <b style="color:var(--body)">y</b> / <b style="color:var(--body)">n</b></div></div>`
+    + composer(null) ;
+  if(s==='question') return todo + `
+    <div class="panel" style="max-width:720px"><h4>◇ confirm plan · 1/2 · effort-picker</h4>
+      <div class="body">默认 effort 切到 high 吗？hard 任务会慢但更稳。</div>
+      <div style="margin-top:4px"><span class="pick sel">▸ 1 保持 medium  balanced (default)            </span>
+      <span class="pick">  2 切到 high  deep reasoning                  </span></div>
+      <div class="foot">↑↓ move · 1-6 jump · Enter confirm · c custom · Esc cancel all</div></div>`
+    + composer('message');
+  if(s==='overlays') return `
+    <div class="panel"><h4>◇ reasoning effort</h4>
+      <div><span class="pick">  none  no reasoning (fastest · cheapest)</span>
+      <span class="pick sel">* medium  balanced (default) (general work)</span>
+      <span class="pick">  high  deep reasoning (hard tasks · slower)</span>
+      <span class="pick">  xhigh  very deep (complex reasoning · costly)</span></div>
+      <div class="foot">↑↓ move · 1-8 jump · Enter switch · Esc close</div></div>
+    <div class="panel"><h4>◇ connect provider</h4>
+      <div><span class="muted">› </span><span class="body">ope</span><span class="caret dim"></span></div>
+      <div><span class="pick sel">openai (OpenAI)  key ✓</span></div>
+      <div><span class="pick">  deepseek (DeepSeek)  key ✗</span></div>
+      <div><span class="acc">+ Add new provider…</span></div>
+      <div class="foot">↑↓ move · Enter confirm · Del remove · Esc back/close</div></div>`
+    + composer('message (/help)');
+  if(s==='working') return todo + queued + composer(null);
+  /* conv 默认带 / 补全，呼应 Composer completion */
+  return todo + queued + composer(null, compl+'\n');
+}
+
+function render(){
+  const d=document.getElementById('disc'), b=document.getElementById('bottom');
+  document.querySelectorAll('#scenes button').forEach(x=>x.classList.toggle('on',x.dataset.s===state.scene));
+  let disc=convDisc, foot='my-feature · /help · ctrl+p · 12.4k in / 3.1k out';
+  if(state.scene==='empty'){disc=emptyDisc;foot='/help · ctrl+p';}
+  if(state.scene==='working'){disc=workingDisc;foot='my-feature · running workspace.search… · /help · ctrl+p · ↑12';}
+  if(state.scene==='approval'){disc=convDisc+`<div class="blk red">✘ model error 429 (retryable)</div>`;foot='my-feature · awaiting approval · /help · ctrl+p';}
+  if(state.scene==='question'){disc=convDisc;foot='my-feature · awaiting your pick… · /help · ctrl+p';}
+  if(state.scene==='overlays'){disc=convDisc;foot='my-feature · /help · ctrl+p';}
+  /* thinking / tools 展开开关：改 gist 与 …N more lines */
+  if(state.thinkEx) disc=disc.replace('▸ thinking · 2.3s · 先列 timeline block 类型再排 composer 几何',
+    '▸ thinking · 2.3s<br><span class="muted">先列 timeline block 类型（user/assistant/thinking/tool/info/error/notice），再排 composer 几何：minRows 3 / maxRows 6，超高按 live terminal 高度折叠。</span>');
+  if(state.toolsEx) disc=disc.replace('… 2 more lines','packages/cli/src/tool-display.ts:43 outputLines 截断 80 行<br>    packages/cli/src/tui/store.ts:290 nth-with-nth 配对 trace');
+  d.innerHTML=disc; b.innerHTML=bottomFor(state.scene);
+  document.getElementById('footer').textContent=foot;
+  document.getElementById('hModel').textContent=document.getElementById('inModel').value;
+  document.getElementById('hWs').textContent=document.getElementById('inWs').value;
+  document.getElementById('hAppr').textContent=document.getElementById('inAppr').value;
+}
+document.querySelectorAll('#scenes button').forEach(x=>x.onclick=()=>{state.scene=x.dataset.s;render();});
+function bindSw(id,key){const el=document.getElementById(id);el.onclick=()=>{el.classList.toggle('on');state[key]=el.classList.contains('on');render();};}
+bindSw('swThink','thinkEx');bindSw('swTools','toolsEx');bindSw('swTodo','todo');bindSw('swPending','pending');
+['inModel','inWs','inAppr'].forEach(id=>document.getElementById(id).oninput=render);
+/* spinner 复刻 Activity.tsx */
+const glyphs=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];let gi=0,t0=Date.now();
+setInterval(()=>{gi=(gi+1)%glyphs.length;const s=document.getElementById('spin');
+  if(s){s.textContent=glyphs[gi];document.getElementById('secs').textContent=((Date.now()-t0)/1000).toFixed(1)+'s';}},120);
+/* 可打字输入框：让改稿时能感受 composer 真实宽度 */
+document.addEventListener('keydown',e=>{
+  if(e.key==='t'&&(e.ctrlKey||e.metaKey)){e.preventDefault();document.getElementById('swThink').click();}
+  if(e.key==='o'&&(e.ctrlKey||e.metaKey)){e.preventDefault();document.getElementById('swTools').click();}
+});
+render();
+</script>
+</body>
+</html>

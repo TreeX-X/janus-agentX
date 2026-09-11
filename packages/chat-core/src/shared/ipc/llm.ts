@@ -35,6 +35,28 @@ export interface ChatStreamEvent { requestId: string; delta?: string; done?: boo
 /** Tool-call status surfaced to the chat UI. Kept as a literal union so cards can branch on it. */
 export type ChatToolTraceStatus = 'requested' | 'approval' | 'running' | 'completed' | 'failed' | 'cancelled'
 
+/** Todo item status (opencode `todowrite` parity, no priority in v1). */
+export type ChatTodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+export interface ChatTodoItem {
+  content: string
+  status: ChatTodoStatus
+}
+
+/** One mid-turn confirmation option (opencode `question` parity). */
+export interface ChatAskOption {
+  label: string
+  description?: string
+}
+
+/** One mid-turn confirmation question. */
+export interface ChatAskQuestion {
+  question: string
+  header: string
+  options: ChatAskOption[]
+  multiple: boolean
+}
+
 /**
  * Safe, request-scoped Agent lifecycle events for the Chat renderer.
  * Tool argument values and raw tool output never leave the Main Process here.
@@ -52,6 +74,9 @@ export type ChatAgentEvent =
   | { type: 'model_finish'; requestId: string; reason: 'stop' | 'tool_calls' | 'length' | 'unknown' }
   | { type: 'model_error'; requestId: string; code: string; retryable: boolean }
   | { type: 'steering_consumed'; requestId: string; keys: string[] }
+  | { type: 'todo_update'; requestId: string; todos: ChatTodoItem[] }
+  | { type: 'question_requested'; requestId: string; callId: string; questions: ChatAskQuestion[]; allowCustom: boolean }
+  | { type: 'question_resolved'; requestId: string; callId: string; status: 'answered' | 'cancelled' }
   | { type: 'stream_end'; requestId: string; cancelled: boolean }
   | { type: 'stream_error'; requestId: string; error: string }
 

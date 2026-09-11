@@ -18,6 +18,8 @@ export interface ProviderEntry {
   modelId?: string
   models?: string[]
   defaultModelId?: string
+  /** CodeX parity: per-provider default reasoning effort (e.g. "medium"). */
+  effort?: string
   enabled?: boolean
 }
 
@@ -26,6 +28,8 @@ export interface ProviderCatalog {
   providers: ProviderEntry[]
   defaultProvider?: string
   defaultModel?: string
+  /** CodeX parity: global default reasoning effort (flag/env win over this). */
+  defaultEffort?: string
 }
 
 export function emptyCatalog(): ProviderCatalog {
@@ -46,6 +50,12 @@ function sanitizeEntry(value: unknown): ProviderEntry | null {
     const name = optionalString(input)
     return name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : undefined
   }
+  const optionalEffort = (input: unknown): string | undefined => {
+    const name = optionalString(input)?.toLowerCase()
+    return name && ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(name)
+      ? name
+      : undefined
+  }
   return {
     id: record.id.trim(),
     name: optionalString(record.name),
@@ -54,6 +64,7 @@ function sanitizeEntry(value: unknown): ProviderEntry | null {
     modelId: optionalString(record.modelId),
     models: strings(record.models),
     defaultModelId: optionalString(record.defaultModelId),
+    effort: optionalEffort(record.effort),
     // NOTE: apiKey is deliberately never read from disk.
     enabled: record.enabled === false ? false : undefined,
   }
@@ -71,6 +82,12 @@ export function parseCatalog(value: unknown): ProviderCatalog {
   }
   if (record && typeof record.defaultModel === 'string' && record.defaultModel) {
     catalog.defaultModel = record.defaultModel
+  }
+  if (record && typeof record.defaultEffort === 'string') {
+    const effort = record.defaultEffort.trim().toLowerCase()
+    if (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) {
+      catalog.defaultEffort = effort
+    }
   }
   return catalog
 }

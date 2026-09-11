@@ -1,12 +1,14 @@
 /**
  * @file Resident plain-text loop for `janus tui` (M0/M1 `--plain` path).
- * @description Readline over stdin/stdout by default; multi-turn history
+ * @description Readline over stdin/stdout by default (Tab completes a
+ * leading `/` command via `completeSlashCommand`); multi-turn history
  * lives in `CliSession`. All side-effect seams (lines/stdout/stderr/env)
  * are injectable so tests drive turns without a TTY. Ink fullscreen lands
  * in M1 on top of the same session/commands.
  */
 import { createInterface } from 'node:readline'
-import type { ChatTurnPorts, ChatTurnResult } from '@janus-agent/janus-agent'
+import type { AskUserPortAnswer, ChatTurnPorts, ChatTurnResult } from '@janus-agent/janus-agent'
+import type { QuestionPrompt } from './session.js'
 import type { TuiOptions } from './args.js'
 import { CliSession, isSessionValidationError, type ApprovalPrompt } from './session.js'
 import { defaultHistoryDir, fileConversationStore, type ConversationStorePort } from './conversations.js'
@@ -15,8 +17,16 @@ import { loadEffectiveCatalog } from './providers.js'
 import { buildTracePreviews } from './trace-preview.js'
 import { displayText } from './tool-display.js'
 import { runConnectWizard, type ConnectAsk, type TestConnectionFn } from './connect.js'
+import { EFFORT_META, effortMeta, effortPickerRows, parseEffortPickerInput } from './effort.js'
 import { executeCommand } from './tui/exec.js'
 import { parseInputLine } from './commands.js'
+import { completeSlashCommand } from './tui/composer-state.js'
+import {
+  normalizeCustomAnswer,
+  parseQuestionPickerInput,
+  questionPickerRows,
+  questionPromptHead,
+} from './tui/question-state.js'
 import { renderLogoAscii, renderLogoPlain } from './logo.js'
 
 export interface ReplLineSource {
@@ -55,7 +65,7 @@ export function arrayLineSource(lines: Array<string | null>): ReplLineSource {
  * prompts. `close`/EOF resolves pending reads with null (clean exit).
  */
 function createReadlineSource(onSigint: () => void): ReplLineSource {
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const rl = createInterface({ input: process.stdin, output: process.stdout, completer: completeSlashCommand })
   const queued: string[] = []
   interface Waiter {
     resolve: (line: string | null) => void
@@ -121,7 +131,7 @@ interface ReplState {
 
 function renderEvent(state: ReplState, event: unknown): void {
   const { stdout, stderr } = state
-  const typed = event as { type?: string; delta?: string; toolName?: string; argumentKeys?: string[]; status?: string; code?: string; retryable?: boolean; cancelled?: boolean }
+  const typed = event as { type?: string; delta?: string; toolName?: string; argumentKeys?: string[]; status?: string; code?: string; retryable?: boolean; cancelled?: boolean; todos?: Array<{ content: string; status: string }> }
   switch (typed.type) {
     case 'text_delta':
       if (typed.delta) {
@@ -149,6 +159,33 @@ function renderEvent(state: ReplState, event: unknown): void {
     case 'model_error':
       stderr(`\njanus: model error ${typed.code ?? 'unknown'}${typed.retryable ? ' (retryable)' : ''}`)
       return
+    case 'todo_update': {
+      // Codex-style live mirror for pipes/plain: one compact block per write.
+      const todos = Array.isArray(typed.todos) ? typed.todos : []
+      const open = todos.filter((todo) => todo.status !== 'completed' && todo.status !== 'cancelled')
+      if (todos.length === 0 || open.length === 0) return
+      const done = todos.filter((todo) => todo.status === 'completed').length
+      const current = todos.find((todo) => todo.status === 'in_progress')?.content
+      state.outputKind = 'tool'
+      stdout(`\n○ 待办 ${done}/${todos.length}${current ? ` · 当前: ${current}` : ''}`)
+      for (const todo of todos) {
+        const mark = todo.status === 'completed' ? '●' : todo.status === 'in_progress' ? '◐' : todo.status === 'cancelled' ? '✕' : '○'
+        stdout(`\n  ${mark} ${displayText(todo.content).slice(0, 120)}`)
+      }
+      return
+    }
+    case 'question_requested': {
+      // The picker itself renders the questions; this line only marks the gate.
+      state.outputKind = 'tool'
+      stdout('\n◇ ask_user · awaiting your pick (whole call cancels on q/EOF)')
+      return
+    }
+    case 'question_resolved': {
+      state.outputKind = 'tool'
+      const questionTyped = typed as { status?: string }
+      stdout(`\n${questionTyped.status === 'answered' ? '✔' : '✘'} ask_user · ${questionTyped.status ?? 'done'}`)
+      return
+    }
     case 'stream_end': {
       if (typed.cancelled) stdout('\n■ cancelled — history kept')
       return
@@ -187,6 +224,18 @@ async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): P
     } catch {
       // Best effort: previews must never fail a turn.
     }
+    // Sticky reminder above the next prompt (plain-mode equivalent of the bar).
+    try {
+      const todos = Array.isArray(result.todos) ? result.todos : []
+      const open = todos.filter((todo) => todo.status !== 'completed' && todo.status !== 'cancelled')
+      if (todos.length > 0 && open.length > 0 && !result.cancelled) {
+        const done = todos.filter((todo) => todo.status === 'completed').length
+        const current = todos.find((todo) => todo.status === 'in_progress')?.content
+        state.stdout(`\n○ 待办 ${done}/${todos.length}${current ? ` · 当前: ${displayText(current).slice(0, 120)}` : ''}`)
+      }
+    } catch {
+      // Best effort: todo reminders must never fail a turn.
+    }
   } catch (error) {
     state.stderr(`\njanus: chat turn failed: ${error instanceof Error ? error.message : String(error)}`)
   }
@@ -216,7 +265,98 @@ async function askApproval(
   return /^(y|yes)$/i.test(answer.trim())
 }
 
+/**
+ * Plain-loop picker for `ask_user`: questions arrive sequentially, each
+ * rendered as a numbered list. Answers accept numbers (`1,3` for multi),
+ * exact labels, `c` for a custom answer, `q` cancels the whole call.
+ * EOF/abort cancels the whole call (fail-safe, never partial).
+ */
+export async function askQuestionPlain(
+  lines: ReplLineSource,
+  stdout: (text: string) => void,
+  stderr: (text: string) => void,
+  prompt: QuestionPrompt,
+  signal: AbortSignal,
+): Promise<AskUserPortAnswer> {
+  const answers: Array<{ header: string; selected: string[]; custom?: string }> = []
+  const total = prompt.questions.length
+  for (let index = 0; index < total; index += 1) {
+    const question = prompt.questions[index]
+    if (!question) continue
+    if (signal.aborted) return { status: 'cancelled' }
+    stdout(`${questionPromptHead(index, total, question.header)}\n`)
+    stdout(`${displayText(question.question).slice(0, 500)}\n`)
+    for (const row of questionPickerRows(question)) stdout(`${row}\n`)
+    if (question.multiple) stdout('  (multi: comma-separated, e.g. 1,3)\n')
+    let retries = 0
+    for (;;) {
+      if (signal.aborted) return { status: 'cancelled' }
+      stdout(`select [1-${question.options.length}${prompt.allowCustom ? '|c=custom' : ''}|q=cancel]: `)
+      const raw = await lines.next('', { signal })
+      if (raw === null) return { status: 'cancelled' }
+      const parsed = parseQuestionPickerInput(raw, question, prompt.allowCustom)
+      if (parsed.action === 'cancel') return { status: 'cancelled' }
+      if (parsed.action === 'empty') continue
+      if (parsed.action === 'custom') {
+        stdout('custom answer (empty cancels): ')
+        const customRaw = await lines.next('', { signal })
+        if (customRaw === null) return { status: 'cancelled' }
+        const normalized = normalizeCustomAnswer(customRaw)
+        if (!normalized.ok) return { status: 'cancelled' }
+        answers.push({ header: question.header, selected: [], custom: normalized.custom })
+        break
+      }
+      if (parsed.action === 'error') {
+        retries += 1
+        stderr(`${parsed.message}\n`)
+        if (retries >= 3) return { status: 'cancelled' }
+        continue
+      }
+      answers.push({ header: question.header, selected: parsed.selected })
+      break
+    }
+  }
+  return { status: 'answered', answers }
+}
+
+/**
+ * Plain-loop interactive picker for bare `/effort` (numbered list +
+ * follow-up prompt). Mirrors the Ink `EffortPanel`: numbers, names,
+ * Enter/EOF keeps the current level.
+ */
+async function runEffortPicker(state: ReplState): Promise<'continue' | 'exit'> {
+  const current = state.session.getEffort()
+  state.stdout(`effort: ${current}\n`)
+  for (const row of effortPickerRows(current)) state.stdout(`${row}\n`)
+  state.stdout(`select effort [1-${EFFORT_META.length}|name] (Enter keeps ${current}): `)
+  const answer = await state.lines.next('')
+  if (answer === null) {
+    state.stdout(`effort unchanged: ${current}\n`)
+    return 'continue'
+  }
+  const selection = parseEffortPickerInput(answer)
+  if (selection.action === 'cancel') {
+    state.stdout(`effort unchanged: ${current}\n`)
+    return 'continue'
+  }
+  if (selection.action === 'error') {
+    state.stderr(`${selection.message}\n`)
+    return 'continue'
+  }
+  try {
+    state.session.setEffort(selection.level)
+    const meta = effortMeta(selection.level)
+    state.stdout(`effort switched: ${selection.level} — ${meta.hint} (${meta.detail})\n`)
+  } catch (error) {
+    state.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
+  }
+  return 'continue'
+}
+
 async function handleCommand(state: ReplState, command: string, args: string[]): Promise<'continue' | 'exit' | 'recreated'> {
+  // Bare /effort is interactive in the plain loop (Ink uses EffortPanel);
+  // `/effort <level|number>` still switches directly via executeCommand.
+  if (command === 'effort' && args.length === 0) return runEffortPicker(state)
   const outcome = await executeCommand(state.session, command, args, {
     recreateWorkspace: async (dir) => {
       const next = await CliSession.create({
@@ -227,6 +367,7 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         maxTurns: undefined,
         timeoutMs: state.options.timeoutMs,
         approvalMode: state.session.getApprovalMode(),
+        effort: state.session.getEffort(),
         env: state.env,
         store: state.store,
         catalog: state.session.getCatalog(),
@@ -235,6 +376,7 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
         authKeys: state.session.getAuthKeys(),
         authPath: state.session.getAuthPath(),
         onApproval: state.session.getApprovalHandler(),
+        onQuestion: (prompt, signal) => askQuestionPlain(state.lines, state.stdout, state.stderr, prompt, signal),
         onCatalogError: state.session.getCatalogErrorHandler(),
         streamTextFn: state.streamTextFn,
       })
@@ -337,6 +479,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     authPath,
     onAuthError: () => warnOnce('janus: auth file not writable, keys last this run only.\n'),
     onApproval: (prompt, signal) => askApproval(lines, stdout, prompt, signal),
+    onQuestion: (prompt, signal) => askQuestionPlain(lines, stdout, stderr, prompt, signal),
     onCatalogError: () => warnOnce('janus: provider config not writable, switches last this run only.\n'),
     streamTextFn: io.streamTextFn,
   })
@@ -361,7 +504,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
   const restored = created.listConversations()
   const activeTitle = restored.find((summary) => summary.active)?.title ?? ''
   const providerSegment = created.listProviders().entries.length > 1 ? ` · provider ${created.getProviderId()}` : ''
-  stdout(`janus · workspace ${created.getWorkspaceRoot()}${providerSegment} · model ${created.getModelId() ?? '(no model)'} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
+  stdout(`janus · workspace ${created.getWorkspaceRoot()}${providerSegment} · model ${created.getModelId() ?? '(no model)'} · effort ${created.getEffort()} · ${restored.length} conversation${restored.length === 1 ? '' : 's'} · /help for commands\n`)
   if (activeTitle && activeTitle !== 'New conversation') {
     stdout(`resumed: ${activeTitle}\n`)
   }

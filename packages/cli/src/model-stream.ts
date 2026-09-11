@@ -1,5 +1,6 @@
 import { streamText, type LanguageModel, type ModelMessage, type Tool } from 'ai-stream'
 import type { ChatTurnPorts } from '@janus-agent/janus-agent'
+import { effortProviderOptions, normalizeEffort } from './effort.js'
 
 type LegacyPart = Record<string, unknown>
 const toolMetadata = new WeakMap<object, Map<string, unknown>>()
@@ -28,6 +29,8 @@ export const streamChatModel: ChatTurnPorts['streamTextFn'] = async (options) =>
   })) as ModelMessage[]
   const tools = Object.fromEntries(Object.entries((options.tools ?? {}) as Record<string, { description?: string; parameters: Tool['inputSchema'] }>)
     .map(([name, tool]) => [name, { description: tool.description, inputSchema: tool.parameters }]))
+  const effort = normalizeEffort((options as { effort?: unknown }).effort)
+  const effortOptions = effort ? effortProviderOptions(effort) : undefined
   const result = streamText({
     model: options.model as LanguageModel,
     messages,
@@ -36,6 +39,7 @@ export const streamChatModel: ChatTurnPorts['streamTextFn'] = async (options) =>
     abortSignal: options.abortSignal as AbortSignal,
     maxRetries: 0, // The agent loop owns the retry budget.
     onError: () => undefined, // Errors are rendered through the event stream, never console.
+    ...(effortOptions ? { providerOptions: effortOptions.providerOptions } : {}),
   })
   return {
     get textStream() { return result.textStream },

@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { ChatSessionRuntime, type ChatToolTraceEntry } from '@janus-agent/chat-core'
+import { ChatSessionRuntime, type ChatTodoItem, type ChatToolTraceEntry } from '@janus-agent/chat-core'
 
 export const DEFAULT_CONVERSATION_TITLE = 'New conversation'
 export const MAX_TITLE_CHARS = 80
@@ -27,6 +27,8 @@ export interface PersistedConversation {
   updatedAt: number
   messages: PersistedMessage[]
   toolTraces: ChatToolTraceEntry[]
+  /** Live todo snapshot for the sticky bar above the composer (empty = hidden). */
+  todos: ChatTodoItem[]
 }
 
 export interface ConversationSummary {
@@ -62,7 +64,20 @@ function sanitizeConversation(value: unknown): PersistedConversation | null {
     updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : Date.now(),
     messages: sanitizeMessages(record.messages),
     toolTraces: Array.isArray(record.toolTraces) ? record.toolTraces as ChatToolTraceEntry[] : [],
+    todos: sanitizeTodos(record.todos),
   }
+}
+
+const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed', 'cancelled'])
+
+function sanitizeTodos(value: unknown): ChatTodoItem[] {
+  if (!Array.isArray(value)) return []
+  return (value as Array<Record<string, unknown>>)
+    .filter((todo) =>
+      typeof todo.content === 'string' && todo.content.trim()
+      && typeof todo.status === 'string' && TODO_STATUSES.has(todo.status))
+    .slice(0, 20)
+    .map((todo) => ({ content: (todo.content as string).slice(0, 200), status: todo.status as ChatTodoItem['status'] }))
 }
 
 export function memoryConversationStore(seed: PersistedConversation[] = []): ConversationStorePort {
@@ -192,6 +207,7 @@ export class ConversationRegistry {
         updatedAt: now,
         messages: [],
         toolTraces: [],
+        todos: [],
       },
       chatSession: new ChatSessionRuntime(),
     })
@@ -304,6 +320,7 @@ export class ConversationRegistry {
     const record = this.getActive()
     record.data.messages = []
     record.data.toolTraces = []
+    record.data.todos = []
     record.chatSession = new ChatSessionRuntime()
     await this.persist(record.data.id)
   }

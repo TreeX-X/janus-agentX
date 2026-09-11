@@ -5,7 +5,7 @@
  * terminal background, cards are status-colored text on the band. Pure
  * helpers, unit tested; `App.tsx` only paints rows full-width.
  */
-import { LOGO_TONE } from '../logo.js'
+import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 import type { ToolCardStatus } from './store.js'
 
 /** Structural card face: satisfied by timeline `tool` blocks. */
@@ -15,10 +15,11 @@ export interface ToolCardFace {
   detail?: string
 }
 
-/** Neutral band behind every tool-card row. */
-export const TOOL_CARD_BG = '#202224'
+/** Band token kept for theme/tests; rows render transparent (pure-black
+ * discipline) with a status-colored `▌` edge instead of a filled band. */
+export const TOOL_CARD_BG = TUI_CHROME.cardBg
 /** Completed-card foreground, distinct from answer body text. */
-export const TOOL_CARD_DONE = '#9acbb4'
+export const TOOL_CARD_DONE = TUI_CHROME.green
 
 export function toolCardGlyph(status: ToolCardStatus): string {
   switch (status) {

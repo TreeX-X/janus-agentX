@@ -1,5 +1,7 @@
 import type { ModelInfo } from '../../shared/ipc/model-types'
 import type { ToolResult } from '../../shared/ipc/agent-runtime'
+import type { ChatTodoItem } from '../../shared/ipc/llm'
+import { cloneTodos } from './chat-todo'
 import type { JanusAgentMessage } from '@janus-agent/agent-core'
 
 const DEFAULT_CONTEXT_WINDOW = 16_384
@@ -170,6 +172,17 @@ function toolDigest(message: JanusAgentMessage): string | undefined {
       const sha = typeof parsed.sha256 === 'string' ? ` sha256=${String(parsed.sha256).slice(0, 12)}…` : ''
       return `- ${label} ${scope}${String(parsed.path)}${sha} (content retained in loaded evidence when available)`
     }
+    // workspace.delete results carry path + kind/entryCount instead of content:
+    // keep a one-line digest so pruned turns still show what was removed.
+    if (typeof parsed.path === 'string' && (typeof parsed.kind === 'string' || typeof parsed.entryCount === 'number')) {
+      const kind = typeof parsed.kind === 'string' ? String(parsed.kind) : 'target'
+      const size = typeof parsed.entryCount === 'number' && parsed.entryCount > 0
+        ? `${String(parsed.entryCount)} entries`
+        : typeof parsed.bytes === 'number' && parsed.bytes > 0
+          ? `${String(parsed.bytes)}b`
+          : 'empty'
+      return `- ${label} ${scope}${String(parsed.path)} (${kind}, ${size})`
+    }
     if (typeof parsed.error === 'string') {
       return `- ${label} ${scope}${parsed.status ?? 'failed'}: ${String(parsed.error).slice(0, 160)}`
     }
@@ -226,6 +239,20 @@ export interface ChatContextBuildOptions {
 /** Builds a model context view without mutating the persisted conversation history. */
 export class ChatSessionRuntime {
   readonly loadedContext = new LoadedContextIndex()
+  private todos: ChatTodoItem[] = []
+
+  /** Live todo list for the sticky bar above the composer (model is sole writer). */
+  getTodos(): ChatTodoItem[] {
+    return cloneTodos(this.todos)
+  }
+
+  setTodos(todos: readonly ChatTodoItem[]): void {
+    this.todos = cloneTodos(todos)
+  }
+
+  clearTodos(): void {
+    this.todos = []
+  }
 
   recordToolResult(result: ToolResult): void {
     this.loadedContext.record(result)

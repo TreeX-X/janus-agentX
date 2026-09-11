@@ -22,6 +22,7 @@ import {
   type ToolRegistry,
 } from '@janus-agent/agent-core'
 import type { JobManager } from './jobs.js'
+import { evaluateDestructiveCommand } from './destructive-commands.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 600_000
@@ -223,7 +224,7 @@ function executeCommand(
 export function createCommandRunTool(jobs: JobManager): RegisteredTool {
   return {
     name: 'command.run',
-    description: 'Run one approved program with structured arguments in a directory inside the active workspace (sync default timeout 120s, max 600s; background jobs have no deadline unless timeoutMs is passed, max 600s, and report timedOut via project_process_output; pass background:true for long builds and poll with project_process_output(offsetLines))',
+    description: 'Run one approved program with structured arguments in a directory inside the active workspace (sync default timeout 120s, max 600s; background jobs have no deadline unless timeoutMs is passed, max 600s, and report timedOut via project_process_output; pass background:true for long builds and poll with project_process_output(offsetLines)). Catastrophic shell deletions are refused fail-closed; prefer workspace_delete for removing workspace files.',
     actionRisk: 'external-command',
     inputSchema: {
       type: 'object',
@@ -259,6 +260,21 @@ export function createCommandRunTool(jobs: JobManager): RegisteredTool {
       if (typeof background !== 'boolean') throw new Error('command.run background must be a boolean')
       // R4: env allowlist at the tool boundary (fail-closed).
       const env = filterCommandEnv(input.env)
+
+      // Destructive-command guard (fail-closed, mode-independent): catastrophic
+      // deletions are denied here, before approval and before spawn, so an
+      // explicit deny survives auto-run (opencode parity) with no rule ordering
+      // to get wrong. Scoped in-workspace deletes pass through to normal
+      // approval; workspace.delete remains the auditable path.
+      const destructiveDeny = evaluateDestructiveCommand({
+        program: input.program,
+        args: args as string[],
+        cwdAbsolute: join(context.workspaceRoot, cwdTarget.relativePath),
+        workspaceRootAbsolute: context.workspaceRoot,
+      })
+      if (destructiveDeny) {
+        throw Object.assign(new Error(destructiveDeny), { code: 'DESTRUCTIVE_COMMAND' })
+      }
 
       let program = input.program.trim()
       if (/[\\/]/.test(program)) {

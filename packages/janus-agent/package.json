@@ -19,7 +19,8 @@
   "license": "MIT",
   "dependencies": {
     "@janus-agent/agent-core": "file:../agent-core",
-    "@janus-agent/chat-core": "file:../chat-core"
+    "@janus-agent/chat-core": "file:../chat-core",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

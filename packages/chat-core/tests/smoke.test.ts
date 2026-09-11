@@ -13,6 +13,8 @@ import {
   prepareJanusChatRecall,
   toolTraceEntryFromResult,
   toolTraceHistoryMessage,
+  WORKSPACE_MUTATION_TOOLS,
+  workspaceRecoveryPrompt,
 } from '../src/main/llm/chat-pure'
 
 describe('mutation intent', () => {
@@ -22,6 +24,15 @@ describe('mutation intent', () => {
     expect(hasExplicitWorkspaceMutationIntent('只查看，不要修改')).toBe(false)
     expect(hasExplicitWorkspaceMutationIntent('read-only analysis')).toBe(false)
     expect(hasExplicitWorkspaceMutationIntent('')).toBe(false)
+  })
+
+  it('detects delete intent and keeps delete-deny as read-only', () => {
+    expect(hasExplicitWorkspaceMutationIntent('请删除这个文件')).toBe(true)
+    expect(hasExplicitWorkspaceMutationIntent('删除掉旧目录')).toBe(true)
+    expect(hasExplicitWorkspaceMutationIntent('please delete the temp file')).toBe(true)
+    expect(hasExplicitWorkspaceMutationIntent('please remove the old directory')).toBe(true)
+    expect(hasExplicitWorkspaceMutationIntent('不要删除这个文件')).toBe(false)
+    expect(hasExplicitWorkspaceMutationIntent('do not delete anything')).toBe(false)
   })
 })
 
@@ -47,6 +58,18 @@ describe('tool traces', () => {
 
   it('falls back with a user-facing message when the model goes silent', () => {
     expect(emptyResponseFeedback([], false)).toContain('请重试')
+  })
+
+  it('tracks workspace.delete as a mutation with kind and checkpoint', () => {
+    expect(WORKSPACE_MUTATION_TOOLS.has('workspace.delete')).toBe(true)
+    const entry = toolTraceEntryFromResult({
+      toolName: 'workspace.delete', workspaceId: 'w', status: 'completed',
+      summary: 'ok', output: { path: 'old.md', kind: 'file', bytes: 12, changedPaths: ['old.md'], checkpointId: 'cp-1' },
+    } as never)
+    expect(entry.summary).toContain('old.md')
+    expect(entry.summary).toContain('kind=file')
+    expect(entry.summary).toContain('checkpoint=cp-1')
+    expect(workspaceRecoveryPrompt(true)).toContain('workspace_delete')
   })
 })
 
@@ -90,6 +113,7 @@ describe('events, prompt, session budget', () => {
   it('builds a minimal system prompt with and without tools', () => {
     const empty = buildChatSystemPrompt({ resources: new Map(), toolManifests: [] })
     expect(empty).toContain('No workspace tools are enabled')
+    expect(empty).toContain('do not claim workspace actions')
     const full = buildChatSystemPrompt({
       resources: new Map([['w', { workspaceName: 'demo' }]]),
       toolManifests: [{ providerName: 'workspace_read', actionRisk: 'read', description: 'read it' } as never],

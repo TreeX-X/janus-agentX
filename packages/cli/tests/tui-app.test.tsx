@@ -1,7 +1,7 @@
 /**
  * Ink App smoke: real render frames + typed input over a stub transport.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import React from 'react'
@@ -54,6 +54,47 @@ async function press(stdin: { write: (data: string) => void }, key: string): Pro
 }
 
 describe('App', () => {
+  it('clears the draft on Ctrl+C and exits only on a consecutive second press', async () => {
+    const session = await openSession()
+    const onExit = vi.fn()
+    const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={onExit} />)
+    try {
+      await typeText(app.stdin, 'unsent draft')
+      await press(app.stdin, '\x03')
+      expect(app.lastFrame()).not.toContain('unsent draft')
+      expect(onExit).not.toHaveBeenCalled()
+      await typeText(app.stdin, 'another draft')
+      await press(app.stdin, '\x03')
+      expect(app.lastFrame()).not.toContain('another draft')
+      expect(onExit).not.toHaveBeenCalled()
+      await press(app.stdin, '\x03')
+      expect(onExit).toHaveBeenCalledExactlyOnceWith(0)
+    } finally {
+      app.unmount()
+      await session.close()
+    }
+  })
+
+  it('expires the double Ctrl+C window and supports clearing an open palette', async () => {
+    const session = await openSession()
+    const onExit = vi.fn()
+    const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={onExit} />)
+    try {
+      await typeText(app.stdin, 'palette draft')
+      await press(app.stdin, '\x10')
+      await press(app.stdin, '\x03')
+      expect(app.lastFrame()).not.toContain('palette draft')
+      expect(onExit).not.toHaveBeenCalled()
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+      await press(app.stdin, '\x03')
+      expect(onExit).not.toHaveBeenCalled()
+      await press(app.stdin, '\x03')
+      expect(onExit).toHaveBeenCalledExactlyOnceWith(0)
+    } finally {
+      app.unmount()
+      await session.close()
+    }
+  })
   it('shows tool results during the next model step and expands output while retaining the draft', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'janus-live-output-'))
     writeFileSync(join(workspace, 'data.txt'), Array.from({ length: 10 }, (_, i) => `file-line-${i}`).join('\n'))
@@ -158,9 +199,41 @@ describe('App', () => {
       release()
       await waitForFrame(() => (app.lastFrame() ?? '').includes('Pending messages restored'))
       expect(app.lastFrame()).toContain('pending text')
-      expect(app.lastFrame()).toContain('draft text')
+      if (outcome === 'cancel') expect(app.lastFrame()).not.toContain('draft text')
+      else expect(app.lastFrame()).toContain('draft text')
       expect(app.lastFrame()).not.toContain('queued (')
       expect(send).toHaveBeenCalledTimes(1)
+    } finally {
+      release()
+      app.unmount()
+      await session.close()
+    }
+  })
+
+  it('cancels a running turn on Esc and stays usable without exiting', async () => {
+    const session = await openSession()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const original = session.sendTurn.bind(session)
+    const send = vi.spyOn(session, 'sendTurn').mockImplementation(async (...args) => {
+      await gate
+      return original(...args)
+    })
+    const onExit = vi.fn()
+    const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={onExit} />)
+    try {
+      await typeLine(app.stdin, 'long task')
+      await waitForFrame(() => send.mock.calls.length === 1)
+      // Esc aborts the stream; the latched abort resolves once the gate opens.
+      await press(app.stdin, '\x1b')
+      release()
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('cancelled — history kept'))
+      expect(onExit).not.toHaveBeenCalled()
+      // History kept the user message and the next turn still runs.
+      expect(session.getActiveMessages().map(({ content }) => content)).toEqual(['long task'])
+      await typeLine(app.stdin, 'follow-up')
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('stub-answer'))
+      expect(session.getActiveMessages().map(({ content }) => content)).toEqual(['long task', 'follow-up', 'stub-answer'])
     } finally {
       release()
       app.unmount()
@@ -518,6 +591,62 @@ describe('App', () => {
       // Outcome caption plus new-file content preview, inline under the card.
       expect(frame).toContain('└ new.txt, sha256=')
       expect(frame).toContain('+hello preview')
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
+  it('confirms per-action approval with arrows + Enter instead of y/n', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-app-gate-'))
+    let calls = 0
+    const session = await CliSession.create({
+      workspace: dir,
+      model: 'm',
+      apiKey: 'k',
+      approvalMode: 'per-action',
+      store: memoryConversationStore(),
+      streamTextFn: (async () => {
+        calls += 1
+        if (calls % 2 === 1) {
+          return {
+            fullStream: (async function* () {
+              yield {
+                type: 'tool-call',
+                toolCallId: 'c1',
+                toolName: 'workspace_create',
+                args: { workspaceId: 'cli', path: 'created.txt', content: 'hello gate' },
+              }
+              yield { type: 'finish', finishReason: 'tool-calls' }
+            })(),
+            textStream: (async function* () {})(),
+          }
+        }
+        return { textStream: (async function* () { yield 'file is ready' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, 'create the file')
+      await waitForFrame(() => (lastFrame() ?? '').includes('! Approve'))
+      expect(lastFrame() ?? '').toContain('Confirm')
+      expect(lastFrame() ?? '').toContain('Cancel')
+      expect(lastFrame() ?? '').not.toContain('press y')
+      await press(stdin, '\x1b[C') // focus Cancel
+      await waitForFrame(() => (lastFrame() ?? '').includes('▸ Cancel'))
+      await press(stdin, '\x1b[D') // back to Confirm
+      await waitForFrame(() => (lastFrame() ?? '').includes('▸ Confirm'))
+      await press(stdin, '\r')
+      await waitForFrame(() => existsSync(join(dir, 'created.txt')))
+      await waitForFrame(() => (lastFrame() ?? '').includes('file is ready'))
     } finally {
       unmount()
       await session.close()

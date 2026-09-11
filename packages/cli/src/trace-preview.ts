@@ -2,9 +2,10 @@
  * @file Post-turn file-change previews for tool cards (no React/Ink).
  * @description After a turn resolves, `ChatTurnResult.toolTraces` carries a
  * compact `summary` per executed tool (path + sha, match counts, edit notes).
- * For file mutations (`workspace.edit/create`) this module additionally reads
+ * For file mutations (`workspace.edit/create/delete`) this module additionally reads
  * a bounded `git diff` (or new-file content) so cards render a real preview
- * under the outcome line — pi/opencode style. Everything is best-effort and
+ * under the outcome line — pi/opencode style. Deleted tracked files render
+ * their deletion diff; deleted untracked files degrade to the summary line. Everything is best-effort and
  * synchronous: any failure degrades to the summary line. Reads stay inside
  * the workspace root; output is already-bounded display text.
  */
@@ -20,7 +21,7 @@ export interface TracePreview {
   diff: string[]
 }
 
-const MUTATION_TOOLS = new Set(['workspaceedit', 'workspacecreate'])
+const MUTATION_TOOLS = new Set(['workspaceedit', 'workspacecreate', 'workspacedelete'])
 const MAX_DIFF_LINES = 24
 const MAX_LINE_CHARS = 240
 const MAX_NEW_FILE_LINES = 12

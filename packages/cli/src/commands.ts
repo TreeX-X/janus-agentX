@@ -10,6 +10,7 @@ export type BuiltinCommandName =
   | 'help'
   | 'key'
   | 'model'
+  | 'effort'
   | 'provider'
   | 'connect'
   | 'status'
@@ -38,6 +39,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'help',
   'key',
   'model',
+  'effort',
   'provider',
   'connect',
   'status',
@@ -71,12 +73,16 @@ export function isKnownCommand(name: string): boolean {
   return KNOWN_COMMANDS.has(name.toLowerCase())
 }
 
+/** Ordered known-command names (single source for completion coverage checks). */
+export const KNOWN_COMMAND_NAMES: readonly string[] = [...KNOWN_COMMANDS]
+
 export function commandHelpText(): string {
   return [
     'Commands:',
     '  /help                 Show this help.',
     '  /key [api-key]        Show key status or set the API key (memory only).',
     '  /model [id]           List models or switch the model.',
+    '  /effort [level|num]   Pick reasoning effort (bare opens picker) or switch directly.',
     '  /provider [id]        List providers or switch provider.',
     '  /provider rm <id>     Remove a provider (and its auth.json key).',
     '  /connect [id] [key] [base-url]',
@@ -91,8 +97,9 @@ export function commandHelpText(): string {
     '  /delete [n|id]        Delete a conversation (default: active).',
     '  /approval [mode]      Show or switch auto-run|per-action.',
     '  /exit                 Leave janus.',
-      'Keys: Enter send · Ctrl+C cancel current turn · Ctrl+D exit · Ctrl+T thinking · Ctrl+O tool output · wheel/PgUp/PgDn scroll · Ctrl+Home/End top/bottom · Ctrl+↑/↓ step.',
+      'Keys: Enter send · ↑/↓ input history · Ctrl+C clear input / cancel turn; twice within 1s exit · Esc cancel turn · Ctrl+D exit · Ctrl+T thinking · Ctrl+O tool output · Ctrl+E todos · wheel/PgUp/PgDn scroll · Ctrl+Home/End top/bottom · Ctrl+↑/↓ step.',
     '      Mouse wheel needs a compatible terminal (tmux: `set -g mouse on`); JANUS_NO_MOUSE=1 keeps native selection and scrolls with keys.',
     'Panels: Ctrl+P command palette (provider setup, status, …).',
+    'Mid-turn: the agent may ask option questions (TUI: ↑↓/Space/c/Enter/Esc · plain: numbers/labels/c/q).',
   ].join('\n')
 }

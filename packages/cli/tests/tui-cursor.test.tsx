@@ -112,7 +112,9 @@ describe('cursor ownership', () => {
       { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream,
         interactive: true, patchConsole: false, exitOnCtrlC: false },
     )
-    const latestPaint = (): string => stripVTControlCharacters(writes.filter((chunk) => chunk.includes('ctrl+p')).at(-1) ?? '')
+    // Full repaints always carry the footer key hints (now `[Ctrl+P] Cmds`);
+    // match case-insensitively so the probe survives footer copy changes.
+    const latestPaint = (): string => stripVTControlCharacters(writes.filter((chunk) => chunk.toLowerCase().includes('ctrl+p')).at(-1) ?? '')
     const expectPaintCaret = async (text: string, before: string): Promise<void> => {
       await waitForFrame(() => {
         const paint = latestPaint()

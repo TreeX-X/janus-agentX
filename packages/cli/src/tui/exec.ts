@@ -6,6 +6,7 @@
  */
 import { commandHelpText } from '../commands.js'
 import { formatConnectList } from '../connect.js'
+import { effortMeta, formatEffortList, resolveEffortArg } from '../effort.js'
 import { listProviderModels, type ProviderEntry } from '../providers.js'
 import type { ApprovalModeOption } from '../args.js'
 import type { ConversationSummary } from '../conversations.js'
@@ -21,6 +22,8 @@ export interface CommandSession {
   listModels(): string[]
   getModelId(): string | undefined
   setModel(modelId: string): void
+  getEffort(): string
+  setEffort(effort: string): void
   listProviders(): { entries: ProviderEntry[]; activeId: string }
   setProvider(ref: string): void
   removeProvider(ref: string): { id: string; removedKey: boolean }
@@ -119,7 +122,7 @@ export async function executeCommand(
       if (args.length === 0) {
         const models = session.listModels()
         const active = session.getModelId()
-        const head = `model: ${active ?? '(no model — set one with /model <id>)'}`
+        const head = `model: ${active ?? '(no model — set one with /model <id>)'} · effort: ${session.getEffort()}`
         if (models.length === 0) return continued([head])
         return continued([`${head}\n${models.map((model) => `${model === active ? '*' : ' '} ${model}`).join('\n')}`])
       }
@@ -128,7 +131,26 @@ export async function executeCommand(
       } catch (error) {
         return continued([], [error instanceof Error ? error.message : String(error)])
       }
-      return continued([`model switched: ${args[0]}`])
+      return continued([`model switched: ${args[0]} · effort: ${session.getEffort()}`])
+    }
+    case 'effort': {
+      if (args.length === 0) {
+        // Ink (`App.tsx`) and plain (`repl.ts`) intercept the bare form with
+        // an interactive picker; this rich list is the fallback for tests
+        // and non-interactive hosts.
+        return continued([formatEffortList(session.getEffort())])
+      }
+      const level = resolveEffortArg(args[0] ?? '')
+      if (!level) {
+        return continued([], [`janus: unknown effort "${args[0]}". Supported: none|minimal|low|medium|high|xhigh|max|ultra or 1-8.`])
+      }
+      try {
+        session.setEffort(level)
+      } catch (error) {
+        return continued([], [error instanceof Error ? error.message : String(error)])
+      }
+      const meta = effortMeta(session.getEffort() as Parameters<typeof effortMeta>[0])
+      return continued([`effort switched: ${session.getEffort()} — ${meta.hint} (${meta.detail})`])
     }
     case 'workspace': {
       if (args.length === 0) return continued([`workspace: ${session.getWorkspaceRoot()}`])
@@ -158,12 +180,12 @@ export async function executeCommand(
       } catch (error) {
         return continued([], [error instanceof Error ? error.message : String(error)])
       }
-      return continued([`provider switched: ${session.getProviderId()} · model ${session.getModelId() ?? '(no model)'}`])
+      return continued([`provider switched: ${session.getProviderId()} · model ${session.getModelId() ?? '(no model)'} · effort ${session.getEffort()}`])
     }
     case 'status': {
       const keySource = session.getApiKeySource()
       return continued([
-        `provider: ${session.getProviderId()} · model: ${session.getModelId() ?? '(no model)'}`,
+        `provider: ${session.getProviderId()} · model: ${session.getModelId() ?? '(no model)'} · effort: ${session.getEffort()}`,
         `baseURL: ${session.getEffectiveBaseUrl()}`,
         `api key: ${keySource ? `set (via ${keySource})` : 'missing (/connect, /key, --api-key, <apiKeyEnv>, or JANUS_API_KEY)'}`,
         `config: ${session.getConfigPath() ?? '(memory only, no file)'}`,
@@ -181,7 +203,7 @@ export async function executeCommand(
         return continued([[
           `approval: ${mode}`,
           '  auto-run — tools run immediately',
-          '  per-action — each write/create will ask y/N',
+          '  per-action — each write/create asks Confirm/Cancel',
           'switch with /approval <mode>',
         ].join('\n')])
       }
@@ -189,7 +211,7 @@ export async function executeCommand(
       if (mode !== 'auto-run' && mode !== 'per-action') return continued([], ['usage: /approval [auto-run|per-action]'])
       session.setApprovalMode(mode as ApprovalModeOption)
       return continued([mode === 'per-action'
-        ? 'approval: per-action (each write/create will ask y/N)'
+        ? 'approval: per-action (each write/create asks Confirm/Cancel)'
         : 'approval: auto-run'])
     }
     default:

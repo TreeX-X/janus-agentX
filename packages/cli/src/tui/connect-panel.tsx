@@ -16,7 +16,7 @@ import {
   type ConnectSession,
   type TestConnectionFn,
 } from '../connect.js'
-import { ACCENT, BODY, LineInput, MUTED, PanelFrame } from './palette.js'
+import { ACCENT, BODY, LineInput, MUTED, PanelFrame, SelectedRow } from './palette.js'
 
 export interface ConnectPanelInitial {
   ref?: string
@@ -292,7 +292,7 @@ export function ConnectPanel({ session, initial = {}, testConnection: testFnProp
             if (row.kind === 'add') {
               const label = '+ Add new provider…'
               return active
-                ? <Text key="add" backgroundColor={ACCENT} color="black">{label}</Text>
+                ? <SelectedRow key="add" text={label} width={60} />
                 : <Text key="add" color={ACCENT}>{label}</Text>
             }
             if (pendingDelete === row.entry.id) {
@@ -301,7 +301,7 @@ export function ConnectPanel({ session, initial = {}, testConnection: testFnProp
             const source = session.keySourceFor(row.entry.id)
             const label = `${row.entry.id}${row.entry.name ? ` (${row.entry.name})` : ''}  ${source ? 'key ✓' : 'key ✗'}`
             return active
-              ? <Text key={row.entry.id} backgroundColor={ACCENT} color="black">{label}</Text>
+              ? <SelectedRow key={row.entry.id} text={label} width={60} />
               : <Text key={row.entry.id} color={BODY}>{label}</Text>
           })}
         </Box>
@@ -368,7 +368,7 @@ export function ConnectPanel({ session, initial = {}, testConnection: testFnProp
           <Text color={BODY}>reachable — pick a model (Esc keeps current):</Text>
           {(probe?.models ?? []).slice(0, 20).map((model, rowIndex) => (
             rowIndex === Math.min(modelIndex, Math.max(0, (probe?.models.length ?? 1) - 1))
-              ? <Text key={model} backgroundColor={ACCENT} color="black">{model}</Text>
+              ? <SelectedRow key={model} text={model} width={60} />
               : <Text key={model} color={BODY}>{model}</Text>
           ))}
         </Box>

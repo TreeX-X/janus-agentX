@@ -14,6 +14,8 @@ export interface ModelEndpoint {
   supportsFunctionCalling?: boolean
   contextWindow?: number
   maxOutputTokens?: number
+  /** CodeX parity: reasoning effort for this turn (e.g. "medium"). */
+  effort?: string
 }
 
 export interface ModelResolverPort {
@@ -64,10 +66,38 @@ export interface KnowledgeCapturePort {
   notifySettled?(workspaceId: string): Promise<void>
 }
 
+export interface AskUserPortQuestion {
+  question: string
+  header: string
+  options: Array<{ label: string; description?: string }>
+  multiple: boolean
+}
+
+export interface AskUserPortRequest {
+  questions: AskUserPortQuestion[]
+  allowCustom: boolean
+  callId: string
+}
+
+export type AskUserPortAnswer =
+  | { status: 'answered'; answers: Array<{ header: string; selected: string[]; custom?: string }> }
+  | { status: 'cancelled' }
+
+/**
+ * Host-owned mid-turn confirmation UI (opencode `question` parity).
+ * Resolves when the user answers or cancels the whole call; rejects/throws
+ * are treated as cancellation. Absent = headless deny (fail-safe defaults).
+ */
+export interface QuestionPort {
+  askUser(request: AskUserPortRequest, signal: AbortSignal): Promise<AskUserPortAnswer>
+}
+
 export interface ChatTurnPorts {
   model: ModelResolverPort
   sessions: SessionResolverPort
   tools: ToolExecutorPort
+  /** Mid-turn confirmation UI. Absent = non-interactive host (deny). */
+  question?: QuestionPort
   streamTextFn: (options: Record<string, unknown>) => Promise<{
     textStream: AsyncIterable<string>
     fullStream?: AsyncIterable<{

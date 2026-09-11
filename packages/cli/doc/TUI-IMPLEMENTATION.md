@@ -56,16 +56,18 @@
 ```text
 # 宿主 A：独立终端（TTY 默认 Ink，--plain/管道走 readline）
 $ janus
-╭─ janus · myws · openai-compatible/gpt-4o-mini · auto-run ─╮
+janus │ ws: myws            model: openai-compatible/gpt-4o-mini · appr: auto-run │ ● ready
+──────────────────────────────────────────────────────────────────────────────
 │  ████ … (ASCII JANUSX)  Type a message …                   │
-│  you › …  janus › …▍  ◇/◐/✔/✘ 工具卡                        │
+│  you › …  janus › …▍  ▌ ◐/✔/✘ 工具卡（透明底 + 左侧状态色条）  │
+│  ○ 待办 1/3 │ 当前: …                    展开 ▲ · ctrl+e      │
 ├─ [> message (/help)] ──────────────────────────────────────┤
-│ conv-title · /help · ctrl+p                                 │
+│ [Enter] Send · [Shift+Enter] Line · [Ctrl+P] Cmds · /help   │ 12 in / 3 out
 # 宿主 B（M3）：JanusX 终端面板 spawn `janus tui -C <ws>` → 同上 Ink UI
 # 宿主 C（M3）：JanusX Chat 面板直调 runChatTurn，同一 ports/session 逻辑
 ```
 
-已落地：常驻循环 + 流式正文 + 工具卡三态 + 多轮记忆 + `Ctrl+C` 断当轮 + `/help /model /provider /workspace /clear /new /list /switch /rename /delete /approval /exit` + 空态 logo + 状态栏 + 多行输入框（默认 3 行，`Enter` 发送/`Shift+Enter` 换行，`/` 前缀 Tab 补全）。
+已落地：常驻循环 + 流式正文 + 工具卡三态 + 多轮记忆 + `Ctrl+C`/`Esc` 断当轮 + `/help /model /provider /workspace /clear /new /list /switch /rename /delete /approval /exit` + 空态 logo + 状态栏 + 多行输入框（默认 3 行，`Enter` 发送/`Shift+Enter` 换行，`/` 前缀 Tab 补全）。
 
 未做（M3 或更后）：多 workspace attach（仍单 `cli` 资源）、文件 `@引用` 补全、主题/分栏、knowledge 回忆面板、steering/rewrite/retry（island 专属，不引入 CLI）。
 
@@ -75,8 +77,8 @@ $ janus
 
 1. **logo 默认显示**：空态 ASCII 点阵（`█`/`░░`，单测逐格锁定与 chat 点阵一致），`--plain`/管道降级 `JANUSX`；有消息后 header 留 mini `janus`。
 2. **输入框常驻**：底部多行实心黑面板（默认 3 行、上限 6 行滚动跟随光标；逐 cell 全黑含边框字形，CJK 按双倍宽对齐截断；常驻呼吸块光标，busy/审批时置灰 steady）；`Enter` 发送，`Shift+Enter` 换行（kitty `return+shift` 与 ConPTY LF 双通道），`/` 开头弹命令补全（Up/Down 选、Tab 应用、Esc 关、Enter 照常发送）；`isStreaming` 显示 `working…`。
-3. **状态栏**（极简）：`conversation · statusText · /help · ctrl+p`；完整按键见 `/help`；header 另有 workspace·provider/model·approval。
-4. **消息与卡片**（灰橙主题，对齐 JanusX chat：橙 `#ff7830` / 次灰 `#8a8f98` / 正文 `#e8e8e8`）：`you ›` 灰 / `janus ›` 橙 + 流式 `▍`；单条时间线按流顺序交错 — thinking（`▸ thinking` 灰字，`/thinking` 可藏）→ 工具卡（`◇/◐/✔/✘` 整幅深暖底色 `#241c12`）→ 后续思考/正文；空态为双色 JANUSX 点阵；输入框常驻橙边框（busy 置灰），审批框橙边；无 `HH:mm` 时间戳（终端暂省）。
+3. **状态栏**（左右分栏，见 design/janus-TUI-design.html）：左为静态按键提示 `[Enter] Send · [Shift+Enter] Line · [Ctrl+P] Cmds · /help`，右为会话累计 token（`12 in / 8 out`，k/M 紧凑格式）+ 状态 + 滚屏 `↑N` 角标，无数据时右侧隐藏；滚轮/翻页全键只在 `/help`；顶栏为无缝 statusline（`janus │ ws: …` 左，`model: … · appr: … │ ●ready/working` 右 + 淡底规则线）。
+4. **消息与卡片**（极简冷色主题，见 design/janus-TUI-design.html：铜 `#c87a3b` / 次灰 `#525866` / 正文 `#d1d5db`；纯黑纪律：无大面积填充，焦点只用 accent 边 + 分段文字色 + 暗色选中行）：`you ›` 灰 / `janus ›` 铜 + 流式 `▍`；单条时间线按流顺序交错 — thinking（`▸ thinking` 暖黄 gist，`Ctrl+T` 展开）→ 工具卡（`◐/✔/✘` + 左侧状态色条 `▌`，输出默认 3 行，`Ctrl+O` 展开）→ 后续思考/正文；Todo 为可折叠边框盒（默认单行汇总，`Ctrl+E` 展开）；空态为双色 JANUSX 点阵；输入框为 `╭─╮` 线框（聚焦左侧铜边 + `/` 补全上浮无框浮层，暗色高亮选中）；底栏左右分栏（左按键亮显、右会话/状态用量着色、`↑N` 黄）；审批为 Confirm/Cancel 双钮门（`←→` 移动焦点、`Enter` 确认、`Esc` 取消）；提问面板带显性自定义输入行（`c` 或选中该行回车输入）；无 `HH:mm` 时间戳（终端暂省）。
 5. 文案硬编码中文；i18n key 对齐以后再做。
 
 ---
@@ -128,7 +130,7 @@ $ janus
   → runChatTurn(全量历史回放，TOOL_TRACE_MAX_ENTRIES=24)
   → onEvent → store reducer（Ink）/ 行渲染（plain）
   → result 落库 + registry.persist → refreshContext（标题/模型/会话名）
-  → Ctrl+C → controller.abort() → cancelled（历史保留用户句，不记半截 assistant）
+  → Ctrl+C 单按 / Esc（长输出流式中） → controller.abort() → cancelled（历史保留用户句，不记半截 assistant，Esc 不清草稿不布防退出）
 ```
 
 `/workspace` 重建 transport + registry（同 store/catalog 跨实例共享，历史按 workspace 隔离）。
@@ -162,13 +164,13 @@ TUI 将跑在 `TerminalManager(node-pty) → TERMINAL_* IPC → xterm.js` 管道
 
 1. **多会话**：`conversations.ts`（`create/list/switch/rename/delete`，`resolveRef` 支持完整 id/唯一前缀/序号——纯数字优先按序号，避免 uuid 数字前缀抢占；单调时钟保证同毫秒排序确定；删除永不留空）。持久化经 `ConversationStorePort`：CLI 用 `~/.janus/history/<id>.jsonl`，损坏文件跳过。**每次 TUI 启动（plain/Ink）默认 fresh start：开新空会话并删掉旧会话落盘，还原空态 banner；显式 `--conversation <id>` 则恢复指定会话。**`chat` 单轮不受影响。
 2. **配置商**：`providers.ts` + `~/.janus/config.json`（`{providers, defaultProvider, defaultModel}`，`apiKey` 解析即剥离）。优先级 flags > env > file > provider 链；`defaultModel` 只跟 `defaultProvider` 配对（切商不串味）；切商清空 model 覆盖跟随新商默认链并写回配对；closed-world（`models` 非空）打错模型直接拒，open-world 单端点放行。`ModelResolverPort` 形状不变，CLI 内部查 catalog 再 `createChatModel`。
-3. **权限**：`approvalMode` 每会话可设（默认 `auto-run`，`chat` 单轮恒为 auto-run）；`per-action` 经运行时 `approval-requested` 事件 + 同 callerId（`janus-agent`，与执行侧一致）`resolveApproval`；终端 UI 为阻塞式 y/N（空/EOF/中断一律 fail-closed deny）；`setApprovalMode` 热切实时生效；Ctrl+C 在审批等待中转 deny，不断轮不挂死。
+3. **权限**：`approvalMode` 每会话可设（默认 `auto-run`，`chat` 单轮恒为 auto-run）；`per-action` 经运行时 `approval-requested` 事件 + 同 callerId（`janus-agent`，与执行侧一致）`resolveApproval`；终端 UI 为阻塞式 Confirm/Cancel 双钮门（`←→` 移动焦点、`Enter` 确认、`Esc`/中断一律 fail-closed deny，plain 循环仍为 y/N 行）；`setApprovalMode` 热切实时生效；Ctrl+C 在审批等待中转 deny，不断轮不挂死。
 
 ### 4.6 JanusX 灵活复用（M3，只定契约，本包不动 JanusX）
 
 * **(a) PTY preset**：`terminalLaunch.ts` 加 `janus` preset；`terminal-handlers + resolveCLIPath` 加 janus 解析（`WIN_SPAWN_EXTS` 优先 `.exe`）；`checkpointManager` 按 terminal 初始化；hooks/turn 感知加 `'janus'` engine。
 * **(b) 进程内直调**：`chat-orchestrator.ts` 收薄为 `ChatTurnPorts` 适配器（model/sessions/tools/knowledge），LRU/40ms 合批/窗口 guard 留壳里；每次改动配 twin test。
-* **ports 差异矩阵**：model（CLI: OpenAI 兼容单 transport；JanusX: LlmService 多 provider）/ sessions（CLI: cwd 单资源；JanusX: office registry 多资源 ≤12）/ tools（CLI: workspace 子集；JanusX: 全量插件）/ knowledge（CLI: 无；JanusX: context/observation/queue）/ audit（CLI: 内存或隔离目录；JanusX: knowledge-root）/ approval（CLI: y/N 行；JanusX: 富卡片 + renderer-authorization）。
+* **ports 差异矩阵**：model（CLI: OpenAI 兼容单 transport；JanusX: LlmService 多 provider）/ sessions（CLI: cwd 单资源；JanusX: office registry 多资源 ≤12）/ tools（CLI: workspace 子集；JanusX: 全量插件）/ knowledge（CLI: 无；JanusX: context/observation/queue）/ audit（CLI: 内存或隔离目录；JanusX: knowledge-root）/ approval（CLI: TUI 双钮门 / plain y-N 行；JanusX: 富卡片 + renderer-authorization）。
 
 ---
 
@@ -213,7 +215,7 @@ DoD（M3）：`build/typecheck/test` 全绿 + 双宿主实跑（独立终端与 
 | `tui-approval` | 真 policy 链：auto 放行无提示、y 放行/n 拒绝、热切、审批中 abort 转 deny、repl y/N |
 | `tui-store` | reducer 全事件覆盖 |
 | `tui-exec` | 双宿主命令一致性（help/会话/模型/商/审批/workspace/未知） |
-| `tui-app` | ink-testing-library 真渲染：空态→问答→命令→退出 + Shift+Enter 多行发送 + Tab 补全 + 工具调用卡片行 |
+| `tui-app` | ink-testing-library 真渲染：空态→问答→命令→退出 + Shift+Enter 多行发送 + Tab 补全 + 工具调用卡片行 + 审批双钮门（←→/Enter） |
 | `tui-tool-card` | 卡片字形/字色映射、单行文本格式、整幅底色带宽度 |
 | `tui-composer-state` | 补全过滤/应用、粘贴换行归一、光标行列换算、滚动窗口、行尾光标预留、显示宽度与截断、补全覆盖全部已知命令 |
 

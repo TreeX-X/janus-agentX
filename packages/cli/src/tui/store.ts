@@ -6,7 +6,7 @@
  * then more thinking — instead of dumping all tool cards at the end).
  * Mirrors the §4.3 ChatAgentEvent→UI table shared with the plain loop.
  */
-import type { ChatAgentEvent } from '@janus-agent/chat-core'
+import type { ChatAgentEvent, ChatTodoItem } from '@janus-agent/chat-core'
 import type { TracePreview } from '../trace-preview.js'
 import type { CliDisplayEvent, ToolDisplay } from '../tool-display.js'
 
@@ -50,6 +50,24 @@ export interface ApprovalView {
   detail?: string
 }
 
+export interface QuestionOptionView {
+  label: string
+  description?: string
+}
+
+export interface QuestionItemView {
+  question: string
+  header: string
+  options: QuestionOptionView[]
+  multiple: boolean
+}
+
+export interface QuestionView {
+  callId: string
+  questions: QuestionItemView[]
+  allowCustom: boolean
+}
+
 export type TuiStatus = 'idle' | 'thinking' | 'error'
 
 export interface TuiContextLabels {
@@ -59,19 +77,79 @@ export interface TuiContextLabels {
   conversationLabel: string
 }
 
+/* ── Token + footer formatting (opencode bottom-bar shape) ───────────────
+   Session totals live in the footer (`/help · ctrl+p · <tokens>`); per-turn
+   counters stay for the turn-done caption. Compact `12.3k/1.2M` keeps the
+   single-line bar from wrapping on narrow terminals. */
+
+function trimCompact(value: number): string {
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? `${Math.trunc(rounded)}` : `${rounded}`
+}
+
+/** Compact token count: raw below 1k, `12.3k` / `1.2M` above (opencode style). */
+export function formatTokenCount(value: number): string {
+  const count = Math.max(0, Math.floor(value))
+  if (count >= 1_000_000) return `${trimCompact(count / 1_000_000)}M`
+  if (count >= 1_000) return `${trimCompact(count / 1_000)}k`
+  return `${count}`
+}
+
+/** `12 in / 8 out` segment shared by the footer and the turn-done caption. */
+export function formatTokenUsage(promptTokens: number, completionTokens: number): string {
+  return `${formatTokenCount(promptTokens)} in / ${formatTokenCount(completionTokens)} out`
+}
+
+export interface FooterSegments {
+  conversationLabel?: string
+  statusText?: string
+  sessionPromptTokens?: number
+  sessionCompletionTokens?: number
+  /** Scrolled-up rows; 0/undefined hides the badge (no wheel/scroll-key hints). */
+  hiddenRows?: number
+}
+
+/**
+ * Right-side status meta for the split bottom bar (design/janus-TUI-design.html):
+ * `[conv · ][status · ]<tokens>[ · ↑N]`. The left side owns the static key
+ * hints (`[Enter] Send · …`), so this carries only live state. Empty when
+ * there is nothing to report (callers hide the right cell).
+ */
+export function buildFooterText(segments: FooterSegments): string {
+  const parts: string[] = []
+  if (segments.conversationLabel) parts.push(segments.conversationLabel)
+  if (segments.statusText) parts.push(segments.statusText)
+  const prompt = segments.sessionPromptTokens ?? 0
+  const completion = segments.sessionCompletionTokens ?? 0
+  if (prompt > 0 || completion > 0) parts.push(formatTokenUsage(prompt, completion))
+  const hidden = segments.hiddenRows ?? 0
+  if (hidden > 0) parts.push(`↑${Math.floor(hidden)}`)
+  return parts.join(' · ')
+}
+
 export interface TuiState extends TuiContextLabels {
   blocks: TimelineBlock[]
   /** Thinking expansion (pi ctrl+t style). Collapsed by default, always shown. */
   thinkingExpanded: boolean
   toolsExpanded: boolean
+  /** Todo box expansion (ctrl+e). Collapsed single-line summary by default. */
+  todosExpanded: boolean
+  /** Live todo mirror for the sticky bar above the composer (empty = hidden). */
+  todos: ChatTodoItem[]
   activeBlockId?: string
   turnStartedAt?: number
   turnEndedAt?: number
+  /** Current-turn tokens (reset on turn-start; shown in the turn-done caption). */
   promptTokens: number
   completionTokens: number
+  /** Session totals (opencode bottom-bar shape; survive across turns). */
+  sessionPromptTokens: number
+  sessionCompletionTokens: number
   status: TuiStatus
   statusText: string
   awaitingApproval: ApprovalView | null
+  /** Live `ask_user` gate above the composer (null = no pending question). */
+  awaitingQuestion: QuestionView | null
 }
 
 export type TuiAction =
@@ -85,10 +163,13 @@ export type TuiAction =
   | { type: 'notice'; text: string }
   | { type: 'toggle-thinking' }
   | { type: 'toggle-tools' }
+  | { type: 'toggle-todos' }
   | CliDisplayEvent
   | { type: 'approval-requested'; approval: ApprovalView }
   | { type: 'approval-resolved' }
-  | { type: 'hydrate'; messages: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> }
+  | { type: 'question-requested'; question: QuestionView }
+  | { type: 'question-resolved' }
+  | { type: 'hydrate'; messages: Array<{ role: 'user' | 'assistant' | 'system'; text: string }>; todos?: ChatTodoItem[] }
   | { type: 'context'; labels: Partial<TuiContextLabels> }
   | { type: 'clear' }
 
@@ -105,11 +186,16 @@ export function createInitialState(): TuiState {
     blocks: [],
     thinkingExpanded: false,
     toolsExpanded: false,
+    todosExpanded: false,
+    todos: [],
     promptTokens: 0,
     completionTokens: 0,
+    sessionPromptTokens: 0,
+    sessionCompletionTokens: 0,
     status: 'idle',
     statusText: '',
     awaitingApproval: null,
+    awaitingQuestion: null,
     modelLabel: '',
     workspaceLabel: '',
     approvalLabel: '',
@@ -292,6 +378,25 @@ function reduceAgentEvent(state: TuiState, event: ChatAgentEvent): TuiState {
         status: state.status === 'error' ? 'error' : 'idle',
         statusText: event.cancelled ? 'cancelled — history kept' : state.statusText,
       }
+    case 'todo_update':
+      return { ...state, todos: event.todos.map((todo) => ({ ...todo })) }
+    case 'question_requested':
+      return {
+        ...state,
+        statusText: 'awaiting your pick…',
+        awaitingQuestion: {
+          callId: event.callId,
+          questions: event.questions.map((question) => ({
+            question: question.question,
+            header: question.header,
+            multiple: question.multiple,
+            options: question.options.map((option) => ({ ...option })),
+          })),
+          allowCustom: event.allowCustom,
+        },
+      }
+    case 'question_resolved':
+      return { ...state, awaitingQuestion: null }
     default:
       return state
   }
@@ -345,16 +450,28 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       return { ...state, thinkingExpanded: !state.thinkingExpanded }
     case 'toggle-tools':
       return { ...state, toolsExpanded: !state.toolsExpanded }
+    case 'toggle-todos':
+      return { ...state, todosExpanded: !state.todosExpanded }
     case 'tool-display':
       return { ...state, blocks: state.blocks.map((block, i) => i >= currentTurnStart(state.blocks) && block.kind === 'tool' && block.callId === action.callId
         ? { ...block, display: { ...block.display, ...action.display },
           toolStatus: action.display.failed ? 'failed' : block.toolStatus } : block) }
     case 'usage':
-      return { ...state, promptTokens: state.promptTokens + action.promptTokens, completionTokens: state.completionTokens + action.completionTokens }
+      return {
+        ...state,
+        promptTokens: state.promptTokens + action.promptTokens,
+        completionTokens: state.completionTokens + action.completionTokens,
+        sessionPromptTokens: state.sessionPromptTokens + action.promptTokens,
+        sessionCompletionTokens: state.sessionCompletionTokens + action.completionTokens,
+      }
     case 'approval-requested':
       return { ...state, awaitingApproval: action.approval }
     case 'approval-resolved':
       return { ...state, awaitingApproval: null }
+    case 'question-requested':
+      return { ...state, statusText: 'awaiting your pick…', awaitingQuestion: action.question }
+    case 'question-resolved':
+      return { ...state, awaitingQuestion: null }
     case 'hydrate':
       return {
         ...state,
@@ -363,14 +480,18 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
           kind: (message.role === 'system' ? 'info' : message.role) as TimelineBlock['kind'],
           text: message.text,
         })),
+        todos: action.todos ? action.todos.map((todo) => ({ ...todo })) : [],
         status: 'idle',
         statusText: '',
         awaitingApproval: null,
+        awaitingQuestion: null,
         activeBlockId: undefined,
         turnStartedAt: undefined,
         turnEndedAt: undefined,
         promptTokens: 0,
         completionTokens: 0,
+        sessionPromptTokens: 0,
+        sessionCompletionTokens: 0,
       }
     case 'context':
       return { ...state, ...action.labels }
@@ -378,14 +499,18 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       return {
         ...state,
         blocks: [],
+        todos: [],
         status: 'idle',
         statusText: '',
         awaitingApproval: null,
+        awaitingQuestion: null,
         activeBlockId: undefined,
         turnStartedAt: undefined,
         turnEndedAt: undefined,
         promptTokens: 0,
         completionTokens: 0,
+        sessionPromptTokens: 0,
+        sessionCompletionTokens: 0,
       }
     default:
       return state

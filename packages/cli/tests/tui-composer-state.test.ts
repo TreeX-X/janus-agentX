@@ -14,6 +14,7 @@ import {
   COMPOSER_MIN_ROWS,
   COMMAND_COMPLETIONS,
   applyCompletion,
+  completeSlashCommand,
   completionsCoverKnownCommands,
   cursorLineOf,
   deleteBackward,
@@ -30,7 +31,7 @@ import {
   visibleStart,
 } from '../src/tui/composer-state.js'
 import { isLiveTerminal, restoreNativeCaret } from '../src/tui/terminal-size.js'
-import { isKnownCommand } from '../src/commands.js'
+import { isKnownCommand, KNOWN_COMMAND_NAMES } from '../src/commands.js'
 
 describe('filterCompletions', () => {
   it('lists every command for a bare slash', () => {
@@ -40,7 +41,14 @@ describe('filterCompletions', () => {
   it('matches by prefix, case-insensitively', () => {
     expect(filterCompletions('/mo', 3).map((item) => item.name)).toEqual(['model'])
     expect(filterCompletions('/MODEL', 6).map((item) => item.name)).toEqual(['model'])
+    expect(filterCompletions('/e', 2).map((item) => item.name)).toEqual(['effort', 'exit'])
     expect(filterCompletions('/x', 2)).toEqual([])
+  })
+
+  it('covers the latest commands (key/effort/connect/status)', () => {
+    for (const name of ['key', 'effort', 'connect', 'status']) {
+      expect(filterCompletions(`/${name.slice(0, 2)}`, 3).map((item) => item.name)).toContain(name)
+    }
   })
 
   it('stays inactive for plain text, past-command args, and multiline', () => {
@@ -170,9 +178,33 @@ describe('completion coverage', () => {
     for (const item of COMMAND_COMPLETIONS) {
       expect(isKnownCommand(item.name)).toBe(true)
     }
-    for (const name of ['help', 'model', 'provider', 'workspace', 'clear', 'new', 'list', 'switch', 'rename', 'delete', 'approval', 'exit']) {
+    for (const name of KNOWN_COMMAND_NAMES) {
       expect(COMMAND_COMPLETIONS.some((item) => item.name === name)).toBe(true)
     }
+    for (const name of ['help', 'key', 'model', 'effort', 'provider', 'connect', 'status', 'workspace', 'clear', 'new', 'list', 'switch', 'rename', 'delete', 'approval', 'exit']) {
+      expect(COMMAND_COMPLETIONS.some((item) => item.name === name)).toBe(true)
+    }
+  })
+
+  it('fails when a known command has no completion entry', () => {
+    expect(completionsCoverKnownCommands(['help', 'nope-missing'])).toBe(false)
+  })
+})
+
+describe('completeSlashCommand (plain repl Tab completer)', () => {
+  it('completes a leading slash token with trailing space', () => {
+    expect(completeSlashCommand('/')).toEqual([
+      COMMAND_COMPLETIONS.map((item) => `/${item.name} `),
+      '/',
+    ])
+    expect(completeSlashCommand('/mo')).toEqual([[`/model `], '/mo'])
+    expect(completeSlashCommand('/E')).toEqual([[`/effort `, `/exit `], '/E'])
+  })
+
+  it('stays inactive past the command token or for plain text', () => {
+    expect(completeSlashCommand('hello')).toEqual([[], 'hello'])
+    expect(completeSlashCommand('/model m')).toEqual([[], '/model m'])
+    expect(completeSlashCommand('')).toEqual([[], ''])
   })
 })
 

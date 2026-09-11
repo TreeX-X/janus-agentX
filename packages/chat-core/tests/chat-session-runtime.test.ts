@@ -92,6 +92,22 @@ describe('ChatSessionRuntime', () => {
     expect(afterEdit.some((message) => message.content.includes('Loaded workspace evidence: workspace-1/a.ts'))).toBe(false)
   })
 
+  it('invalidates loaded evidence after a workspace.delete', () => {
+    const runtime = new ChatSessionRuntime()
+    runtime.recordToolResult(toolResult({
+      output: { workspaceId: 'workspace-1', path: 'a.ts', sha256: 'abc', size: 20, content: 'const value = 1' },
+    }))
+    runtime.recordToolResult(toolResult({
+      toolName: 'workspace.delete',
+      output: { workspaceId: 'workspace-1', path: 'a.ts', kind: 'file', bytes: 20, changedPaths: ['a.ts'] },
+    }))
+    const afterDelete = runtime.buildContext([
+      { role: 'system', content: 'policy' },
+      { role: 'user', content: 'inspect a.ts' },
+    ], { model: { contextWindow: 4_000, maxOutputTokens: 100 } })
+    expect(afterDelete.some((message) => message.content.includes('Loaded workspace evidence: workspace-1/a.ts'))).toBe(false)
+  })
+
   it('keeps separately loaded file ranges and invalidates all ranges after an edit', () => {
     const runtime = new ChatSessionRuntime()
     runtime.recordToolResult(toolResult({
@@ -171,6 +187,11 @@ describe('SystemPromptBuilder', () => {
     expect(prompt).not.toContain('C:/project')
     expect(prompt).toContain('Do not preload or vectorize the workspace')
     expect(prompt).toContain('Do not retry a denied action')
+    expect(prompt).toContain('Prefer search over walking the tree')
+    expect(prompt).toContain('prefer background execution')
+    expect(prompt).toContain("Respond in the user's language")
+    expect(prompt).toContain('prefer workspace_delete over shell rm')
+    expect(prompt).toContain('recursive:true')
   })
 
   it('does not claim tool access when a workspace has no active manifest', () => {

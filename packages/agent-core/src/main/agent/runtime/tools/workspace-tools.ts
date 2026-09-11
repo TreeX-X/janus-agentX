@@ -7,7 +7,9 @@ import { isTextBuffer, janusWorkspaceFs } from '../../environment/janus-workspac
 import { checkpointManager } from '../../checkpoint/checkpoint-manager'
 import {
   atomicReplaceWorkspaceFile,
+  commitWorkspaceDelete,
   createWorkspaceFile,
+  prepareWorkspaceDelete,
   prepareWorkspaceEdit,
   prepareWorkspaceUnifiedDiffEdit,
   MAX_WORKSPACE_EDIT_BYTES,
@@ -195,6 +197,58 @@ type WorkspaceListEntry = {
   name: string
   type: 'file' | 'directory'
   depth: number
+}
+
+export const workspaceDeleteTool: RegisteredTool = {
+  name: 'workspace.delete',
+  description: 'Delete one workspace file, symlink, or directory after approval. Directories with entries require recursive:true. The workspace root, .janusX audit state, and sensitive paths are refused. Prefer this over shell rm: deletions are previewed, audited, and checkpointed for restore.',
+  actionRisk: 'delete',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      workspaceId: { type: 'string' },
+      path: { type: 'string' },
+      recursive: { type: 'boolean' },
+    },
+    required: ['workspaceId', 'path'],
+    additionalProperties: false,
+  },
+  execute: async (input, context) => {
+    if (input.workspaceId !== context.workspaceId) {
+      throw new Error('workspace.delete workspaceId must match the active workspace resource')
+    }
+    if (typeof input.path !== 'string') {
+      throw new Error('workspace.delete path must be a string')
+    }
+    const recursive = input.recursive ?? false
+    if (typeof recursive !== 'boolean') {
+      throw new Error('workspace.delete recursive must be a boolean')
+    }
+    if (context.signal.aborted) throw new Error('workspace.delete cancelled')
+    // Same prepare → checkpoint → re-prepare → commit-verify shape as
+    // workspace.edit: the approver saw the first census, the commit verifies it.
+    let prepared = await prepareWorkspaceDelete(context.workspaceRoot, input.path, recursive)
+    await checkpointManager.initialize(context.workspaceRoot)
+    const checkpoint = await checkpointManager.createCheckpoint({
+      terminalId: `workspace-chat:${context.workspaceId}`,
+      engine: 'manual',
+      prompt: `workspace.delete ${prepared.path}`,
+      cwd: context.workspaceRoot,
+    })
+    if (context.signal.aborted) throw new Error('workspace.delete cancelled')
+    prepared = await prepareWorkspaceDelete(context.workspaceRoot, input.path, recursive)
+    const committed = await commitWorkspaceDelete(context.workspaceRoot, prepared)
+    return {
+      workspaceId: context.workspaceId,
+      path: committed.path,
+      kind: committed.kind,
+      bytes: committed.bytes,
+      entryCount: committed.entryCount,
+      ...(prepared.sha256 ? { sha256: prepared.sha256 } : {}),
+      changedPaths: [committed.path],
+      checkpointId: checkpoint.id,
+    }
+  },
 }
 
 export const workspaceListTool: RegisteredTool = {
@@ -396,6 +450,7 @@ export function registerWorkspaceTools(registry: ToolRegistry): void {
   registry.register(workspaceListTool)
   registry.register(workspaceEditTool)
   registry.register(workspaceCreateTool)
+  registry.register(workspaceDeleteTool)
   registry.register(workspaceSearchTool)
   registeredRegistries.add(registry)
 }

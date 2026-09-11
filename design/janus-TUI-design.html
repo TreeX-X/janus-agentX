@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<!-- ============================================================================
+  JANUS TUI · 极简冷色调与无缝顶栏高保真原型 · design/index.html
+  ----------------------------------------------------------------------------
+  设计融合说明：
+  - 风格基调：继承文件二的高阶暗灰色调 (#0c0d0f / #090a0c) 与沉稳琥珀铜 (#c87a3b)。
+  - 顶栏 Header：采用文件二【方案 A】现代无缝 Statusline，以 1px 底边线与 │ 自然融入终端。
+  - 输入框 Composer：采用文件二【方案 B】带 2px 琥珀铜侧边的精致卡片 (composer-card-v2)。
+  - 优化更新：
+    1. 审批态/提问态移除 ◇ 图标，审批态改为左右左右可移动的 Confirm/Cancel 选框。
+    2. 提问态允许选项挑选与自定义文字输入。
+    3. Todo 区域升级支持折叠/展开多行清单。
+============================================================================= -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>janus TUI · Hi-Fi Minimal Prototype</title>
+<style>
+  :root {
+    /* 降饱和度高级暗色调色板 */
+    --bg-main: #0c0d0f;         /* 全局背景：极暗夜灰 */
+    --term-bg: #090a0c;         /* 终端内部背景 */
+    --card-bg: #121418;         /* 卡片与输入框背景 */
+    
+    --accent: #c87a3b;          /* 沉稳琥珀铜 */
+    --accent-dim: rgba(200, 122, 59, 0.12);
+    
+    --body: #d1d5db;            /* 主文本：软白 */
+    --muted: #525866;           /* 次要文本：中石墨灰 */
+    --dim: #383d47;             /* 极暗辅助线条/文字 */
+    
+    --border-subtle: #1c1f26;   /* 极淡分割线 */
+    --border-card: #232732;     /* 卡片默认边框 */
+    --border-focus: #3d4352;    /* 卡片聚焦边框 */
+    
+    /* 辅助功能色 */
+    --done: #4ba375;            /* 低饱和完成绿 */
+    --cyan: #38bdf8;            /* 柔和青色 */
+    --yellow: #d97706;          /* 暖黄 */
+    --red: #e11d48;             /* 柔红 */
+    --green: #4ba375;           /* 绿色 */
+    --magenta: #c084fc;         /* 紫红 */
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg-main); color: var(--body);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "JetBrains Mono", "Noto Sans Mono CJK SC", monospace;
+  }
+
+  /* ---- 设计控制台（终端之外改稿使用） ---- */
+  .desk { max-width: 1180px; margin: 0 auto; padding: 20px 20px 40px; }
+  .desk h1 { font-size: 15px; font-weight: 700; margin: 0 0 4px; color: var(--body); }
+  .desk h1 span { color: var(--accent); }
+  .desk .sub { color: var(--muted); font-size: 12px; line-height: 1.7; margin-bottom: 12px; }
+  .desk .sub code { color: var(--body); background: #17191e; padding: 0 5px; border-radius: 4px; border: 1px solid #232730; }
+  
+  .bar {
+    background: #101215; border: 1px solid #1e2129; border-radius: 10px; padding: 10px 14px;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px;
+  }
+  .seg { display: flex; background: #08090a; border: 1px solid #1c1e24; border-radius: 7px; overflow: hidden; }
+  .seg button {
+    border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px;
+    padding: 6px 11px; cursor: pointer; white-space: nowrap; transition: 0.15s;
+  }
+  .seg button.on { background: #1f232c; color: var(--body); font-weight: 700; }
+  
+  .tweak { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+  .tweak input[type=text] {
+    background: #08090a; border: 1px solid #1c1e24; color: var(--body);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 5px 8px; width: 160px;
+  }
+  .switch { position: relative; width: 32px; height: 18px; background: #1c1f26; border-radius: 99px; cursor: pointer; border: 1px solid #2b303c; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #525866; transition: .15s; }
+  .switch.on { background: #2a1b10; border-color: var(--accent); }
+  .switch.on::after { left: 16px; background: var(--accent); }
+  
+  .hint { font-size: 11px; color: #444a56; width: 100%; line-height: 1.6; }
+  .hint b { color: var(--muted); }
+
+  /* ---- 终端复刻容器 ---- */
+  .termwrap {
+    background: var(--term-bg); border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0,0,0,.75);
+  }
+  .termchrome {
+    display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: #060708;
+    border-bottom: 1px solid var(--border-subtle); font-size: 11.5px; color: var(--muted);
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 10px; height: 10px; border-radius: 50%; display: block; background: #1c1f26; }
+  
+  .term { padding: 12px 16px; min-height: 640px; display: flex; flex-direction: column; font-size: 13px; line-height: 1.6; }
+
+  /* ============================================================================
+     【无缝顶栏 Statusline (方案 A)】
+  ============================================================================= */
+  .top-header-v1 {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px; color: var(--muted); margin-bottom: 12px;
+  }
+  .top-header-v1 .brand { color: var(--accent); font-weight: 700; letter-spacing: 0.5px; }
+  .top-header-v1 .sep { color: var(--dim); margin: 0 6px; }
+  .top-header-v1 .val { color: var(--body); }
+  .top-header-v1 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 4px; }
+
+  /* 讨论区 */
+  .disc { flex: 1; margin: 8px 0; min-height: 360px; }
+  .blk { margin-bottom: 14px; }
+  .you { color: var(--muted); font-weight: 700; }
+  .janus { color: var(--accent); font-weight: 700; }
+  .muted { color: var(--muted); } .body { color: var(--body); } .acc { color: var(--accent); }
+  .cyan { color: var(--cyan); } .yellow { color: var(--yellow); } .red { color: var(--red); }
+  .green { color: var(--green); } .mag { color: var(--magenta); } .done { color: var(--done); }
+  
+  /* 空态 ASCII Banner */
+  .banner { font-size: 11.5px; line-height: 1.15; letter-spacing: 0; white-space: pre; margin: 8px 0 6px; font-family: inherit; }
+  .banner .x-o { color: var(--accent); } .banner .x-d { color: var(--muted); }
+  
+  /* Notice Divider */
+  .notice { margin: 10px 0; }
+  .notice .rule { color: var(--dim); white-space: nowrap; overflow: hidden; }
+
+  /* Thinking */
+  .think-live { font-style: italic; }
+  .caret { display: inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: -2px; animation: blink 1.06s steps(1) infinite; }
+  .caret.dim { background: var(--muted); animation: none; opacity: .7; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Markdown 样式 */
+  .md h3 { color: var(--cyan); font-size: 13px; margin: 6px 0 4px; }
+  .md p { margin: 4px 0; color: var(--body); }
+  .md code { background: rgba(56,189,248,.1); color: var(--cyan); padding: 0 4px; border-radius: 4px; font: inherit; }
+  .md a { color: var(--cyan); }
+  .codebox { margin: 8px 0; border: 0; }
+  .codebox .cap { color: var(--muted); }
+  .codebox .row { display: flex; }
+  .codebox .ln { color: var(--dim); flex: none; text-align: right; padding-right: 8px; user-select: none; }
+  .bq { display: flex; margin: 6px 0; }
+  .bq .bar2 { color: var(--muted); padding-right: 8px; }
+  ul.tight { margin: 4px 0; padding-left: 18px; color: var(--body); }
+
+  /* Tool Card */
+  .tool { margin-bottom: 12px; }
+  .tool .band { background: var(--card-bg); border-left: 2px solid var(--border-card); display: block; padding: 2px 8px; white-space: pre-wrap; word-break: break-all; }
+  .tool .band.done { border-left-color: var(--done); }
+  .tool .meta { padding-left: 10px; font-size: 12.5px; }
+  .tool .out { padding-left: 20px; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; word-break: break-all; }
+  .tool .out .add { color: var(--green); } .tool .out .del { color: var(--red); }
+
+  /* Todo Sticky (支持收起/展开) */
+  .todo-box {
+    margin: 6px 0 8px; font-size: 12px; color: var(--muted);
+    background: rgba(18, 20, 24, 0.6); border: 1px solid var(--border-subtle);
+    border-radius: 6px; padding: 6px 10px;
+  }
+  .todo-box .head { display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
+  .todo-box .title { display: flex; align-items: center; gap: 6px; }
+  .todo-box .t-ic { color: var(--accent); font-weight: bold; }
+  .todo-box .toggle-btn { font-size: 11px; color: var(--dim); transition: 0.15s; }
+  .todo-box .toggle-btn:hover { color: var(--body); }
+  
+  .todo-list { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-subtle); display: flex; flex-direction: column; gap: 4px; }
+  .todo-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .todo-item.done { color: var(--muted); text-decoration: line-through; }
+  .todo-item.active { color: var(--body); font-weight: 500; }
+  .todo-item .ic { width: 12px; display: inline-block; text-align: center; }
+
+  /* ============================================================================
+     【侧边点缀卡片输入框 Composer (方案 B) + Popover】
+  ============================================================================= */
+  .composer-card-v2 {
+    background: var(--card-bg);
+    border: 1px solid var(--border-card);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 4px;
+  }
+  .composer-card-v2.disabled { border-left-color: var(--muted); opacity: 0.7; }
+  .composer-card-v2 .prompt { color: var(--accent); font-weight: 700; font-size: 13px; }
+  .composer-card-v2 .inner { color: var(--body); flex: 1; }
+  .composer-card-v2 .ghost { color: var(--muted); }
+
+  /* 命令补全 Popover */
+  .popover-compl {
+    background: #0f1014;
+    border: 1px solid var(--border-card);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    padding: 4px 0;
+    font-size: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+  .popover-compl .row { padding: 4px 10px; display: flex; justify-content: space-between; }
+  .popover-compl .row.sel { background: #1a1d26; color: var(--body); font-weight: 600; }
+  .popover-compl .row .desc { color: var(--muted); }
+
+  /* 面板 Panel (Palette / Approval / Question) */
+  .panel {
+    background: #0d0e12;
+    border: 1px solid var(--border-card);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px; margin: 8px 0; max-width: 680px;
+  }
+  .panel h4 { margin: 0 0 6px; color: var(--accent); font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .panel h4 .tag { background: var(--accent-dim); color: var(--accent); font-size: 11px; padding: 1px 5px; border-radius: 3px; font-weight: normal; }
+  .panel .foot { color: var(--muted); font-size: 11.5px; margin-top: 8px; border-top: 1px dashed var(--border-subtle); padding-top: 4px; }
+  
+  .pick { display: block; padding: 3px 8px; border-radius: 4px; margin: 2px 0; color: var(--muted); cursor: pointer; transition: 0.1s; }
+  .pick.sel { background: #1f232c; color: var(--body); font-weight: 600; }
+  .pick.custom-opt { border: 1px dashed var(--border-focus); color: var(--body); margin-top: 4px; }
+
+  /* 审批态按钮组 (支持左右选择，绝无大色块) */
+  .confirm-bar { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .confirm-btn {
+    padding: 3px 14px; border-radius: 4px; font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border-card); background: transparent; cursor: pointer; transition: 0.15s;
+  }
+  .confirm-btn.sel-yes { border-color: var(--green); color: var(--body); background: rgba(75, 163, 117, 0.12); font-weight: 600; }
+  .confirm-btn.sel-no { border-color: var(--red); color: var(--body); background: rgba(225, 29, 72, 0.12); font-weight: 600; }
+
+  /* 底部 Statusbar */
+  .bottom-statusbar {
+    display: flex; justify-content: space-between; align-items: center;
+    color: var(--muted); font-size: 11.5px; margin-top: 10px; padding-top: 6px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .bottom-statusbar .keys span { color: var(--body); }
+
+  /* 控制台辅助样式 */
+  .kbd { border: 1px solid var(--border-card); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 11px; background: #121418; color: var(--body); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media(max-width:900px){ .grid2 { grid-template-columns: 1fr; } }
+  .note { font-size: 11.5px; color: #444a56; line-height: 1.7; margin-top: 10px; }
+  .note b { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="desk">
+  <h1>janus TUI <span>·</span> 极简冷色调融合原型 <span style="color:var(--muted);font-weight:400">design/index.html</span></h1>
+  <div class="sub">
+    已融合文件二改造风格：无缝嵌入式顶栏【方案 A】+ 侧线卡片输入框【方案 B】+ 暗琥珀铜 (#c87a3b) 主色调。
+    上方为<b>设计控制台</b>，可切换场景与动态调参。改完结论可按映射落回工程文件。
+  </div>
+
+  <div class="bar">
+    <div class="seg" id="scenes">
+      <button data-s="empty">空态 empty</button>
+      <button data-s="conv" class="on">会话 conversation</button>
+      <button data-s="working">运行中 working</button>
+      <button data-s="approval">审批 approval</button>
+      <button data-s="question">提问 question</button>
+      <button data-s="overlays">浮层 palette</button>
+    </div>
+    <label class="tweak"><span class="switch on" id="swThink"></span> thinking 展开 <span class="kbd">Ctrl+T</span></label>
+    <label class="tweak"><span class="switch" id="swTools"></span> tool 输出展开 <span class="kbd">Ctrl+O</span></label>
+    <label class="tweak"><span class="switch on" id="swTodo"></span> Todo 栏</label>
+    <label class="tweak"><span class="switch" id="swTodoEx"></span> Todo 展开 <span class="kbd">Ctrl+D</span></label>
+    <label class="tweak"><span class="switch on" id="swPending"></span> queued 提示</label>
+    <input type="text" id="inModel" value="openai/gpt-5 · medium" title="modelLabel">
+    <input type="text" id="inWs" value="janus-agentX" title="workspaceLabel">
+    <input type="text" id="inAppr" value="auto-run" title="approvalLabel" style="width:100px">
+  </div>
+
+  <!-- 终端视口复刻 -->
+  <div class="termwrap">
+    <div class="termchrome">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span>janus — resident TUI · 极简冷色风格 · 无缝顶栏与侧线卡片</span>
+      <span>UTF-8</span>
+    </div>
+    <div class="term">
+      <!-- 1. 顶部 Header (融合方案 A) -->
+      <div class="top-header-v1">
+        <div>
+          <span class="brand">JANUS</span>
+          <span class="sep">│</span>
+          <span>ws: <span class="val" id="hWs">janus-agentX</span></span>
+        </div>
+        <div>
+          <span>model: <span class="val" id="hModel">openai/gpt-5 · medium</span></span>
+          <span class="sep">·</span>
+          <span>appr: <span class="val" id="hAppr">auto-run</span></span>
+          <span class="sep">│</span>
+          <span class="status-dot"></span><span class="val" style="color:var(--body)">ready</span>
+        </div>
+      </div>
+
+      <!-- 2. 中间对话讨论区 -->
+      <div class="disc" id="disc"></div>
+
+      <!-- 3. 底部常驻区：Todo + Composer(融合方案 B) + Statusbar -->
+      <div id="bottom"></div>
+      
+      <!-- 4. 底栏 Statusbar -->
+      <div class="bottom-statusbar">
+        <div class="keys" id="footerKeys">
+          <span>[Enter]</span> Send &nbsp;·&nbsp; <span>[Shift+Enter]</span> Line &nbsp;·&nbsp; <span>[Ctrl+P]</span> Cmds
+        </div>
+        <div id="footerMeta">12.4k in / 3.1k out</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="note"><b>对照源码（落回工程的位置）：</b><br>
+    · 顶栏 Statusline → <code>App.tsx:665-668</code> (无缝无外框分栏)<br>
+    · 输入框 Composer → <code>Composer.tsx:385-394</code> (侧线卡片与底边补全卡)<br>
+    · 配色与色板 → <code>palette.tsx</code> (更新全套 Hex 与淡边框值)<br>
+    · Tool 卡片 → <code>tool-card.ts</code> (背景色与 2px Accent 侧栏)<br>
+    · 底栏文本 → <code>store.ts:117-128 buildFooterText</code></div>
+    <div class="note"><b>状态确认模板：</b><br>
+    场景：conversation / working / approval …<br>
+    改动点：优化审批态 ( Confirm / Cancel 可切换) 与提问态 UI，无 ◇ 图标，Todo 缩放展开。<br>
+    工程对应：`Header.tsx` 结构化输出 + `Composer.tsx` CSS 类适配。</div>
+  </div>
+</div>
+
+<script>
+/* 高保真像素 Wordmark */
+const PIXEL = {
+  J:['0011','0001','0001','1001','0110'], A:['0110','1001','1111','1001','1001'],
+  N:['1001','1101','1011','1001','1001'], U:['1001','1001','1001','1001','0110'],
+  S:['0111','1000','0110','0001','1110'], X:['10002','01020','00100','02010','20001']};
+function cellRow(pat){ return [...pat].map(c=>c==='1'?'██':c==='2'?'░░':'  ').join(''); }
+function bannerHTML(){
+  let h='<div class="banner body" aria-label="JANUS X">';
+  for(let r=0;r<5;r++){
+    h+='<div>'+['J','A','N','U','S'].map(L=>cellRow(PIXEL[L][r])).join('  ')+'  ';
+    h+=[...PIXEL.X[r]].map(c=>c==='1'?'<span class="x-o">██</span>':c==='2'?'<span class="x-d">░░</span>':'  ').join('')+'</div>';
+  }
+  return h+'</div>';
+}
+const RULE='─'.repeat(72);
+const state = {
+  scene: 'conv',
+  thinkEx: false,
+  toolsEx: true,
+  todo: true,
+  todoEx: false,
+  pending: true,
+  apprChoice: 'confirm', // 'confirm' | 'cancel'
+  qChoice: 0 // 0, 1, 2
+};
+
+const convDisc = `
+  <div class="blk"><div class="you">you ›</div><div class="body">请结合方案 A 的顶栏和方案 B 的输入框，全面升级 UI 风格</div></div>
+  <div class="blk"><div class="yellow">▸ thinking · 1.8s · 重构无缝 Statusline 并引入沉稳琥珀铜配色</div></div>
+  <div class="tool">
+    <span class="band done">✔ workspace.read · completed · 0.9s</span>
+    <div class="meta cyan">read › packages/cli/src/tui/App.tsx</div>
+    <div class="meta muted">&nbsp;&nbsp;└ App.tsx + Composer.tsx 视觉样式已重构</div>
+    <div class="out">    Header 升级为顶部无缝融合行 (top-header-v1)
+    Composer 升级为带 2px 侧边线的卡片式输入框 (composer-card-v2)
+    <span class="toolmore">    … 2 more lines</span></div>
+  </div>
+  <div class="blk"><div class="janus">janus ›</div>
+    <div class="md">
+      <h3>改造完成，高雅暗冷风格已应用</h3>
+      <p>顶栏不再使用封闭外框，改为现代连贯 Statusline；输入框采用高颜值左侧 2px 琥珀铜点缀卡片。</p>
+      <div class="codebox"><div class="cap">┌ tsx</div>
+        <div class="row"><span class="ln" style="width:28px">1 │ </span><span class="cyan">&lt;Statusline workspace={ws} model={model} /&gt;</span></div>
+        <div class="row"><span class="ln" style="width:28px">2 │ </span><span class="body">&nbsp;&nbsp;&lt;Discussion flexGrow /&gt; &lt;ComposerCardVariantB /&gt;</span></div>
+        <div class="cap">└</div></div>
+      <ul class="tight"><li>去除了对比生硬的大面积高亮，降低色块饱和度</li><li>保持原有完整的交互逻辑与数据控制台</li></ul>
+    </div>
+  </div>`;
+
+const workingDisc = `
+  <div class="blk"><div class="you">you ›</div><div class="body">把登录态的 provider 列表过一遍，顺手把超时重试加上</div></div>
+  <div class="blk"><div class="yellow">▸ thinking</div><div class="muted think-live">正在比对 session.listProviders() 与面板 roster…<span class="caret dim"></span></div></div>
+  <div class="tool">
+    <span class="band" style="border-left-color:var(--accent)">◐ workspace.search… · running</span>
+    <div class="meta cyan">&nbsp;&nbsp;search › query: listProviders roster probe</div>
+    <div class="out">    src/session.ts:88  getApiKeySource()
+    src/providers.ts:41  isProviderEnabled()</div>
+  </div>
+  <div class="blk muted"><span id="spin">⠋</span> running workspace.search… · <span id="secs">3.1s</span></div>`;
+
+const emptyDisc = bannerHTML() + `
+  <div class="notice"><div class="rule">${RULE}</div>
+    <div><span class="acc">○ </span><span class="body">missing model — pick one with /model, then retry.</span></div>
+    <div><span class="acc">○ </span><span class="body">no API key — /connect openai to add one (lands in auth.json).</span></div>
+    <div class="rule">${RULE}</div></div>
+  <div class="blk muted">空态仅留 Banner 与提示说明。请在下方卡片输入框打字或按下 <span class="kbd">Ctrl+P</span>。</div>`;
+
+function renderTodo() {
+  if (!state.todo) return '';
+  if (!state.todoEx) {
+    // 收起态（单行精简显示）
+    return `
+      <div class="todo-box">
+        <div class="head" onclick="toggleTodoEx()">
+          <div class="title">
+            <span class="t-ic">○</span>
+            <span class="body">待办 (1/3)</span>
+            <span style="color:var(--dim)">│</span>
+            <span>当前: 融合顶栏 A 与输入框 B 改造</span>
+          </div>
+          <span class="toggle-btn">展开列表 ▲</span>
+        </div>
+      </div>`;
+  }
+  // 展开态（多行详情，可缩放控制）
+  return `
+    <div class="todo-box">
+      <div class="head" onclick="toggleTodoEx()">
+        <div class="title">
+          <span class="t-ic">◐</span>
+          <span class="body" style="font-weight:600">待办事项清单 (1/3 完成)</span>
+        </div>
+        <span class="toggle-btn">收起 ▼</span>
+      </div>
+      <div class="todo-list">
+        <div class="todo-item done">
+          <span class="ic done">✔</span>
+          <span>1. 重构无缝 Statusline 顶栏与冷色调底色</span>
+        </div>
+        <div class="todo-item active">
+          <span class="ic cyan">▸</span>
+          <span>2. 优化审批/提问态 UI（去除 ◇ 图标，加 Confirm/Cancel 移动选框）</span>
+        </div>
+        <div class="todo-item">
+          <span class="ic muted">○</span>
+          <span>3. 支持 Todo 可缩放折叠/展开与多任务进度感知</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function bottomFor(s){
+  const todo = renderTodo();
+  const queued = state.pending ? `<div class="muted" style="margin:0 0 6px;font-size:12px">queued (1): /model openai/gpt-5-mini</div>` : '';
+  
+  /* 融合方案 B：带 2px 琥珀铜侧线条的 Composer */
+  const composerB = (ghost, extra='') => `
+    ${extra}
+    <div class="composer-card-v2">
+      <span class="prompt">janus ›</span>
+      <div class="inner">${ghost ? '<span class="ghost">'+ghost+'</span>' : '<span id="cin"></span><span class="caret"></span>'}</div>
+    </div>`;
+
+  const complPopover = `
+    <div class="popover-compl">
+      <div class="row sel"><span>/connect</span><span class="desc">Provider setup wizard</span></div>
+      <div class="row"><span style="color:var(--accent)">/effort</span><span class="desc">Show or switch reasoning effort</span></div>
+      <div class="row"><span style="color:var(--accent)">/status</span><span class="desc">Show provider/model/key/config</span></div>
+    </div>`;
+
+  if(s==='empty') return todo + `<div class="panel"><h4>Command Palette</h4>
+      <div><span class="muted">› </span><span class="body">con</span><span class="caret dim"></span></div>
+      <div><span class="pick sel">Connect / manage providers  keys + test</span></div>
+      <div><span class="body">Show status</span><span class="muted">  /status</span></div>
+      <div class="foot">↑↓ move · Enter run · Esc close</div></div>`
+    + composerB('type a message or /command...');
+  
+  if(s==='approval') {
+    const isYes = state.apprChoice === 'confirm';
+    return todo + queued + `
+      <div class="panel">
+        <h4>! Approve Action <span class="tag">medium risk</span></h4>
+        <div class="body" style="margin: 4px 0;">修改代码: <code>packages/cli/src/tui/palette.tsx</code> (+18/-4)</div>
+        <div class="confirm-bar">
+          <button class="confirm-btn ${isYes ? 'sel-yes' : ''}" onclick="setAppr('confirm')">${isYes ? '▸ Confirm' : 'Confirm'}</button>
+          <button class="confirm-btn ${!isYes ? 'sel-no' : ''}" onclick="setAppr('cancel')">${!isYes ? '▸ Cancel' : 'Cancel'}</button>
+        </div>
+        <div class="foot">← → move · Enter confirm · Esc cancel</div>
+      </div>`
+      + composerB(null);
+  }
+    
+  if(s==='question') {
+    const c = state.qChoice;
+    return todo + `
+      <div class="panel">
+        <h4>? Confirm plan <span class="tag">1/2</span></h4>
+        <div class="body" style="margin-bottom:6px">默认 effort 切到 high 吗？硬核任务推理更稳定。</div>
+        <div>
+          <span class="pick ${c===0?'sel':''}" onclick="setQ(0)">${c===0?'▸ ':'  '}1. 保持 medium (balanced - 默认)</span>
+          <span class="pick ${c===1?'sel':''}" onclick="setQ(1)">${c===1?'▸ ':'  '}2. 切到 high (deep reasoning)</span>
+          <span class="pick custom-opt ${c===2?'sel':''}" onclick="setQ(2)">${c===2?'▸ ':'  '}3. 自定义输入... (可在下方输入框直接打字)</span>
+        </div>
+        <div class="foot">↑↓ 切换选项 · Enter 确认 · 或在下方输入框自由回答</div>
+      </div>`
+      + composerB(c===2 ? '输入自定义回复内容...' : 'type message or select option...');
+  }
+    
+  if(s==='overlays') return `
+    <div class="panel"><h4>Reasoning Effort</h4>
+      <div><span class="pick">  none  no reasoning</span>
+      <span class="pick sel">* medium  balanced (default)</span>
+      <span class="pick">  high  deep reasoning</span></div>
+      <div class="foot">↑↓ move · Enter switch · Esc close</div></div>`
+    + composerB('type message...');
+    
+  if(s==='working') return todo + queued + composerB(null);
+  
+  /* conv 状态默认展示命令补全 Popover */
+  return todo + queued + composerB(null, complPopover);
+}
+
+function render(){
+  const d=document.getElementById('disc'), b=document.getElementById('bottom');
+  document.querySelectorAll('#scenes button').forEach(x=>x.classList.toggle('on',x.dataset.s===state.scene));
+  
+  let disc=convDisc, keys='<span>[Enter]</span> Send &nbsp;·&nbsp; <span>[Shift+Enter]</span> Line &nbsp;·&nbsp; <span>[Ctrl+P]</span> Cmds', meta='12.4k in / 3.1k out';
+  if(state.scene==='empty'){ disc=emptyDisc; meta='/help · ctrl+p'; }
+  if(state.scene==='working'){ disc=workingDisc; meta='running workspace.search… · ↑12'; }
+  if(state.scene==='approval'){ disc=convDisc+`<div class="blk red">✘ model error 429 (retryable)</div>`; meta='awaiting approval'; }
+  if(state.scene==='question'){ disc=convDisc; meta='awaiting your input…'; }
+  if(state.scene==='overlays'){ disc=convDisc; }
+
+  if(state.thinkEx) disc=disc.replace('▸ thinking · 1.8s · 重构无缝 Statusline 并引入沉稳琥珀铜配色',
+    '▸ thinking · 1.8s<br><span class="muted">按方案 A 将顶栏重构为无缝 Statusline，按方案 B 将 Composer 改为 2px Accent 侧栏精致卡片，色板整体降低饱和度并以暗琥珀铜为主调。</span>');
+  if(state.toolsEx) disc=disc.replace('… 2 more lines','packages/cli/src/tool-display.ts:43 outputLines 截断<br>    packages/cli/src/tui/store.ts:290 trace 配对');
+
+  d.innerHTML=disc; b.innerHTML=bottomFor(state.scene);
+  document.getElementById('footerKeys').innerHTML=keys;
+  document.getElementById('footerMeta').textContent=meta;
+  document.getElementById('hModel').textContent=document.getElementById('inModel').value;
+  document.getElementById('hWs').textContent=document.getElementById('inWs').value;
+  document.getElementById('hAppr').textContent=document.getElementById('inAppr').value;
+}
+
+/* 交互函数定义 */
+function setAppr(choice) { state.apprChoice = choice; render(); }
+function setQ(idx) { state.qChoice = idx; render(); }
+function toggleTodoEx() {
+  state.todoEx = !state.todoEx;
+  const sw = document.getElementById('swTodoEx');
+  if(sw) sw.classList.toggle('on', state.todoEx);
+  render();
+}
+
+document.querySelectorAll('#scenes button').forEach(x=>x.onclick=()=>{state.scene=x.dataset.s;render();});
+function bindSw(id,key){
+  const el=document.getElementById(id);
+  el.onclick=()=>{
+    el.classList.toggle('on');
+    state[key]=el.classList.contains('on');
+    render();
+  };
+}
+bindSw('swThink','thinkEx');bindSw('swTools','toolsEx');bindSw('swTodo','todo');bindSw('swTodoEx','todoEx');bindSw('swPending','pending');
+['inModel','inWs','inAppr'].forEach(id=>document.getElementById(id).oninput=render);
+
+/* Spinner 动画 */
+const glyphs=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']; let gi=0, t0=Date.now();
+setInterval(()=>{ gi=(gi+1)%glyphs.length; const s=document.getElementById('spin');
+  if(s){ s.textContent=glyphs[gi]; document.getElementById('secs').textContent=((Date.now()-t0)/1000).toFixed(1)+'s'; }},120);
+
+/* 快捷键监听 */
+document.addEventListener('keydown',e=>{
+  if(e.key==='t'&&(e.ctrlKey||e.metaKey)){e.preventDefault();document.getElementById('swThink').click();}
+  if(e.key==='o'&&(e.ctrlKey||e.metaKey)){e.preventDefault();document.getElementById('swTools').click();}
+  if(e.key==='d'&&(e.ctrlKey||e.metaKey)){e.preventDefault();toggleTodoEx();}
+  
+  // 模拟键盘左右箭头切换审批按钮
+  if(state.scene === 'approval') {
+    if(e.key === 'ArrowLeft') setAppr('confirm');
+    if(e.key === 'ArrowRight') setAppr('cancel');
+  }
+  // 模拟键盘上下箭头切换提问选项
+  if(state.scene === 'question') {
+    if(e.key === 'ArrowUp') setQ((state.qChoice + 2) % 3);
+    if(e.key === 'ArrowDown') setQ((state.qChoice + 1) % 3);
+  }
+});
+
+render();
+</script>
+</body>
+</html>

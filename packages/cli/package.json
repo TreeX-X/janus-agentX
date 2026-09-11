@@ -6,6 +6,14 @@
   "bin": {
     "janus": "dist/cli.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TreeX-X/janus-agentX.git",
+    "directory": "packages/cli"
+  },
   "scripts": {
     "build": "tsc && node ../../scripts/fix-dist-extensions.mjs dist",
     "typecheck": "tsc --noEmit",
@@ -15,6 +23,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.71",
     "@janus-agent/agent-core": "file:../agent-core",
+    "@janus-agent/chat-core": "file:../chat-core",
     "@janus-agent/janus-agent": "file:../janus-agent",
     "@janus-agent/node-hosts": "file:../node-hosts",
     "ai": "3.4.33",

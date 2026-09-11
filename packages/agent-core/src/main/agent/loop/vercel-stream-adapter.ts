@@ -163,6 +163,8 @@ export function createVercelStream(options: {
   model: unknown
   tools?: Record<string, VercelTool>
   streamTextFn: StreamTextFn
+  /** CodeX parity: forwarded verbatim to streamTextFn; hosts lower it to providerOptions. */
+  effort?: string
 }) {
   const modelTools = options.tools ? createVercelModelTools(options.tools) : undefined
   const streamTextFn = options.streamTextFn
@@ -182,6 +184,7 @@ export function createVercelStream(options: {
         abortSignal: attemptSignal,
         ...(modelTools ? { tools: modelTools } : {}),
         ...(modelTools ? { experimental_toolCallStreaming: true } : {}),
+        ...(options.effort ? { effort: options.effort } : {}),
         maxSteps: 1,
       })
     } catch (error) {

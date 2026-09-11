@@ -9,7 +9,7 @@
  * - git-tools.ts -> GitHost (status/log/diff/stage/unstage/commit/pull/push)
  *
  * Tool-name contract (locked by tests in both repos, see PORTS.md §3):
- * workspace.{read,list,search,edit,create} / project.* / git.* / command.run
+ * workspace.{read,list,search,edit,create,delete} / project.* / git.* / command.run
  */
 import type { ToolRegistry } from '../registry'
 

@@ -32,7 +32,7 @@ export function toolCategory(name: string): ToolCategory {
   const normalized = name.replace(/[._-]/g, '').toLowerCase()
   if (/^workspace(read|list)$/.test(normalized)) return 'read'
   if (normalized === 'workspacesearch') return 'search'
-  if (/^workspace(edit|create)$/.test(normalized)) return 'edit'
+  if (/^workspace(edit|create|delete)$/.test(normalized)) return 'edit'
   if (normalized === 'commandrun' || normalized === 'projectprocessoutput') return 'command'
   if (normalized.startsWith('git')) return 'git'
   if (normalized.startsWith('project')) return 'project'
@@ -59,10 +59,77 @@ function outputLines(value: unknown): string[] {
   return shown
 }
 
+function todoWriteSummary(value: unknown): string | undefined {
+  const items = Array.isArray(value) ? value : (record(value).todos as unknown)
+  if (!Array.isArray(items) || items.length === 0) return undefined
+  const done = items.filter((item) => record(item).status === 'completed').length
+  const current = items.find((item) => record(item).status === 'in_progress')
+  const currentText = typeof record(current).content === 'string' ? String(record(current).content).slice(0, 80) : ''
+  return `todo ${done}/${items.length}${currentText ? ` · ${currentText}` : ''}`
+}
+
+function todoWriteDisplayEvent(event: Extract<AgentStreamEvent, { type: 'tool_call_ready' | 'tool_execution_update' | 'tool_execution_end' }>): CliDisplayEvent | undefined {
+  if (event.type === 'tool_call_ready') {
+    return { type: 'tool-display', callId: event.call.id, display: { category: 'tool', target: 'todo list' } }
+  }
+  if (event.type === 'tool_execution_update') return undefined
+  const failed = event.isError
+  let summary = failed ? safeText(event.result.content, 240) : undefined
+  if (!failed) {
+    try {
+      summary = todoWriteSummary(JSON.parse(event.result.content)) ?? 'todo updated'
+    } catch {
+      summary = 'todo updated'
+    }
+  }
+  return {
+    type: 'tool-display',
+    callId: event.call.id,
+    display: { category: 'tool', target: 'todo list', summary, failed: failed || undefined },
+  }
+}
+
+function askUserSummary(content: string): string {
+  try {
+    const parsed = JSON.parse(content) as { answers?: Array<{ header?: unknown; selected?: unknown; custom?: unknown }> }
+    if (Array.isArray(parsed.answers) && parsed.answers.length > 0) {
+      return parsed.answers
+        .map((item, index) => {
+          const picked = Array.isArray(item.selected) ? item.selected.map(String).join('+') : ''
+          return `Q${index + 1}→${picked || (typeof item.custom === 'string' && item.custom ? 'custom' : '?')}`
+        })
+        .join('; ')
+    }
+  } catch {
+    // Fall through to raw text.
+  }
+  return safeText(content, 120)
+}
+
+function askUserDisplayEvent(event: Extract<AgentStreamEvent, { type: 'tool_call_ready' | 'tool_execution_update' | 'tool_execution_end' }>): CliDisplayEvent | undefined {
+  if (event.type === 'tool_call_ready') {
+    return { type: 'tool-display', callId: event.call.id, display: { category: 'tool', target: 'question' } }
+  }
+  if (event.type === 'tool_execution_update') return undefined
+  const failed = event.isError
+  return {
+    type: 'tool-display',
+    callId: event.call.id,
+    display: { category: 'tool', target: 'question', summary: askUserSummary(event.result.content), failed: failed || undefined },
+  }
+}
+
 export function toDisplayEvent(event: AgentStreamEvent): CliDisplayEvent | undefined {
   if (event.type === 'finish' && event.usage) return { type: 'usage', ...event.usage }
   if (event.type !== 'tool_call_ready'
     && event.type !== 'tool_execution_update' && event.type !== 'tool_execution_end') return undefined
+  // `todo_write` is a local planning write (no workspace I/O): keep its card
+  // to one compact summary line so the timeline stays readable — the live
+  // detail lives in the sticky bar above the composer.
+  if (event.call.name === 'todo_write') return todoWriteDisplayEvent(event)
+  // `ask_user` is a local confirmation gate (no workspace I/O): one compact
+  // summary line; the option detail lives in the question panel/picker.
+  if (event.call.name === 'ask_user') return askUserDisplayEvent(event)
   const args = record(redactPolicyValue(event.call.arguments))
   const category = toolCategory(event.call.name)
   const target = ['path', 'query', 'program', 'args', 'cwd', 'command', 'projectId', 'message'].filter((key) => args[key] !== undefined)
@@ -85,7 +152,17 @@ export function toDisplayEvent(event: AgentStreamEvent): CliDisplayEvent | undef
     }
     // Show this call's applied changes, independent of pre-existing working-tree edits.
     if (category === 'edit' && !display.failed) {
-      if (typeof args.content === 'string') display.output = outputLines(args.content.split('\n').map((line) => `+${line}`).join('\n'))
+      const normalizedName = event.call.name.replace(/[._-]/g, '').toLowerCase()
+      if (normalizedName === 'workspacedelete') {
+        const deleted = record(details.output)
+        const kind = typeof deleted.kind === 'string' ? deleted.kind : 'target'
+        const size = typeof deleted.bytes === 'number' && deleted.bytes > 0
+          ? ` · ${deleted.bytes} bytes`
+          : typeof deleted.entryCount === 'number' && deleted.entryCount > 0
+            ? ` · ${deleted.entryCount} entries`
+            : ''
+        display.output = [`− ${String(deleted.path ?? args.path ?? '')} (${kind}${size})`]
+      } else if (typeof args.content === 'string') display.output = outputLines(args.content.split('\n').map((line) => `+${line}`).join('\n'))
       else if (typeof args.unifiedDiff === 'string') display.output = outputLines(args.unifiedDiff)
       else if (Array.isArray(args.replacements)) display.output = outputLines(args.replacements.map((replacement) => {
         const edit = record(replacement)

@@ -24,6 +24,8 @@ export interface ChatOptions {
   maxTurns?: number
   timeoutMs?: number
   conversationId?: string
+  /** CodeX parity: reasoning effort (none|minimal|low|medium|high|xhigh|max|ultra). */
+  effort?: string
   prompt: string
 }
 
@@ -40,6 +42,8 @@ export interface TuiOptions {
   timeoutMs?: number
   conversationId?: string
   approvalMode?: ApprovalModeOption
+  /** CodeX parity: reasoning effort (none|minimal|low|medium|high|xhigh|max|ultra). */
+  effort?: string
   fullscreen?: boolean
   plain?: boolean
 }
@@ -63,6 +67,7 @@ interface SharedOptions {
   timeoutMs?: number
   conversationId?: string
   approvalMode?: ApprovalModeOption
+  effort?: string
   fullscreen?: boolean
   plain?: boolean
 }
@@ -154,6 +159,16 @@ function parseSharedFlag(
       shared.conversationId = value
       return undefined
     }
+    case '--effort':
+    case '--reasoning-effort': {
+      const value = takeValue()
+      const level = typeof value === 'string' ? value.trim().toLowerCase() : ''
+      if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(level)) {
+        return `Invalid --effort: ${value ?? '(missing)'}. Supported: none|minimal|low|medium|high|xhigh|max|ultra`
+      }
+      shared.effort = level
+      return undefined
+    }
     case '--fullscreen': {
       shared.fullscreen = true
       return undefined
@@ -205,6 +220,7 @@ function parseChat(argv: string[], cwd: string): ParsedArgs {
       maxTurns: shared.maxTurns,
       timeoutMs: shared.timeoutMs,
       conversationId: shared.conversationId,
+      effort: shared.effort,
       prompt,
     },
   }
@@ -242,6 +258,7 @@ function parseTui(argv: string[], cwd: string): ParsedArgs {
       timeoutMs: shared.timeoutMs,
       conversationId: shared.conversationId,
       approvalMode: shared.approvalMode,
+      effort: shared.effort,
       fullscreen: shared.fullscreen,
       plain: shared.plain,
     },
@@ -276,14 +293,17 @@ export function helpText(): string {
     '  janus [tui] [-C <dir>] [-m <id>] [-p <provider>] [--base-url <url>] [--api-key <key>]',
     '            [--config <path> | --no-config]',
     '            [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run|per-action]',
+    '            [--effort <none|minimal|low|medium|high|xhigh|max|ultra>]',
     '            [--conversation <id>] [--fullscreen] [--plain]',
     '      Resident interactive loop (default with no argv); human-readable streaming.',
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
+    '      Reasoning effort falls back to JANUS_EFFORT (default medium). Inspect with /status, switch with /effort.',
     '      Provider keys: --api-key > <apiKeyEnv> > JANUS_API_KEY. Inspect with /status.',
     '      Starts without a model/API key; chat turns then fail until set (/model <id>, /key <key>).',
     '  janus chat [--workspace <dir>] [--model <id>] [--provider <id>] [--base-url <url>] [--api-key <key>]',
     '             [--config <path>]',
     '             [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run]',
+    '             [--effort <none|minimal|low|medium|high|xhigh|max|ultra>]',
     '             [--conversation <id>] [--] "prompt"',
     '      Run one agent turn against a workspace; ChatAgentEvents stream as JSONL on stdout.',
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',

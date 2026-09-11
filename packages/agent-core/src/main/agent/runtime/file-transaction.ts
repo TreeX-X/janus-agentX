@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { open, realpath, rename, stat, unlink } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstat, open, readdir, readFile, readlink, realpath, rename, rm, stat, unlink } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isUtf8 } from 'node:buffer'
 import { evaluateWorkspaceReadPolicy, isSensitivePath } from './policy-gate'
 import {
@@ -325,6 +325,314 @@ export async function createWorkspaceFile(
     await handle.close()
   }
   return { path: target.relativePath, sha256: sha256(content), bytes }
+}
+
+export const MAX_DELETE_WALK_ENTRIES = 1000
+export const MAX_DELETE_PREVIEW_ENTRIES = 20
+
+export type WorkspaceDeleteKind = 'file' | 'directory' | 'symlink'
+
+export interface PreparedWorkspaceDelete {
+  /** Workspace-relative path with `/` separators (canonical parent + requested leaf). */
+  path: string
+  /** Absolute leaf path (parent realpathed, leaf appended — the leaf itself is never followed). */
+  targetPath: string
+  kind: WorkspaceDeleteKind
+  /** File size in bytes; 0 for directories and symlinks. */
+  bytes: number
+  /** SHA-256 for files within the edit size cap (conflict check); undefined for large files. */
+  sha256?: string
+  /** Size + mtime fallback conflict signal for files too large to hash. */
+  mtimeMs?: number
+  /** readlink target for symlinks (conflict check: the link must not have been swapped). */
+  linkTarget?: string
+  identity: { dev: bigint; ino: bigint }
+  /** Recursive entry count for directories (files + dirs + links); 0 otherwise. */
+  entryCount: number
+  /** True when the walk stopped at MAX_DELETE_WALK_ENTRIES (count is a lower bound). */
+  entriesTruncated: boolean
+  /** First relative entries (sorted, bounded) for the approval preview. */
+  entries: string[]
+  recursive: boolean
+}
+
+function deleteDenied(code: 'SENSITIVE_PATH' | 'PROTECTED_PATH' | 'DIRECTORY_NOT_EMPTY', message: string): Error {
+  return Object.assign(new Error(message), { code })
+}
+
+/**
+ * Resolve a path for deletion. Unlike `resolveWorkspaceTarget` (which
+ * realpaths the whole target, i.e. FOLLOWS a final-component symlink),
+ * the leaf is inspected with `lstat` and never followed: deleting a symlink
+ * unlinks the link object inside the workspace, never its target. The parent
+ * chain is still canonicalized, so a symlinked parent cannot escape the root.
+ */
+export async function prepareWorkspaceDelete(
+  workspaceRoot: string,
+  requestedPath: string,
+  recursive: boolean,
+): Promise<PreparedWorkspaceDelete> {
+  if (!workspaceRoot) {
+    throw new WorkspacePathGuardError('WORKSPACE_UNAVAILABLE', 'Workspace is unavailable')
+  }
+  if (typeof requestedPath !== 'string' || requestedPath.includes('\0')) {
+    throw new WorkspacePathGuardError('TARGET_UNAVAILABLE', 'Workspace target is unavailable')
+  }
+  if (isAbsoluteOnAnyPlatformLocal(requestedPath)) {
+    throw new WorkspacePathGuardError('ABSOLUTE_PATH', 'Absolute paths are not allowed')
+  }
+  const segments = requestedPath.split(/[\\/]+/).filter(Boolean)
+  if (segments.includes('..')) {
+    throw new WorkspacePathGuardError('PATH_TRAVERSAL', 'Parent path traversal is not allowed')
+  }
+  if (segments.length === 0) {
+    throw deleteDenied('PROTECTED_PATH', 'workspace.delete refuses the workspace root itself')
+  }
+  // Self-protection (pi-tools parity): the agent must not eat its own audit
+  // trail, checkpoints, or command logs. The shell owns the same layout.
+  if (segments[0].toLowerCase() === '.janusx') {
+    throw deleteDenied('PROTECTED_PATH', 'workspace.delete refuses .janusX audit and checkpoint state')
+  }
+
+  const rootPath = await canonicalPathLocal(workspaceRoot)
+  const leaf = segments.at(-1) as string
+  const parentRel = segments.slice(0, -1).join('/')
+  const parentTarget = await resolveWorkspaceTarget(workspaceRoot, parentRel)
+  if (parentTarget.kind !== 'directory') {
+    throw new WorkspacePathGuardError('TARGET_NOT_REGULAR', 'Workspace parent is not a directory')
+  }
+  const parentAbs = resolve(rootPath, parentTarget.relativePath.split('/').join(sep))
+  const targetPath = resolve(parentAbs, leaf)
+  const relativePath = parentTarget.relativePath ? `${parentTarget.relativePath}/${leaf}` : leaf
+  if (isSensitivePath(relativePath)) {
+    throw deleteDenied('SENSITIVE_PATH', 'Workspace target is a sensitive path')
+  }
+
+  let leafStat
+  try {
+    leafStat = await lstat(targetPath, { bigint: true })
+  } catch {
+    throw new WorkspacePathGuardError('TARGET_UNAVAILABLE', 'Workspace target is unavailable')
+  }
+  const identity = { dev: leafStat.dev, ino: leafStat.ino }
+
+  if (leafStat.isSymbolicLink()) {
+    return {
+      path: relativePath,
+      targetPath,
+      kind: 'symlink',
+      bytes: 0,
+      linkTarget: await readlinkLocal(targetPath),
+      identity,
+      entryCount: 0,
+      entriesTruncated: false,
+      entries: [],
+      recursive,
+    }
+  }
+  if (leafStat.isFile()) {
+    const bytes = Number(leafStat.size)
+    const prepared: PreparedWorkspaceDelete = {
+      path: relativePath,
+      targetPath,
+      kind: 'file',
+      bytes,
+      identity,
+      entryCount: 0,
+      entriesTruncated: false,
+      entries: [],
+      recursive,
+    }
+    if (bytes <= MAX_WORKSPACE_EDIT_BYTES) {
+      prepared.sha256 = sha256(await readLeafFile(targetPath, bytes))
+    } else {
+      prepared.mtimeMs = Number(leafStat.mtimeMs)
+    }
+    return prepared
+  }
+  if (leafStat.isDirectory()) {
+    const { entryCount, entriesTruncated, entries } = await walkDeleteEntries(targetPath, relativePath)
+    if (entryCount > 0 && !recursive) {
+      throw deleteDenied(
+        'DIRECTORY_NOT_EMPTY',
+        `workspace.delete refuses a non-empty directory without recursive:true (${entryCount}${entriesTruncated ? '+' : ''} entries)`,
+      )
+    }
+    return {
+      path: relativePath,
+      targetPath,
+      kind: 'directory',
+      bytes: 0,
+      identity,
+      entryCount,
+      entriesTruncated,
+      entries,
+      recursive,
+    }
+  }
+  throw new WorkspacePathGuardError('TARGET_NOT_REGULAR', 'Workspace target is not a regular file or directory')
+}
+
+async function walkDeleteEntries(targetPath: string, relativePath: string): Promise<Pick<PreparedWorkspaceDelete, 'entryCount' | 'entriesTruncated' | 'entries'>> {
+  const entries: string[] = []
+  let entryCount = 0
+  let entriesTruncated = false
+  // Iterative stack walk, never following symlinks (Dirent.lstat semantics:
+  // a symlink is counted as one entry and never descended into).
+  const stack: Array<{ absolute: string; relative: string }> = [{ absolute: targetPath, relative: relativePath }]
+  while (stack.length > 0) {
+    const current = stack.pop() as { absolute: string; relative: string }
+    let children
+    try {
+      children = await readdir(current.absolute, { withFileTypes: true })
+    } catch {
+      throw new WorkspacePathGuardError('TARGET_UNAVAILABLE', 'Workspace target is unavailable')
+    }
+    children.sort((left, right) => left.name.localeCompare(right.name))
+    for (const child of children) {
+      if (!child.isDirectory() && !child.isFile() && !child.isSymbolicLink()) continue
+      entryCount += 1
+      const childRelative = `${current.relative}/${child.name}`
+      if (entries.length < MAX_DELETE_PREVIEW_ENTRIES) entries.push(childRelative)
+      if (entryCount > MAX_DELETE_WALK_ENTRIES) {
+        entriesTruncated = true
+        return { entryCount, entriesTruncated, entries }
+      }
+      if (child.isDirectory()) {
+        stack.push({ absolute: resolve(current.absolute, child.name), relative: childRelative })
+      }
+    }
+  }
+  return { entryCount, entriesTruncated, entries }
+}
+
+export interface CommittedWorkspaceDelete {
+  path: string
+  kind: WorkspaceDeleteKind
+  bytes: number
+  entryCount: number
+}
+
+/**
+ * Re-validate a prepared delete against live filesystem state, then commit.
+ * Mirrors the edit flow (prepare → checkpoint → re-prepare → commit-verify):
+ * identity/hash/mtime/link-target/census mismatches fail closed with
+ * TARGET_CHANGED instead of deleting something the approver never saw.
+ */
+export async function commitWorkspaceDelete(
+  workspaceRoot: string,
+  prepared: PreparedWorkspaceDelete,
+): Promise<CommittedWorkspaceDelete> {
+  const rootPath = await canonicalPathLocal(workspaceRoot)
+  const parentRel = prepared.path.split('/').slice(0, -1).join('/')
+  const parentReal = await realpathLocal(resolve(rootPath, parentRel.split('/').filter(Boolean).join(sep) || '.'))
+  if (isOutsideRootLocal(relative(rootPath, parentReal))) {
+    throw new WorkspacePathGuardError('OUTSIDE_WORKSPACE', 'Workspace target is outside the workspace')
+  }
+  const leafAbs = resolve(parentReal, basename(prepared.path))
+  // The parent chain must resolve byte-identically to prepare time: any
+  // difference means a parent component was swapped (e.g. symlink swap) and
+  // the leaf would no longer be the object the approver saw.
+  if (leafAbs !== prepared.targetPath) {
+    throw new WorkspaceEditConflictError('workspace.delete parent directory changed before delete')
+  }
+  let leafStat
+  try {
+    leafStat = await lstat(leafAbs, { bigint: true })
+  } catch {
+    throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+  }
+  if (prepared.kind === 'symlink') {
+    if (!leafStat.isSymbolicLink() || await readlinkLocal(leafAbs) !== prepared.linkTarget) {
+      throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+    }
+    await unlink(leafAbs)
+    return { path: prepared.path, kind: prepared.kind, bytes: 0, entryCount: 0 }
+  }
+  if (prepared.kind === 'file') {
+    if (!leafStat.isFile()) throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+    if (prepared.sha256 !== undefined) {
+      const bytes = Number(leafStat.size)
+      if (bytes > MAX_WORKSPACE_EDIT_BYTES
+        || sha256(await readLeafFile(leafAbs, bytes)) !== prepared.sha256) {
+        throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+      }
+    } else if (Number(leafStat.size) !== prepared.bytes || Number(leafStat.mtimeMs) !== prepared.mtimeMs) {
+      throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+    }
+    await unlink(leafAbs)
+    return { path: prepared.path, kind: prepared.kind, bytes: prepared.bytes, entryCount: 0 }
+  }
+  if (!leafStat.isDirectory()) throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+  if (sameWorkspaceFileIdentity(
+    { dev: leafStat.dev, ino: leafStat.ino },
+    prepared.identity,
+  )) {
+    // Identity stable: same object the approver saw.
+  } else if (!prepared.entriesTruncated) {
+    const census = await walkDeleteEntries(leafAbs, prepared.path)
+    if (census.entryCount !== prepared.entryCount) {
+      throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+    }
+  }
+  // entriesTruncated + unstable identity: membership cannot be re-verified
+  // (re-walking a 1000+ entry tree is unbounded work). The kind + parent
+  // containment above still hold; the residual TOCTOU is documented and matches
+  // the approval the user already gave for this exact path.
+  try {
+    await rm(leafAbs, { recursive: true, force: false })
+  } catch {
+    throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+  }
+  return { path: prepared.path, kind: prepared.kind, bytes: 0, entryCount: prepared.entryCount }
+}
+
+// Local aliases: path-guard internals (isOutsideRoot/canonicalPath) are not
+// exported, and the delete resolver intentionally differs (no leaf realpath),
+// so the three helpers below mirror the guard's semantics for this module.
+function isAbsoluteOnAnyPlatformLocal(value: string): boolean {
+  return isAbsolute(value) || /^[\\/]/.test(value) || /^[A-Za-z]:/.test(value)
+}
+
+function isOutsideRootLocal(relativePath: string): boolean {
+  return relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
+}
+
+async function canonicalPathLocal(value: string): Promise<string> {
+  try {
+    return await realpath(value)
+  } catch {
+    throw new WorkspacePathGuardError('WORKSPACE_UNAVAILABLE', 'Workspace is unavailable')
+  }
+}
+
+async function realpathLocal(value: string): Promise<string> {
+  try {
+    return await realpath(value)
+  } catch {
+    throw new WorkspacePathGuardError('TARGET_UNAVAILABLE', 'Workspace target is unavailable')
+  }
+}
+
+async function readlinkLocal(targetPath: string): Promise<string> {
+  try {
+    return await readlink(targetPath)
+  } catch {
+    throw new WorkspacePathGuardError('TARGET_UNAVAILABLE', 'Workspace target is unavailable')
+  }
+}
+
+async function readLeafFile(targetPath: string, bytes: number): Promise<Buffer> {
+  try {
+    const content = await readFile(targetPath)
+    if (content.byteLength !== bytes) {
+      throw new WorkspaceEditConflictError('workspace.delete target changed before delete')
+    }
+    return content
+  } catch (error) {
+    if (error instanceof WorkspaceEditConflictError) throw error
+    throw new WorkspacePathGuardError('TARGET_UNAVAILABLE', 'Workspace target is unavailable')
+  }
 }
 
 export async function atomicReplaceWorkspaceFile(

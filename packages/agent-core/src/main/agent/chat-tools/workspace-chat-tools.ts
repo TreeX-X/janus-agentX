@@ -118,6 +118,15 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       }),
       execute: (input: { workspaceId: string; path: string; content: string }) => execute('workspace.create', input),
     },
+    workspace_delete: {
+      description: 'Delete one workspace file, symlink, or directory after approval. Directories with entries require recursive:true. The workspace root, .janusX audit state, and sensitive paths are refused. Prefer this over shell rm: the delete is previewed, audited, and checkpointed for restore.',
+      parameters: z.object({
+        workspaceId,
+        path: z.string().min(1).describe('Workspace-relative path of the target, e.g. src/notes/old.md'),
+        recursive: z.boolean().default(false).describe('Required to delete a directory that still has entries.'),
+      }),
+      execute: (input: { workspaceId: string; path: string; recursive: boolean }) => execute('workspace.delete', input),
+    },
     project_detect: {
       description: 'Detect project types, scripts and candidate project directories in the attached workspace.',
       parameters: z.object({
@@ -253,7 +262,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string }) => execute('git.push', input),
     },
     command_run: {
-      description: 'Run one program, package script, or workspace script with structured arguments in an attached workspace. Requires user approval and returns bounded stdout, stderr, exit code, timeout and truncation state. Sync default timeout 120s, max 600s; background jobs have no deadline unless timeoutMs is passed (max 600s) and report timedOut via project_process_output; pass background:true for long builds and poll with project_process_output(offsetLines). Optional env allowlist (NODE_ENV/CI/TERM/FORCE_COLOR/NO_COLOR/CLICOLOR/LANG/LC_*/LANGUAGE/TZ, max 32 entries; PATH/LD_PRELOAD and friends are rejected). Sync stdout/stderr are 8KB tail previews; page the full log at logPath with workspace_read.',
+      description: 'Run one program, package script, or workspace script with structured arguments in an attached workspace. Requires user approval and returns bounded stdout, stderr, exit code, timeout and truncation state. Sync default timeout 120s, max 600s; background jobs have no deadline unless timeoutMs is passed (max 600s) and report timedOut via project_process_output; pass background:true for long builds and poll with project_process_output(offsetLines). Optional env allowlist (NODE_ENV/CI/TERM/FORCE_COLOR/NO_COLOR/CLICOLOR/LANG/LC_*/LANGUAGE/TZ, max 32 entries; PATH/LD_PRELOAD and friends are rejected). Sync stdout/stderr are 8KB tail previews; page the full log at logPath with workspace_read. Prefer workspace_delete for removing workspace files (previewed, audited, checkpointed for restore); catastrophic shell deletions are refused fail-closed.',
       parameters: z.object({
         workspaceId,
         cwd: z.string().default(''),
@@ -306,6 +315,21 @@ function createCreatePreview(path: string, content: string) {
     paths: [path],
     detail: content.slice(0, 4_000),
     truncated: content.length > 4_000,
+  }
+}
+
+function createDeletePreview(path: string, recursive: boolean) {
+  // Built pre-execution from input only (kind/size are unknown until the
+  // tool resolves the target): the approval dialog names the exact target
+  // plus the blast radius the caller requested. The tool re-verifies the
+  // census after approval and fails closed on any mismatch.
+  const scope = recursive ? ' and its contents' : ''
+  const detail = `Deletes ${path}${scope}. Refused for the workspace root, .janusX audit state, and sensitive paths; non-empty directories need recursive:true.`
+  return {
+    summary: `Delete ${path}${recursive ? ' (recursive)' : ''}`,
+    paths: [path],
+    detail: detail.slice(0, 4_000),
+    truncated: detail.length > 4_000,
   }
 }
 
@@ -370,6 +394,7 @@ export function createToolPreview(toolName: string, input: Record<string, unknow
       ? createEditPreview(path, input.replacements)
       : createUnifiedDiffPreview(path, input.unifiedDiff)
     case 'workspace.create': return createCreatePreview(path, String(input.content ?? ''))
+    case 'workspace.delete': return createDeletePreview(path, input.recursive === true)
     case 'project.apply-config': return createConfigPreview(path, input.config)
     case 'project.start-process': return createProcessPreview('Start', path, String(input.configName ?? 'dev'))
     case 'project.stop-process': return createProcessPreview('Stop', String(input.projectId ?? ''), '')

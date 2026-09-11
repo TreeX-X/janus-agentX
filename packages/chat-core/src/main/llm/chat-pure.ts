@@ -39,6 +39,7 @@ export const CHAT_MAX_STEPS = 40
 export const WORKSPACE_MUTATION_TOOLS = new Set([
   'workspace.edit',
   'workspace.create',
+  'workspace.delete',
   'project.apply-config',
   'project.start-process',
   'project.stop-process',
@@ -70,6 +71,13 @@ export function toolTraceEntryFromResult(result: ToolResult, turnId?: string): C
     if (Array.isArray(output.matches)) { parts.push(`${output.matches.length} matches`); resultDigest = `${output.matches.length} matches` }
     if (Array.isArray(output.entries)) { parts.push(`${output.entries.length} entries`); resultDigest = `${output.entries.length} entries` }
     if (typeof output.checkpointId === 'string') parts.push(`checkpoint=${output.checkpointId}`)
+    // workspace.delete: keep kind + blast radius in the trace so the next turn
+    // can see what was removed without re-listing (opencode preview parity).
+    if (result.toolName === 'workspace.delete') {
+      if (typeof output.kind === 'string') parts.push(`kind=${output.kind}`)
+      if (typeof output.entryCount === 'number' && output.entryCount > 0) parts.push(`${output.entryCount} entries`)
+      else if (typeof output.bytes === 'number' && output.bytes > 0) parts.push(`${output.bytes}b`)
+    }
     // P6：长命令只记预览引用（全文走日志文件），300 字预算内可回看定位。
     if (result.toolName === 'command.run') {
       if (typeof output.exitCode === 'number') parts.push(`exit=${output.exitCode}`)
@@ -135,19 +143,19 @@ export function latestUserQuery(messages: ChatMessage[]): string {
 export function hasExplicitWorkspaceMutationIntent(message: string): boolean {
   const normalized = message.trim().toLowerCase()
   if (!normalized) return false
-  if (/(?:只|仅)(?:需|要)?(?:分析|查看|阅读|检查)|先不要(?:修改|编辑|写入)|不要(?:修改|编辑|写入|改动)|只读/.test(normalized)) return false
-  if (/(?:do not|don't|without)\s+(?:edit|change|modify|write)|read[- ]only|analysis only/.test(normalized)) return false
-  return /(?:直接|请|帮我|开始|继续|现在).{0,16}(?:修改|编辑|改动|修复|实现|新增|创建|写入|保存|应用|重构|优化)/.test(normalized)
-    || /^(?:修改|编辑|改动|修复|实现|新增|创建|写入|保存|应用|重构|优化)(?:一下|这个|该|工作区|文件|代码|功能)/.test(normalized)
-    || /(?:modify|edit|change|fix|implement|create|write|update|apply|refactor)\b/.test(normalized)
+  if (/(?:只|仅)(?:需|要)?(?:分析|查看|阅读|检查)|先不要(?:修改|编辑|写入|删除)|不要(?:修改|编辑|写入|改动|删除)|只读/.test(normalized)) return false
+  if (/(?:do not|don't|without)\s+(?:edit|change|modify|write|delete|remove)|read[- ]only|analysis only/.test(normalized)) return false
+  return /(?:直接|请|帮我|开始|继续|现在).{0,16}(?:修改|编辑|改动|修复|实现|新增|创建|写入|保存|应用|重构|优化|删除|移除)/.test(normalized)
+    || /^(?:修改|编辑|改动|修复|实现|新增|创建|写入|保存|应用|重构|优化|删除|移除)(?:一下|这个|该|工作区|文件|代码|功能|掉)/.test(normalized)
+    || /(?:modify|edit|change|fix|implement|create|write|update|apply|refactor|delete|remove)\b/.test(normalized)
 }
 
 export function workspaceRecoveryPrompt(userRequestedMutation: boolean): string {
   return userRequestedMutation
     ? [
         'The user explicitly requested a workspace change, but the previous tool sequence ended before any mutation tool was attempted.',
-        'Continue from the existing tool calls and results. Read the exact target files as needed, then call workspace_edit or workspace_create with the smallest valid change.',
-        'Writing must still wait for the JanusX approval dialog. If the change cannot be made, explain the concrete blocker. Do not stop at another analysis-only answer.',
+        'Continue from the existing tool calls and results. Read or locate the exact target files as needed, then call workspace_edit, workspace_create, or workspace_delete with the smallest valid change.',
+        'Mutations must still wait for the JanusX approval dialog. If the change cannot be made, explain the concrete blocker. Do not stop at another analysis-only answer.',
       ].join('\n')
     : 'The previous workspace tool sequence ended without a user-facing answer. Continue from its tool calls and results, then provide a concise answer or explain the concrete blocker.'
 }

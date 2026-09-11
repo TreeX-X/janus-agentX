@@ -29,9 +29,15 @@ import {
   type AgentStreamEvent,
 } from '@janus-agent/agent-core'
 import {
+  ASK_MAX_CALLS_PER_TURN,
   ChatSessionRuntime,
   buildChatSystemPrompt,
+  cloneAskRequest,
+  cloneTodos,
   emptyResponseFeedback,
+  formatAskHistoryNote,
+  formatAskSummary,
+  formatTodoStateMessage,
   hasExplicitWorkspaceMutationIntent,
   latestUserQuery,
   prepareJanusChatRecall,
@@ -42,12 +48,17 @@ import {
   CHAT_MAX_STEPS,
   TOOL_TRACE_MAX_ENTRIES,
   WORKSPACE_MUTATION_TOOLS,
+  type AskUserAnswer,
+  type AskUserRequest,
   type ChatAgentEvent,
   type ChatMessage,
+  type ChatTodoItem,
   type ChatToolTraceEntry,
   type ChatWorkspaceResource,
   type KnowledgeRecallTrace,
 } from '@janus-agent/chat-core'
+import { createTodoLoopTool, createTodoVercelTool, TODOWRITE_TOOL_NAME } from './todo-tool.js'
+import { ASKUSER_TOOL_NAME, createAskLoopTool, createAskVercelTool } from './ask-tool.js'
 import type { ChatTurnPorts } from '../ports.js'
 
 export interface ChatTurnRequest {
@@ -73,6 +84,8 @@ export interface ChatTurnResult {
   toolTraces: ChatToolTraceEntry[]
   recallTrace?: KnowledgeRecallTrace
   cancelled: boolean
+  /** Live todo snapshot for the sticky bar above the composer (empty = hidden). */
+  todos: ChatTodoItem[]
 }
 
 interface TrustedResource {
@@ -156,6 +169,13 @@ export async function runChatTurn(
   }
 
   let workspaceTools: ReturnType<typeof createWorkspaceChatTools> | undefined
+  // Resolve the per-conversation session first: the todo snapshot below must
+  // reflect pre-turn state, and loop-time `todo_write` calls write back here.
+  const chatSession = request.chatSession ?? new ChatSessionRuntime()
+  const todoStateMessage = formatTodoStateMessage(chatSession.getTodos())
+  const todoMessage: ChatMessage | null = todoStateMessage
+    ? { role: 'system', content: todoStateMessage }
+    : null
   let promptMessages: ChatMessage[]
   if (trustedResources.size > 0) {
     const traceHistory = toolTraceHistoryMessage(
@@ -182,11 +202,13 @@ export async function runChatTurn(
     promptMessages = [
       { role: 'system', content: buildChatSystemPrompt({ resources: trustedResources, toolManifests: activeToolManifests }) },
       ...(traceHistory ? [traceHistory] : []),
+      ...(todoMessage ? [todoMessage] : []),
       ...withRecall,
     ]
   } else {
     promptMessages = [
       { role: 'system', content: buildChatSystemPrompt({ resources: trustedResources, toolManifests: [] }) },
+      ...(todoMessage ? [todoMessage] : []),
       ...withRecall,
     ]
   }
@@ -195,7 +217,6 @@ export async function runChatTurn(
     throw new Error(`Model "${endpoint.modelId}" does not support Function Calling required by attached workspaces`)
   }
 
-  const chatSession = request.chatSession ?? new ChatSessionRuntime()
   let maxTurns = CHAT_MAX_STEPS
   try {
     maxTurns = await ports.model.getMaxTurns()
@@ -209,25 +230,93 @@ export async function runChatTurn(
     role: message.role,
     content: message.content,
   }))
-  const modelTools = workspaceTools ? createVercelModelTools(workspaceTools) : undefined
-  const loopTools = workspaceTools
+  // `todo_write` is local and workspace-independent (no approval, no runtime
+  // executor): always offered alongside workspace tools, even with none.
+  const todoHooks = {
+    getTodos: () => chatSession.getTodos(),
+    onUpdate: (todos: ChatTodoItem[]) => {
+      chatSession.setTodos(todos)
+      onEvent({ type: 'todo_update', requestId, todos: cloneTodos(todos) })
+    },
+  }
+  const todoVercelTool = createTodoVercelTool(todoHooks)
+  const { execute: _todoExecute, ...todoModelTool } = todoVercelTool
+  const todoLoopTool = createTodoLoopTool(todoHooks)
+  // `ask_user` is local and workspace-independent like `todo_write`: always
+  // offered, even with no workspace. Budget: max calls per turn (hard gate
+  // in beforeToolCall so the UI never opens past the limit).
+  let askCallsThisTurn = 0
+  const askNotes: string[] = []
+  const askHooks = {
+    question: ports.question,
+    onRequest: (askRequest: AskUserRequest, callId: string) => {
+      askCallsThisTurn += 1
+      onEvent({
+        type: 'question_requested',
+        requestId,
+        callId,
+        questions: cloneAskRequest(askRequest).questions.map((question) => ({ ...question })),
+        allowCustom: askRequest.allowCustom,
+      })
+    },
+    onResolved: (answer: AskUserAnswer, callId: string) => {
+      onEvent({
+        type: 'question_resolved',
+        requestId,
+        callId,
+        status: answer.status,
+      })
+      const note = formatAskHistoryNote(answer)
+      if (note) askNotes.push(note)
+    },
+  }
+  const askVercelTool = createAskVercelTool(askHooks)
+  const { execute: _askExecute, ...askModelTool } = askVercelTool
+  const askLoopTool = createAskLoopTool(askHooks)
+  const workspaceModelTools = workspaceTools ? createVercelModelTools(workspaceTools) : {}
+  const modelTools = { ...workspaceModelTools, [TODOWRITE_TOOL_NAME]: todoModelTool, [ASKUSER_TOOL_NAME]: askModelTool }
+  const runtimeLoopTools = workspaceTools
     ? createJanusRuntimeToolsForResources(ports.tools, trustedResources, { callerId, preview: createToolPreview })
-      .filter((tool) => !!modelTools?.[tool.name])
+      .filter((tool) => !!workspaceModelTools[tool.name])
     : []
+  // `ask_user` always runs last within its batch: in-flight side effects
+  // settle first so the user answers against final state.
+  const loopTools = [...runtimeLoopTools, todoLoopTool, askLoopTool]
+  for (const tool of loopTools) {
+    if (tool.name === ASKUSER_TOOL_NAME) tool.runLast = true
+  }
 
   await runJanusAgentLoop(modelMessages, {
     tools: loopTools,
-    stream: createVercelStream({ model: endpoint.model, tools: modelTools, streamTextFn: ports.streamTextFn }),
+    stream: createVercelStream({ model: endpoint.model, tools: modelTools, streamTextFn: ports.streamTextFn, ...(endpoint.effort ? { effort: endpoint.effort } : {}) }),
     transformContext: async (context) => chatSession.buildContext(context, {
       model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
     }),
     maxTurns,
     steeringPort: request.steeringPort,
-    afterToolCall: async ({ result }) => {
+    beforeToolCall: async ({ call }) => {
+      if (call.name === ASKUSER_TOOL_NAME && askCallsThisTurn >= ASK_MAX_CALLS_PER_TURN) {
+        return { block: true, reason: `ask_user budget exhausted (max ${ASK_MAX_CALLS_PER_TURN} calls per turn). Proceed with the answers so far and state assumptions.` }
+      }
+      return undefined
+    },
+    afterToolCall: async ({ call, result }) => {
       const runtimeResult = result.details as ToolResult | undefined
       if (runtimeResult?.toolName) {
         chatSession.recordToolResult(runtimeResult)
         executedToolTraces.push(toolTraceEntryFromResult(runtimeResult, requestId))
+        return result
+      }
+      // Local `ask_user` has no runtime ToolResult: record a compact trace
+      // so history/resume shows what was confirmed.
+      const askDetails = (result.details as { askUser?: AskUserAnswer } | undefined)?.askUser
+      if (call.name === ASKUSER_TOOL_NAME && askDetails) {
+        executedToolTraces.push({
+          toolName: ASKUSER_TOOL_NAME,
+          workspaceId: workspaceId ?? '',
+          status: askDetails.status === 'answered' ? 'completed' : result.isError ? 'failed' : 'cancelled',
+          summary: formatAskSummary(askDetails),
+        })
       }
       return result
     },
@@ -269,7 +358,22 @@ export async function runChatTurn(
 
   if (signal?.aborted) {
     onEvent({ type: 'stream_end', requestId, cancelled: true })
-    return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: true }
+    return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: true, todos: chatSession.getTodos() }
+  }
+
+  // Persist the confirmed plan into the conversation so switch/resume shows
+  // what was chosen (the raw answers JSON already lives in the tool result).
+  if (askNotes.length > 0 && !signal?.aborted) {
+    const notes = askNotes.join('\n')
+    if (streamedText.trim()) {
+      if (!streamedText.includes(notes)) {
+        streamedText = `${streamedText}\n${notes}`
+        onEvent({ type: 'text_delta', requestId, delta: `\n${notes}` })
+      }
+    } else {
+      streamedText = notes
+      onEvent({ type: 'text_delta', requestId, delta: notes })
+    }
   }
 
   if (!streamedText.trim()) {
@@ -300,5 +404,5 @@ export async function runChatTurn(
   }
 
   onEvent({ type: 'stream_end', requestId, cancelled: false })
-  return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: false }
+  return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: false, todos: chatSession.getTodos() }
 }

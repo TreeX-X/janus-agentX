@@ -1,13 +1,14 @@
 /**
  * @file Pure composer logic for the Ink TUI input box (no React/Ink).
  * @description Multiline buffer ops, slash-command completion filtering and
- * application, the visible-row window, the responsive composer window
+ * application, submitted-input history recall (shell-style ↑/↓), the
+ * visible-row window, the responsive composer window
  * (opencode-style: panel height derives from the live terminal height),
  * and the breathing caret palette (smooth pulse, never a hard blink).
  * The `Composer.tsx` host only renders state and forwards key events here,
  * so every rule is unit tested.
  */
-import { isKnownCommand } from '../commands.js'
+import { isKnownCommand, KNOWN_COMMAND_NAMES } from '../commands.js'
 
 /** Default visible content rows of the input box (compact but taller than one). */
 export const COMPOSER_MIN_ROWS = 3
@@ -34,11 +35,15 @@ export interface CompletionItem {
   hint: string
 }
 
-/** Mirrors the known `/` commands in `commands.ts` (kept in sync by test). */
+/** Mirrors the known `/` commands in `commands.ts` (kept in sync by test). Order follows `commandHelpText()`. */
 export const COMMAND_COMPLETIONS: readonly CompletionItem[] = [
   { name: 'help', hint: 'Show this help.' },
+  { name: 'key', hint: 'Show key status or set the API key.' },
   { name: 'model', hint: 'List models or switch the model.' },
+  { name: 'effort', hint: 'Show or switch reasoning effort.' },
   { name: 'provider', hint: 'List providers or switch provider.' },
+  { name: 'connect', hint: 'Provider setup wizard.' },
+  { name: 'status', hint: 'Show provider/model/key/config.' },
   { name: 'workspace', hint: 'Switch workspace (history is cleared).' },
   { name: 'clear', hint: 'Clear this conversation history.' },
   { name: 'new', hint: 'Start a conversation (and switch to it).' },
@@ -74,6 +79,61 @@ export function applyCompletion(value: string, item: CompletionItem): { value: s
   const completed = `/${item.name}`
   const next = rest ? `${completed} ${rest}` : `${completed} `
   return { value: next, cursor: completed.length + 1 }
+}
+
+/** Max retained input-history entries for ↑/↓ recall (bounds memory). */
+export const INPUT_HISTORY_LIMIT = 200
+
+export interface InputHistoryCursor {
+  index: number | null
+  draft: string
+}
+
+export interface InputHistoryRecall {
+  value: string
+  index: number | null
+  draft: string
+}
+
+/**
+ * Append a submitted input to recall history. Skips blank lines and
+ * consecutive duplicates; keeps the newest INPUT_HISTORY_LIMIT entries.
+ */
+export function pushInputHistory(history: readonly string[], entry: string): string[] {
+  if (!entry.trim()) return history as string[]
+  const last = history[history.length - 1]
+  if (last === entry) return history as string[]
+  return [...history, entry].slice(-INPUT_HISTORY_LIMIT)
+}
+
+/**
+ * Shell-style ↑/↓ recall: `up` walks to older entries (saving the current
+ * draft on entry), `down` walks back toward the draft. Out-of-range indexes
+ * clamp instead of wrapping.
+ */
+export function recallInputHistory(
+  history: readonly string[],
+  cursor: InputHistoryCursor,
+  currentValue: string,
+  direction: 'up' | 'down',
+): InputHistoryRecall {
+  if (history.length === 0) {
+    return { value: currentValue, index: cursor.index, draft: cursor.draft }
+  }
+  if (direction === 'up') {
+    if (cursor.index === null) {
+      const index = history.length - 1
+      return { value: history[index] ?? currentValue, index, draft: currentValue }
+    }
+    const index = Math.max(0, Math.min(cursor.index - 1, history.length - 1))
+    return { value: history[index] ?? currentValue, index, draft: cursor.draft }
+  }
+  if (cursor.index === null) return { value: currentValue, index: null, draft: cursor.draft }
+  if (cursor.index >= history.length - 1) {
+    return { value: cursor.draft, index: null, draft: cursor.draft }
+  }
+  const index = Math.max(0, Math.min(cursor.index + 1, history.length - 1))
+  return { value: history[index] ?? currentValue, index, draft: cursor.draft }
 }
 
 function normalizePastedText(text: string): string {
@@ -145,9 +205,34 @@ export function visibleStart(lines: number, cursorLine: number, maxRows: number 
   return Math.max(0, Math.min(cursorLine - maxRows + 1, lines - maxRows))
 }
 
-/** True when every known `/` command has a completion entry. */
-export function completionsCoverKnownCommands(): boolean {
-  return COMMAND_COMPLETIONS.every((item) => isKnownCommand(item.name))
+/**
+ * True when completion entries and known `/` commands match exactly in both
+ * directions: no stale entries, no missing commands (e.g. newly added
+ * `/effort`, `/key`, `/connect`, `/status` must appear here).
+ */
+export function completionsCoverKnownCommands(known: readonly string[] = KNOWN_COMMAND_NAMES): boolean {
+  const completionNames = new Set(COMMAND_COMPLETIONS.map((item) => item.name))
+  if (!COMMAND_COMPLETIONS.every((item) => isKnownCommand(item.name))) return false
+  return known.every((name) => completionNames.has(name))
+}
+
+/**
+ * Readline `completer` for the plain loop (`repl.ts`): Tab completes a
+ * leading `/` token to `/<name> ` (trailing space matches `applyCompletion`).
+ * Returns `[matches, line]` per `node:readline` contract; non-slash lines
+ * get no completions.
+ */
+export function completeSlashCommand(line: string): [string[], string] {
+  const trimmed = line.trimStart()
+  if (!trimmed.startsWith('/')) return [[], line]
+  // Only complete the command token itself (no args, single line).
+  if (trimmed.includes(' ') || trimmed.includes('\n') || trimmed.includes('\t')) return [[], line]
+  const token = firstToken(trimmed)
+  const needle = token.slice(1).toLowerCase()
+  const matches = COMMAND_COMPLETIONS.filter((item) => item.name.startsWith(needle)).map(
+    (item) => `/${item.name} `,
+  )
+  return [matches, line]
 }
 
 /* ── Display width (Ink-aligned ruler) ─────────────────────────────────

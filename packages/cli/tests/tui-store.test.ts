@@ -2,7 +2,7 @@
  * TUI reducer: timeline ordering (thinking/tool/text interleave) without Ink.
  */
 import { describe, expect, it } from 'vitest'
-import { createInitialState, reduceTuiState } from '../src/tui/store.js'
+import { buildFooterText, createInitialState, formatTokenCount, formatTokenUsage, reduceTuiState } from '../src/tui/store.js'
 import type { ChatAgentEvent } from '@janus-agent/chat-core'
 
 function reduceAll(events: ChatAgentEvent[]) {
@@ -173,6 +173,53 @@ describe('reduceTuiState timeline', () => {
     const tools = state.blocks.filter((block) => block.kind === 'tool')
     expect(tools[0]).toMatchObject({ toolSummary: 'Edit a.ts (2 replacements)', toolPreview: ['-old', '+new'] })
     expect(tools[1]).toMatchObject({ toolSummary: 'a.ts, sha256=ab12', toolPreview: [] })
+  })
+
+  it('accumulates session token totals across turns while per-turn counters reset', () => {
+    let state = createInitialState()
+    state = reduceTuiState(state, { type: 'turn-start' })
+    state = reduceTuiState(state, { type: 'usage', promptTokens: 10, completionTokens: 5 })
+    expect(state.promptTokens).toBe(10)
+    expect(state.sessionPromptTokens).toBe(10)
+    expect(state.sessionCompletionTokens).toBe(5)
+    state = reduceTuiState(state, { type: 'turn-done', cancelled: false, assistantText: 'done' })
+    state = reduceTuiState(state, { type: 'turn-start' })
+    expect(state.promptTokens).toBe(0)
+    expect(state.completionTokens).toBe(0)
+    expect(state.sessionPromptTokens).toBe(10)
+    state = reduceTuiState(state, { type: 'usage', promptTokens: 20, completionTokens: 3 })
+    expect(state.promptTokens).toBe(20)
+    expect(state.sessionPromptTokens).toBe(30)
+    expect(state.sessionCompletionTokens).toBe(8)
+    state = reduceTuiState(state, { type: 'clear' })
+    expect(state.sessionPromptTokens).toBe(0)
+    expect(state.sessionCompletionTokens).toBe(0)
+  })
+
+  it('formats token counts compactly and builds the split-bar meta', () => {
+    expect(formatTokenCount(0)).toBe('0')
+    expect(formatTokenCount(12)).toBe('12')
+    expect(formatTokenCount(999)).toBe('999')
+    expect(formatTokenCount(1000)).toBe('1k')
+    expect(formatTokenCount(12345)).toBe('12.3k')
+    expect(formatTokenCount(1500000)).toBe('1.5M')
+    expect(formatTokenUsage(12, 8)).toBe('12 in / 8 out')
+    // Right-side meta only: key hints live on the left side of the split
+    // bar, so an empty state renders nothing here.
+    expect(buildFooterText({})).toBe('')
+    const bare = buildFooterText({ conversationLabel: 'conv', statusText: 'done' })
+    expect(bare).toBe('conv · done')
+    expect(bare).not.toContain('wheel')
+    // Tokens follow state, scroll badge is ↑N only.
+    const full = buildFooterText({
+      statusText: 'done',
+      sessionPromptTokens: 12345,
+      sessionCompletionTokens: 678,
+      hiddenRows: 7,
+    })
+    expect(full).toBe('done · 12.3k in / 678 out · ↑7')
+    expect(full).not.toContain('wheel')
+    expect(full).not.toContain('PgDn')
   })
 
   it('holds approval prompts until resolved', () => {

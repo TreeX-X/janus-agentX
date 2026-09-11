@@ -17,14 +17,42 @@ export const PIXEL_WORDMARK = {
 
 const LETTER_ORDER = ['J', 'A', 'N', 'U', 'S', 'X'] as const
 
-/** JanusX gray-orange tones for terminal hosts (mirrors the chat CSS). */
+/** Janus TUI tones (minimal cool palette, see design/janus-TUI-design.html):
+ * copper accent + soft white body + graphite secondary. */
 export const LOGO_TONE = {
-  /** JANUS body: near-white gray. */
-  lit: '#e8e8e8',
-  /** X accent: JanusX orange. */
-  orange: '#ff7830',
-  /** X dim cells + secondary text. */
-  dim: '#8a8f98',
+  /** Body text: soft white. */
+  lit: '#d1d5db',
+  /** Accent: calm amber copper. */
+  orange: '#c87a3b',
+  /** Secondary text. */
+  dim: '#525866',
+} as const
+
+/**
+ * Chrome tokens for the card-style TUI (design/janus-TUI-design.html):
+ * neutral borders, dark selected-row highlight, desaturated status colors.
+ * Pure-black discipline: `cardBg`/`popoverBg` exist as tokens but area fills
+ * stay off — focus lives in accent edges and text colors. Terminals cannot
+ * render 2px side bars, so the "left accent" is a single accent-colored
+ * edge (composer `│`, tool-card `▌`, panel `borderLeftColor`).
+ */
+export const TUI_CHROME = {
+  /** Filled card background (composer, tool bands, todo box). */
+  cardBg: '#121418',
+  /** Floating completion popover background. */
+  popoverBg: '#0f1014',
+  /** Faint divider lines (header/footer rules). */
+  subtleBorder: '#1c1f26',
+  /** Card default border. */
+  cardBorder: '#232732',
+  /** Selected-row highlight (replaces the old orange block). */
+  selectBg: '#1f232c',
+  /** Soft functional colors. */
+  cyan: '#38bdf8',
+  yellow: '#d97706',
+  red: '#e11d48',
+  green: '#4ba375',
+  magenta: '#c084fc',
 } as const
 
 function renderRow(letter: (typeof LETTER_ORDER)[number], rowIndex: number): string {

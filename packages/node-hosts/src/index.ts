@@ -27,6 +27,8 @@ export {
   registerGitTools,
 } from './git.js'
 export { createProjectJobTools, registerProjectJobTools } from './project-jobs.js'
+export { evaluateDestructiveCommand } from './destructive-commands.js'
+export type { DestructiveCommandInput } from './destructive-commands.js'
 export { detectProjects, projectDetectTool, registerProjectDetectTools } from './project-detect.js'
 export type { DetectedProject } from './project-detect.js'
 export type { RegisteredTool, ToolRegistry } from '@janus-agent/agent-core'

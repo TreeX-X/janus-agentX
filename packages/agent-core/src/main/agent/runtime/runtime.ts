@@ -12,7 +12,7 @@ type ApprovalOutcome = 'approved' | 'denied' | 'cancelled' | 'timed-out'
 interface PendingApproval { resolve: (outcome: ApprovalOutcome) => void; callerId: string; expected: Omit<ApprovalResult, 'approved' | 'approvalId'> }
 interface ActiveSession extends AgentSession { controller: AbortController; pending: Map<string, PendingApproval>; activeCalls: Set<Promise<void>>; ended: boolean; ownerId: string }
 class ToolTimeoutError extends Error {}
-const PATH_DENIAL_CODES = new Set(['ABSOLUTE_PATH', 'PATH_TRAVERSAL', 'OUTSIDE_WORKSPACE', 'TARGET_CHANGED', 'WORKSPACE_UNAVAILABLE', 'TARGET_UNAVAILABLE', 'TARGET_NOT_REGULAR'])
+const PATH_DENIAL_CODES = new Set(['ABSOLUTE_PATH', 'PATH_TRAVERSAL', 'OUTSIDE_WORKSPACE', 'TARGET_CHANGED', 'WORKSPACE_UNAVAILABLE', 'TARGET_UNAVAILABLE', 'TARGET_NOT_REGULAR', 'PROTECTED_PATH', 'DIRECTORY_NOT_EMPTY', 'DESTRUCTIVE_COMMAND'])
 
 export class WorkspaceAgentRuntime {
   readonly registry = new ToolRegistry()
@@ -199,7 +199,9 @@ export class WorkspaceAgentRuntime {
   queryPolicyAudit(query: PolicyAuditQuery = {}): Promise<PolicyDecisionRecord[]> { return this.auditStore.query(query) }
   getPolicyAuditRecords(sessionId?: string): Promise<PolicyDecisionRecord[]> { return this.queryPolicyAudit({ sessionId }) }
   private validatePreview(actionRisk: RegisteredTool['actionRisk'], preview?: ApprovalPreview): ApprovalPreview | undefined | null {
-    const requiresPreview = ['write', 'create', 'config-apply', 'external-command', 'network'].includes(actionRisk)
+    // opencode lesson: every destructive/mutating risk carries a bounded
+    // preview — without it per-action approvals would gate on nothing.
+    const requiresPreview = ['write', 'create', 'delete', 'config-apply', 'external-command', 'network'].includes(actionRisk)
     if (!requiresPreview && actionRisk !== 'run') return undefined
     if (!preview) return requiresPreview ? null : undefined
     if (typeof preview.summary !== 'string' || preview.summary.length < 1 || preview.summary.length > 500 || !Array.isArray(preview.paths) || preview.paths.length > 20 || preview.paths.some((path) => typeof path !== 'string' || path.length > 500) || typeof preview.truncated !== 'boolean' || (preview.detail !== undefined && (typeof preview.detail !== 'string' || preview.detail.length > 4_000))) return null

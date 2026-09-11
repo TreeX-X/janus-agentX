@@ -31,6 +31,12 @@ export interface JanusAgentToolResult {
 export interface JanusAgentTool {
   name: string
   executionMode?: 'sequential' | 'parallel'
+  /**
+   * Deferred tools run after all other sequential calls in the same batch
+   * (stable order among themselves). Used by interactive tools such as
+   * `ask_user` so in-flight side effects settle before prompting the user.
+   */
+  runLast?: boolean
   execute: (call: JanusToolCall, signal: AbortSignal, onUpdate?: (partialResult: unknown) => void) => Promise<JanusAgentToolResult>
 }
 
@@ -281,7 +287,10 @@ export async function runJanusAgentLoop(
       }
 
       const parallelCalls = toolCalls.filter((call) => tools.get(call.name)?.executionMode === 'parallel')
-      const sequentialCalls = toolCalls.filter((call) => tools.get(call.name)?.executionMode !== 'parallel')
+      const sequentialCalls = toolCalls
+        .filter((call) => tools.get(call.name)?.executionMode !== 'parallel')
+        // Stable: deferred (`runLast`) tools settle after in-flight effects.
+        .sort((a, b) => Number(tools.get(a.name)?.runLast === true) - Number(tools.get(b.name)?.runLast === true))
       toolResults.push(...await Promise.all(parallelCalls.map(execute)))
       let steeredMidTurn = drainSteering()
       if (!steeredMidTurn) {

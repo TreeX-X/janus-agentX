@@ -6,7 +6,8 @@
  */
 import React, { useMemo, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
-import { LOGO_TONE } from '../logo.js'
+import { LOGO_TONE, TUI_CHROME } from '../logo.js'
+import { EFFORT_META, type EffortLevel } from '../effort.js'
 import { padToWidth, truncateToWidth } from './composer-state.js'
 
 export const ACCENT = LOGO_TONE.orange
@@ -18,13 +19,29 @@ export function PanelFrame({ title, hint, children }: {
   hint: string
   children: React.ReactNode
 }): React.JSX.Element {
+  // Card-style panel (design/janus-TUI-design.html): neutral single border
+  // with an accent left edge, transparent fill so the terminal stays pure
+  // black. Titles keep their `◇` prefix where callers pass one
+  // (palette/connect/mode switchers); the approval gate and question panel
+  // pass accent-free titles.
   return (
-    <Box borderStyle="round" borderColor={ACCENT} paddingX={1} flexDirection="column">
+    <Box
+      borderStyle="single"
+      borderColor={TUI_CHROME.cardBorder}
+      borderLeftColor={ACCENT}
+      paddingX={1}
+      flexDirection="column"
+    >
       <Text color={ACCENT} bold>{title}</Text>
       {children}
       <Text color={MUTED}>{hint}</Text>
     </Box>
   )
+}
+
+/** Selected-row highlight: dark raised background, no orange block. */
+export function SelectedRow({ text, width }: { text: string; width: number }): React.JSX.Element {
+  return <Text backgroundColor={TUI_CHROME.selectBg} color={BODY}>{padToWidth(truncateToWidth(text, width), width)}</Text>
 }
 
 export interface PaletteItem {
@@ -90,7 +107,7 @@ export function CommandPalette({ items, onPick, onClose }: {
       {visible.map((item, row) => {
         const label = `${item.label}${item.hint ? `  ${item.hint}` : ''}`
         if (row === selected) {
-          return <Text key={item.id} backgroundColor={ACCENT} color="black">{padToWidth(truncateToWidth(label, 60), 60)}</Text>
+          return <SelectedRow key={item.id} text={label} width={60} />
         }
         return (
           <Text key={item.id}>
@@ -135,8 +152,52 @@ export function ApprovalPanel({ current, onPick, onClose }: {
       {modes.map((mode, row) => {
         const label = `${mode.id === current ? '*' : ' '} ${mode.id}  ${mode.hint}`
         return row === index
-          ? <Text key={mode.id} backgroundColor={ACCENT} color="black">{padToWidth(truncateToWidth(label, 60), 60)}</Text>
+          ? <SelectedRow key={mode.id} text={label} width={60} />
           : <Text key={mode.id} color={BODY}>{label}</Text>
+      })}
+    </PanelFrame>
+  )
+}
+
+/** Interactive reasoning-effort switcher (bare /effort): arrows + Enter, Esc closes. */
+export function EffortPanel({ current, onPick, onClose }: {
+  current: string
+  onPick: (level: EffortLevel) => void
+  onClose: () => void
+}): React.JSX.Element {
+  const levels = useMemo(() => [...EFFORT_META], [])
+  const [index, setIndex] = useState(() => Math.max(0, levels.findIndex((meta) => meta.id === current)))
+
+  useInput((input, key) => {
+    if (key.escape) {
+      onClose()
+      return
+    }
+    if (key.upArrow || key.downArrow) {
+      setIndex((prev) => (prev + (key.upArrow ? -1 : 1) + levels.length) % levels.length)
+      return
+    }
+    if (key.return) {
+      const picked = levels[index]
+      if (picked) onPick(picked.id)
+      return
+    }
+    // 1..8 quick-jump (mirrors the plain-loop numbered picker).
+    const digit = Number(input)
+    if (Number.isInteger(digit) && digit >= 1 && digit <= levels.length) {
+      const picked = levels[digit - 1]
+      if (picked) onPick(picked.id)
+    }
+  }, { isActive: true })
+
+  return (
+    <PanelFrame title="◇ reasoning effort" hint="↑↓ move · 1-8 jump · Enter switch · Esc close">
+      {levels.map((meta, row) => {
+        const marker = meta.id === current ? '*' : ' '
+        const label = `${marker} ${meta.id}  ${meta.hint} (${meta.detail})`
+        return row === index
+          ? <SelectedRow key={meta.id} text={label} width={60} />
+          : <Text key={meta.id} color={BODY}>{label}</Text>
       })}
     </PanelFrame>
   )

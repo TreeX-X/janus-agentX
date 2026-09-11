@@ -122,6 +122,25 @@ describe('runRepl', () => {
     expect(c.out.join('')).toContain('recovered')
   })
 
+  it('picks reasoning effort interactively via bare /effort', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-effort-'))
+    const c = collect()
+    const code = await runRepl(
+      { workspace: dir, model: 'm', apiKey: 'k', plain: true },
+      {
+        ...c.io,
+        lines: arrayLineSource(['/effort', '5', '/status', '/effort', '', '/status', '/exit']),
+        streamTextFn: textStub('hi'),
+      },
+    )
+    expect(code).toBe(0)
+    const all = c.out.join('')
+    expect(all).toContain('select effort [1-8|name]')
+    expect(all).toContain('effort switched: high')
+    expect(all).toContain('effort: high')
+    expect(all).toContain('effort unchanged: high')
+  })
+
   it('keeps the session when /workspace fails and stays usable', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-repl-keep-'))
     const c = collect()

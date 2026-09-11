@@ -22,9 +22,11 @@ Every host capability crosses one of these seams:
 
 ## Tool-name contract (do NOT rename without syncing both repos)
 
-`workspace.{read,list,search,edit,create}`, `project.*`, `git.*`, `command.run`.
+`workspace.{read,list,search,edit,create,delete}`, `project.*`, `git.*`, `command.run`.
 Blueprint's `BLUEPRINT_READ_ONLY_MODEL_TOOLS` whitelist filters on these names;
 renames silently disable blueprint tools. Covered by contract tests (Phase0).
+`workspace.delete` is intentionally NOT in the blueprint read-only set: it is a
+sequential, preview-gated mutation like `workspace.edit`.
 
 ## Non-goals（永久驻壳，明确不迁）
 

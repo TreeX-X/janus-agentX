@@ -83,6 +83,7 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
       apiKey: created.getApiKey() ?? options.apiKey,
       timeoutMs: options.timeoutMs,
       approvalMode: created.getApprovalMode(),
+      effort: created.getEffort(),
       env,
       store,
       catalog: created.getCatalog(),
@@ -127,6 +128,7 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
           onExit={resolve}
           initialNotices={notices}
         />,
+        { exitOnCtrlC: false },
       )
       // Steady block caret for the whole run (see `terminal-size.ts`):
       // TTY-gated, so pipes/tests never see it.

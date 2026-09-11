@@ -19,6 +19,8 @@ export interface TerminalSize {
 
 const FALLBACK_COLUMNS = 80
 
+export const TUI_HORIZONTAL_PADDING = 2
+
 export function useTerminalSize(): TerminalSize {
   const { columns, rows } = useWindowSize()
   return {

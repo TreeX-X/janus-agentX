@@ -14,6 +14,7 @@ import { defaultAuthPath, emptyAuth, loadAuthFile } from './auth.js'
 import { loadEffectiveCatalog } from './providers.js'
 import { runRepl } from './repl.js'
 import { runFullscreen } from './tui/run.js'
+import { CLI_VERSION } from './version.js'
 import type { TuiOptions } from './args.js'
 
 export interface ChatRunIO {
@@ -105,7 +106,7 @@ async function main(argv: string[]): Promise<number> {
       console.log(helpText())
       return 0
     case 'version':
-      console.log('0.2.0')
+      console.log(CLI_VERSION)
       return 0
     case 'chat':
       return runChat(parsed.chat ?? { workspace: process.cwd(), prompt: '' })
@@ -124,7 +125,9 @@ async function main(argv: string[]): Promise<number> {
 }
 
 const invokedAsCli = typeof process.argv[1] === 'string'
-  && (process.argv[1].endsWith('cli.js') || process.argv[1].endsWith('janus'))
+  // `cli.js` = workspace dev build; `janus`/`janus.js` = packed bundle entry
+  // (`release/janus-cli/janus.js`, also the npm `bin` target).
+  && (process.argv[1].endsWith('cli.js') || process.argv[1].endsWith('janus') || process.argv[1].endsWith('janus.js'))
 if (invokedAsCli) {
   void main(process.argv.slice(2)).then(
     (code) => { process.exitCode = code },

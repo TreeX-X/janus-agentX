@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { executeCommand } from '../src/tui/exec.js'
+import { formatEffortList } from '../src/effort.js'
 import { CliSession, isSessionValidationError } from '../src/session.js'
 import { memoryConversationStore } from '../src/conversations.js'
 import { parseCatalog } from '../src/providers.js'
@@ -64,7 +65,7 @@ describe('executeCommand', () => {
   it('switches model/provider with listings and errors', async () => {
     const session = await openSession()
     expect((await executeCommand(session, 'model', [])).stdout.join('')).toContain('* m')
-    expect((await executeCommand(session, 'model', ['m2'])).stdout).toEqual(['model switched: m2'])
+    expect((await executeCommand(session, 'model', ['m2'])).stdout).toEqual(['model switched: m2 · effort: medium'])
     expect((await executeCommand(session, 'model', ['nope'])).stderr.join('')).toContain('unknown model')
     expect((await executeCommand(session, 'provider', [])).stdout.join('')).toContain('* a')
     expect((await executeCommand(session, 'provider', ['b'])).stdout.join('')).toContain('provider switched: b')
@@ -143,11 +144,26 @@ describe('executeCommand', () => {
     const out = (await executeCommand(session, 'status', [])).stdout.join('\n')
     expect(out).toContain('provider: a')
     expect(out).toContain('model: m')
+    expect(out).toContain('effort: medium')
     expect(out).toContain('baseURL: https://api.openai.com/v1')
     expect(out).toContain('api key: set (via --api-key)')
     expect(out).toContain('config: (memory only, no file)')
     expect(out).not.toContain('sk-')
     expect(out).not.toContain(' k\n')
+    await session.close()
+  })
+
+  it('shows and switches reasoning effort via /effort', async () => {
+    const session = await openSession()
+    expect((await executeCommand(session, 'effort', [])).stdout).toEqual([formatEffortList('medium')])
+    expect((await executeCommand(session, 'effort', ['high'])).stdout).toEqual([
+      'effort switched: high — deep reasoning (hard tasks · slower)',
+    ])
+    expect(session.getEffort()).toBe('high')
+    expect((await executeCommand(session, 'effort', ['nope'])).stderr.join('')).toContain('unknown effort')
+    expect((await executeCommand(session, 'effort', ['1'])).stdout.join('')).toContain('effort switched: none')
+    expect(session.getEffort()).toBe('none')
+    expect((await executeCommand(session, 'status', [])).stdout.join('\n')).toContain('effort: none')
     await session.close()
   })
 

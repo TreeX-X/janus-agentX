@@ -133,6 +133,10 @@ describe('App scrollback', () => {
       stdin.write('\r')
       await waitForFrame(() => (lastFrame() ?? '').includes('scroll-line-29'))
 
+      const answerRows = (lastFrame() ?? '').split('\n').filter((line) => line.includes('scroll-line-'))
+      expect(answerRows.length).toBeGreaterThan(0)
+      for (const line of answerRows) expect(line).toMatch(/^ {2}scroll-line-/)
+
       // Wheel up: older rows surface, the tail hides, no mouse bytes leak
       // into the composer.
       stdin.write('\x1b[<64;1;1M')
@@ -140,7 +144,13 @@ describe('App scrollback', () => {
       let frame = lastFrame() ?? ''
       expect(frame).not.toContain('scroll-line-29')
       expect(frame).not.toContain('[<64')
-      expect(frame).toContain('PgDn')
+      // Footer badge is ↑N only (no wheel/PgDn key hints; those live in /help).
+      // NOTE: the header echoes the `janus-wheel-*` tmp workspace name, so
+      // scope the key-hint assertions to the footer (last) line.
+      const footer = frame.trim().split('\n').at(-1) ?? ''
+      expect(footer).toMatch(/↑\d+/)
+      expect(footer).not.toContain('PgDn')
+      expect(footer).not.toContain('wheel')
 
       // Wheel down past the bottom re-follows the tail.
       stdin.write('\x1b[<65;1;1M\x1b[<65;1;1M\x1b[<65;1;1M\x1b[<65;1;1M')

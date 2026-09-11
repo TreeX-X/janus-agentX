@@ -1,40 +1,47 @@
 /**
  * @file Ink fullscreen TUI root (opencode-style resident terminal).
- * @description Three-pane layout — header / discussion (flexGrow) /
+ * @description Three-pane layout — statusline / discussion (flexGrow) /
  * composer+statusbar pinned to the bottom — over the shared `CliSession` +
- * `executeCommand`. No background fills anywhere: the terminal's own black
- * is the background. System reminders (missing model/key…) render as
- * `notice` divider cards, never as raw console output. ChatAgentEvents flow
- * into the pure `store.ts` reducer; per-action approvals resolve through an
- * inline y/n gate. Plain loop (`repl.ts`) stays for pipes and `--plain`.
+ * `executeCommand`. Pure-black discipline: no area fills anywhere (focus
+ * lives in accent edges, segmented footer colors and dark selected rows,
+ * never in gray panels); the terminal background shows through everywhere. System
+ * reminders (missing model/key…) render as `notice` divider cards, never
+ * as raw console output. ChatAgentEvents flow into the pure `store.ts`
+ * reducer; per-action approvals resolve through a Confirm/Cancel gate
+ * (arrows + Enter). Plain loop (`repl.ts`) stays for pipes and `--plain`.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Box, Text, measureElement, useInput, useStdout, type DOMElement } from 'ink'
-import type { ChatAgentEvent } from '@janus-agent/chat-core'
-import type { ApprovalPrompt, CliSession } from '../session.js'
+import type { ChatAgentEvent, ChatTodoItem } from '@janus-agent/chat-core'
+import { hasOpenTodos, summarizeTodos } from '@janus-agent/chat-core'
+import type { ApprovalPrompt, CliSession, QuestionPrompt } from '../session.js'
+import type { AskUserPortAnswer } from '@janus-agent/janus-agent'
+import { QuestionPanel } from './question-panel.js'
 import {
+  buildFooterText,
   createInitialState,
+  formatTokenUsage,
   reduceTuiState,
   type TimelineBlock,
 } from './store.js'
 import { executeCommand } from './exec.js'
 import type { TestConnectionFn } from '../connect.js'
-import { CommandPalette, ApprovalPanel, type PaletteItem } from './palette.js'
+import { CommandPalette, ApprovalPanel, EffortPanel, PanelFrame, type PaletteItem } from './palette.js'
+import { effortMeta } from '../effort.js'
 import { ConnectPanel } from './connect-panel.js'
 import { parseInputLine } from '../commands.js'
-import { LOGO_TONE, renderLogoJanusLine, renderLogoXLine } from '../logo.js'
+import { LOGO_TONE, TUI_CHROME, renderLogoJanusLine, renderLogoXLine } from '../logo.js'
 import { Composer } from './Composer.js'
 import { Markdown } from './Markdown.js'
 import { Activity, duration } from './Activity.js'
 import { displayText } from '../tool-display.js'
-import { TOOL_CARD_BG, toolCardFg, toolCardLine } from './tool-card.js'
-import { padToWidth, truncateToWidth } from './composer-state.js'
-import { useTerminalSize } from './terminal-size.js'
+import { toolCardFg, toolCardLine } from './tool-card.js'
+import { displayWidth, padToWidth, pushInputHistory, truncateToWidth } from './composer-state.js'
+import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
 import {
   clampScrollOffset,
   containsMouseSequence,
-  disableMouseReporting,
-  enableMouseReporting,
+  maintainMouseReporting,
   isMouseCaptureDisabled,
   LINE_SCROLL_LINES,
   pageStep,
@@ -42,8 +49,9 @@ import {
 } from './scroll.js'
 
 /**
- * Gray-orange theme, mirroring the JanusX chat palette:
- * orange `#ff7830` accent, `#8a8f98` secondary gray, `#e8e8e8` body text.
+ * Minimal cool theme (design/janus-TUI-design.html): copper accent,
+ * graphite secondary, soft-white body. Values come from LOGO_TONE so a
+ * single palette edit re-skins the whole TUI.
  */
 const THEME = {
   accent: LOGO_TONE.orange,
@@ -87,8 +95,55 @@ function EmptyBanner(): React.JSX.Element {
   )
 }
 
-function NoticeRow({ text, width }: { text: string; width: number }): React.JSX.Element {
-  const rule = '─'.repeat(Math.max(8, width))
+/**
+ * Collapsible todo box pinned above the composer (design/janus-TUI-design.html):
+ * a bordered card with a single-line summary (`○ 待办 d/t │ 当前: …`) plus an
+ * expand hint; expanded it lists every item under a faint rule. Read-only
+ * mirror of the model's `todo_write` list: hidden when empty or fully done.
+ * Toggle with `toggle-todos` (ctrl+e); `Ctrl+D` stays reserved for exit.
+ */
+function TodoStickyBar({ todos, width, expanded }: { todos: ChatTodoItem[]; width: number; expanded: boolean }): React.JSX.Element | null {
+  if (!hasOpenTodos(todos)) return null
+  const summary = summarizeTodos(todos)
+  const innerW = Math.max(8, width - 4)
+  const toggleHint = expanded ? '收起 ▼' : '展开 ▲'
+  const headLeft = `○ 待办 ${summary.done}/${summary.total}${summary.current ? ` │ 当前: ${summary.current}` : ''}`
+  const head = truncateToWidth(headLeft, Math.max(8, innerW - displayWidth(toggleHint) - 5))
+  const icon = (status: ChatTodoItem['status']): string => {
+    switch (status) {
+      case 'completed': return '●'
+      case 'in_progress': return '◐'
+      case 'cancelled': return '✕'
+      default: return '○'
+    }
+  }
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="single"
+      borderColor={TUI_CHROME.cardBorder}
+      paddingX={1}
+      marginBottom={1}
+    >
+      <Box justifyContent="space-between">
+        <Text color={THEME.accent}>{head}</Text>
+        <Text color={THEME.muted}>{toggleHint} · ctrl+e</Text>
+      </Box>
+      {expanded ? (
+        <Box flexDirection="column">
+          <Text color={THEME.muted}>{'─'.repeat(innerW)}</Text>
+          {todos.map((todo, index) => (
+            <Text key={index} color={todo.status === 'in_progress' ? TUI_CHROME.yellow : THEME.muted}>
+              {truncateToWidth(`  ${icon(todo.status)} ${todo.content}`, innerW)}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
+function NoticeRow({ text, width }: { text: string; width: number }): React.JSX.Element {  const rule = '─'.repeat(Math.max(8, width))
   return (
     <Box flexDirection="column" marginY={1}>
       <Text color={THEME.muted}>{rule}</Text>
@@ -131,7 +186,7 @@ function TimelineRow({ block, width, live, thinkingExpanded, toolsExpanded = fal
   if (block.kind === 'error') {
     return (
       <Box marginBottom={1}>
-        <Text color="red">✘ {displayText(block.text)}</Text>
+        <Text color={TUI_CHROME.red}>✘ {displayText(block.text)}</Text>
       </Box>
     )
   }
@@ -142,16 +197,16 @@ function TimelineRow({ block, width, live, thinkingExpanded, toolsExpanded = fal
       const gist = firstLine.replace(/^#+\s+|\*\*/g, '')
       return (
         <Box flexDirection="column" marginBottom={1}>
-          <Text color="yellow">{truncateToWidth(`▸ thinking${elapsed} · ${gist}`, width)}</Text>
+          <Text color={TUI_CHROME.yellow}>{truncateToWidth(`▸ thinking${elapsed} · ${gist}`, width)}</Text>
           {live ? <Text color={THEME.muted} italic>{truncateToWidth(displayText(block.text).trim().split('\n').at(-1) ?? '', Math.max(1, width - 1))}▍</Text> : null}
         </Box>
       )
     }
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <Text color="yellow">▸ thinking{elapsed}</Text>
+        <Text color={TUI_CHROME.yellow}>▸ thinking{elapsed}</Text>
         <Markdown text={block.text} width={width} muted />
-        {live ? <Text color="yellow">▍</Text> : null}
+        {live ? <Text color={TUI_CHROME.yellow}>▍</Text> : null}
       </Box>
     )
   }
@@ -162,7 +217,15 @@ function TimelineRow({ block, width, live, thinkingExpanded, toolsExpanded = fal
       detail: undefined,
     }
     const category = block.display?.category ?? 'tool'
-    const categoryColors = { read: 'cyan', search: 'cyan', edit: 'magenta', command: 'green', git: 'green', project: 'yellow', tool: 'gray' }
+    const categoryColors = {
+      read: TUI_CHROME.cyan,
+      search: TUI_CHROME.cyan,
+      edit: TUI_CHROME.magenta,
+      command: TUI_CHROME.green,
+      git: TUI_CHROME.green,
+      project: TUI_CHROME.yellow,
+      tool: THEME.muted,
+    }
     const elapsed = block.display?.durationMs ?? (block.startedAt && block.endedAt ? block.endedAt - block.startedAt : undefined)
     const summary = block.display?.summary ?? block.toolSummary
     const output = block.toolPreview?.length ? block.toolPreview : block.display?.output ?? []
@@ -170,19 +233,20 @@ function TimelineRow({ block, width, live, thinkingExpanded, toolsExpanded = fal
     const shown = output.slice(0, limit)
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <Text backgroundColor={TOOL_CARD_BG}>
-          <Text backgroundColor={TOOL_CARD_BG} color={toolCardFg(face.status)}>
-            {padToWidth(truncateToWidth(`${toolCardLine(face)} · ${face.status}${elapsed !== undefined ? ` · ${duration(elapsed)}` : ''}`, width), width)}
+        <Text>
+          <Text color={toolCardFg(face.status)}>▌ </Text>
+          <Text color={toolCardFg(face.status)}>
+            {padToWidth(truncateToWidth(`${toolCardLine(face)} · ${face.status}${elapsed !== undefined ? ` · ${duration(elapsed)}` : ''}`, Math.max(1, width - 2)), Math.max(1, width - 2))}
           </Text>
         </Text>
         {block.display?.target ? <Text color={categoryColors[category]}>  {category} › {block.display.target}</Text>
           : face.status === 'preparing' ? <Text color={THEME.muted}>  arguments · {block.argumentChars ?? 0} chars</Text>
             : block.toolDetail ? <Text color={THEME.muted}>  {block.toolDetail}</Text> : null}
-        {summary ? <Text color={face.status === 'failed' ? 'red' : THEME.muted}>  └ {displayText(summary)}</Text> : null}
+        {summary ? <Text color={face.status === 'failed' ? TUI_CHROME.red : THEME.muted}>  └ {displayText(summary)}</Text> : null}
         {shown.map((line, index) => (
           <Text
             key={index}
-            color={line.startsWith('+') ? 'green' : line.startsWith('-') ? 'red' : THEME.muted}
+            color={line.startsWith('+') ? TUI_CHROME.green : line.startsWith('-') ? TUI_CHROME.red : THEME.muted}
           >
             {'    '}{displayText(line)}
           </Text>
@@ -205,12 +269,16 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   const sessionRef = useRef<CliSession>(initialSession)
   const [state, dispatch] = useReducer(reduceTuiState, undefined, createInitialState)
   const [input, setInput] = useState('')
+  // Submitted-input history for shell-style ↑/↓ recall in the composer.
+  // Persists across turns/conversations; browsing state resets on submit.
+  const [inputHistory, setInputHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null)
+  const [historyDraft, setHistoryDraft] = useState('')
   // Live terminal size (opencode `dimensions()` equivalent): every resize
   // re-renders with fresh geometry — nothing layout-related is frozen at
   // mount.
   const { columns, rows: termHeight } = useTerminalSize()
-  // Discussion rows span the full width inside the root padding.
-  const discW = Math.max(10, columns - 2)
+  const discW = Math.max(10, columns - TUI_HORIZONTAL_PADDING * 2)
   const { stdout } = useStdout()
   const viewportRef = useRef<DOMElement>(null)
   const contentRef = useRef<DOMElement>(null)
@@ -251,15 +319,18 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   const mountedRef = useRef(true)
   const controllerRef = useRef<AbortController | null>(null)
   const approvalResolveRef = useRef<((approved: boolean) => void) | null>(null)
+  const questionResolveRef = useRef<((answer: AskUserPortAnswer) => void) | null>(null)
   // Modal overlays (palette / provider setup). While open the composer is
   // disabled and global keys are suspended; the overlay owns its input.
   const [overlay, setOverlay] = useState<
     | { kind: 'palette' }
     | { kind: 'connect'; initial?: { ref?: string; key?: string; baseURL?: string } }
     | { kind: 'approval' }
+    | { kind: 'effort' }
     | null
   >(null)
   const exitRef = useRef(onExit)
+  const lastInterruptRef = useRef<number | null>(null)
   exitRef.current = onExit
   const noticesRef = useRef<string[]>(initialNotices)
   noticesRef.current = initialNotices
@@ -270,7 +341,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     dispatch({
       type: 'context',
       labels: {
-        modelLabel: `${current.getProviderId()}/${current.getModelId() ?? '(no model)'}`,
+        modelLabel: `${current.getProviderId()}/${current.getModelId() ?? '(no model)'} · ${current.getEffort()}`,
         workspaceLabel: current.getWorkspaceName(),
         approvalLabel: current.getApprovalMode(),
         conversationLabel: active?.title ?? '',
@@ -285,6 +356,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     dispatch({
       type: 'hydrate',
       messages: current.getActiveMessages().map((message) => ({ role: message.role, text: message.content })),
+      todos: current.getActiveTodos(),
     })
     refreshContext()
   }, [refreshContext])
@@ -317,13 +389,32 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     })
   }, [])
 
+  // Bridge `ask_user` into the QuestionPanel. The panel view itself arrives
+  // via `question_requested` agent events (emitted by the loop tool hooks);
+  // this bridge only awaits the user's pick. Abort/Esc resolves cancelled.
+  const bridgeQuestion = useCallback(async (_prompt: QuestionPrompt, signal: AbortSignal): Promise<AskUserPortAnswer> => {
+    return new Promise<AskUserPortAnswer>((resolve) => {
+      const done = (answer: AskUserPortAnswer): void => {
+        if (questionResolveRef.current == null) return
+        questionResolveRef.current = null
+        signal.removeEventListener('abort', onAbort)
+        resolve(answer)
+      }
+      const onAbort = (): void => done({ status: 'cancelled' })
+      questionResolveRef.current = done
+      if (signal.aborted) done({ status: 'cancelled' })
+      else signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }, [])
+
   useEffect(() => {
     sessionRef.current.setApprovalHandler(bridgeApproval)
+    sessionRef.current.setQuestionHandler(bridgeQuestion)
     hydrate()
     for (const notice of noticesRef.current) {
       if (notice.trim()) dispatch({ type: 'notice', text: notice })
     }
-  }, [bridgeApproval, hydrate])
+  }, [bridgeApproval, bridgeQuestion, hydrate])
 
   useEffect(() => {
     mountedRef.current = true
@@ -341,10 +432,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   // `mouse on`, terminals where the wheel never reaches the app).
   useEffect(() => {
     if (isMouseCaptureDisabled()) return
-    enableMouseReporting(stdout)
-    return () => {
-      disableMouseReporting(stdout)
-    }
+    return maintainMouseReporting(stdout)
   }, [stdout])
 
   // Note: no cursor code lives here. The mounted Composer owns the caret
@@ -395,6 +483,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
           const restored = pendingRef.current.join('\n\n')
           pendingRef.current = []
           setPending([])
+          setHistoryIndex(null)
+          setHistoryDraft('')
           setInput((draft) => draft ? `${restored}\n\n${draft}` : restored)
           dispatch({ type: 'info', text: 'Pending messages restored to input.' })
         }
@@ -415,6 +505,11 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       setOverlay({ kind: 'approval' })
       return
     }
+    // Bare /effort opens the interactive picker; with an arg it switches directly.
+    if (command === 'effort' && args.length === 0) {
+      setOverlay({ kind: 'effort' })
+      return
+    }
     const outcome = await executeCommand(sessionRef.current, command, args, {
       recreateWorkspace: async (dir) => {
         const created = await host.createSession(dir)
@@ -426,6 +521,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
         sessionRef.current = next
         setSession(next)
         next.setApprovalHandler(bridgeApproval)
+        next.setQuestionHandler(bridgeQuestion)
         return { ok: true, message: `workspace switched: ${next.getWorkspaceRoot()} (history cleared)` }
       },
     })
@@ -441,7 +537,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     else refreshContext()
     for (const line of outcome.stdout) dispatch({ type: 'info', text: line })
     for (const line of outcome.stderr) dispatch({ type: 'error', text: line })
-  }, [host, hydrate, refreshContext])
+  }, [host, hydrate, refreshContext, bridgeApproval, bridgeQuestion])
 
   const submit = useCallback((raw: string): void => {
     const parsed = parseInputLine(raw)
@@ -451,12 +547,20 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
         dispatch({ type: 'info', text: 'Commands are available after the current turn finishes.' })
         return
       }
+      setInputHistory((prev) => pushInputHistory(prev, raw))
+      setHistoryIndex(null)
+      setHistoryDraft('')
       pendingRef.current.push(parsed.text ?? '')
       setPending([...pendingRef.current])
       setInput('')
       setScrollTop(null)
       return
     }
+    // Record for ↑/↓ recall before clearing; rejected busy commands above
+    // and empty lines never enter history.
+    setInputHistory((prev) => pushInputHistory(prev, raw))
+    setHistoryIndex(null)
+    setHistoryDraft('')
     // New input re-follows the tail.
     setScrollTop(null)
     setInput('')
@@ -471,15 +575,33 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     void runTurn(parsed.text ?? '')
   }, [runCommand, runTurn])
 
+  const handleHistoryRecall = useCallback((next: { value: string; index: number | null; draft: string }): void => {
+    setInput(next.value)
+    setHistoryIndex(next.index)
+    setHistoryDraft(next.draft)
+  }, [])
+
   useInput((inputValue, key) => {
-    // An open overlay owns its keys; Ctrl+C / Ctrl+D dismiss it.
-    if (overlay) {
-      if (key.ctrl && (inputValue === 'c' || inputValue === 'd')) setOverlay(null)
+    if (key.ctrl && inputValue === 'c') {
+      const now = performance.now()
+      if (lastInterruptRef.current !== null && now - lastInterruptRef.current <= 1000) {
+        lastInterruptRef.current = null
+        controllerRef.current?.abort()
+        exitRef.current(0)
+        return
+      }
+      lastInterruptRef.current = now
+      setInput('')
+      setHistoryIndex(null)
+      setHistoryDraft('')
+      setOverlay(null)
+      controllerRef.current?.abort()
       return
     }
-    if (key.ctrl && inputValue === 'c') {
-      if (controllerRef.current) controllerRef.current.abort()
-      else exitRef.current(0)
+    // Mouse reports do not count as intervening keyboard input.
+    if (!containsMouseSequence(inputValue)) lastInterruptRef.current = null
+    if (overlay || state.awaitingQuestion) {
+      if (key.ctrl && inputValue === 'd') setOverlay(null)
       return
     }
     if (key.ctrl && inputValue === 'd') {
@@ -494,6 +616,15 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       return
     }
     if (containsMouseSequence(inputValue)) return
+    // Esc interrupts a running turn (long output streams), mirroring a
+    // single Ctrl+C press but without touching the draft. Placed after the
+    // mouse guards so SGR wheel bytes can never trigger it; overlays, the
+    // approval gate and the question panel own Esc above. Idle Esc stays
+    // with the Composer (completion dismiss).
+    if (key.escape) {
+      if (busyRef.current) controllerRef.current?.abort()
+      return
+    }
     if (key.pageUp || key.pageDown) {
       const step = pageStep(viewportRows)
       scrollBy(key.pageUp ? -step : step)
@@ -507,9 +638,9 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       scrollBy(key.upArrow ? -LINE_SCROLL_LINES : LINE_SCROLL_LINES)
       return
     }
-    // opencode-style command palette (not during turns or approvals).
+    // opencode-style command palette (not during turns, approvals, or questions).
     if ((key.ctrl && inputValue === 'p') || inputValue === '\x10') {
-      if (!busyRef.current && !state.awaitingApproval) setOverlay({ kind: 'palette' })
+      if (!busyRef.current && !state.awaitingApproval && !state.awaitingQuestion) setOverlay({ kind: 'palette' })
       return
     }
     // pi-style thinking expand/collapse (live, even mid-turn).
@@ -521,28 +652,103 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       dispatch({ type: 'toggle-tools' })
       return
     }
+    // Todo box collapse/expand. Ctrl+D stays reserved for exit, so the box
+    // uses Ctrl+E (also shown in the box header and /help).
+    if ((key.ctrl && inputValue === 'e') || inputValue === '\x05') {
+      dispatch({ type: 'toggle-todos' })
+      return
+    }
+    // Confirm/Cancel gate (design/janus-TUI-design.html): arrows move focus,
+    // Enter confirms the focused action, Esc cancels. No y/n keys.
     if (state.awaitingApproval) {
-      const answer = inputValue.toLowerCase()
-      if (answer === 'y') approvalResolveRef.current?.(true)
-      else if (answer === 'n' || key.escape) approvalResolveRef.current?.(false)
+      if (key.leftArrow) setApprovalChoice('confirm')
+      else if (key.rightArrow) setApprovalChoice('cancel')
+      else if (key.return) approvalResolveRef.current?.(approvalChoice === 'confirm')
+      else if (key.escape) approvalResolveRef.current?.(false)
     }
   })
 
   const approval = state.awaitingApproval
+  // Focused Confirm/Cancel button; resets to Confirm on every new request.
+  const [approvalChoice, setApprovalChoice] = useState<'confirm' | 'cancel'>('confirm')
+  useEffect(() => {
+    if (approval) setApprovalChoice('confirm')
+  }, [approval])
+  // Header budgets: the statusline must NEVER wrap (a wrap perturbs the
+  // measured scroll geometry and clips the top timeline rows). Static
+  // chrome is 'janus │ ws: '(12) + 'model: '(7) + ' · appr: '(9) + ' │ ● '(5)
+  // = 33 cells; the four labels split the remainder (model takes leftovers).
+  const headerStatusFull = busy
+    ? (approval ? `awaiting approval · ${approval.toolName}` : state.statusText || 'working…')
+    : 'ready'
+  const headerVarBudget = Math.max(12, discW - 33)
+  const headerWsBudget = Math.max(4, Math.floor(headerVarBudget * 0.3))
+  const headerStatusBudget = Math.max(4, Math.floor(headerVarBudget * 0.25))
+  const headerApprBudget = Math.max(4, Math.floor(headerVarBudget * 0.15))
+  const headerWs = truncateToWidth(state.workspaceLabel, headerWsBudget)
+  const headerStatus = truncateToWidth(headerStatusFull, headerStatusBudget)
+  const headerAppr = truncateToWidth(state.approvalLabel, headerApprBudget)
+  const headerModel = truncateToWidth(
+    state.modelLabel,
+    Math.max(4, headerVarBudget - displayWidth(headerWs) - displayWidth(headerStatus) - displayWidth(headerAppr)),
+  )
   const hidden = maxScroll - visibleTop
   const liveId = busy ? state.activeBlockId : undefined
-  // Single-line status bar, truncated to the live width so narrow
-  // terminals never wrap it out of the pinned bottom chrome. Deliberately
-  // minimal: live state plus two pointers; full keys live in /help.
-  const footerText = truncateToWidth(
-    `${state.conversationLabel ? `${state.conversationLabel} · ` : ''}${state.statusText ? `${state.statusText} · ` : ''}/help · ctrl+p · wheel/PgUp${hidden > 0 ? ` · ↑${hidden} PgDn/Ctrl+End` : ''}`,
-    discW,
+  // Split bottom bar (design/janus-TUI-design.html): static key hints on the
+  // left, live status meta on the right. Both sides are segmented so keys,
+  // live state, token usage and the scroll badge each own a color; narrow
+  // terminals fall back to tiered plain truncation (drop /help first, then
+  // hard-truncate) so the pinned chrome never wraps.
+  interface FootSeg { text: string; color: string }
+  const footerConv = state.conversationLabel || undefined
+  const footerStatus = state.statusText || undefined
+  const footerUsage = state.sessionPromptTokens > 0 || state.sessionCompletionTokens > 0
+    ? formatTokenUsage(state.sessionPromptTokens, state.sessionCompletionTokens)
+    : ''
+  const footerUp = hidden > 0 ? `↑${Math.floor(hidden)}` : ''
+  const rightSegs: FootSeg[] = []
+  if (footerConv) rightSegs.push({ text: footerConv, color: THEME.muted })
+  if (footerStatus) rightSegs.push({ text: footerStatus, color: busy ? THEME.accent : THEME.muted })
+  if (footerUsage) rightSegs.push({ text: footerUsage, color: THEME.body })
+  if (footerUp) rightSegs.push({ text: footerUp, color: TUI_CHROME.yellow })
+  const footerLeftFull = '[Enter] Send · [Shift+Enter] Line · [Ctrl+P] Cmds · /help'
+  const footerLeftShort = '[Enter] Send · [Shift+Enter] Line · [Ctrl+P] Cmds'
+  // Single source for the right-side order/shape (also unit-tested in store).
+  const footerRightFull = buildFooterText({
+    conversationLabel: footerConv,
+    statusText: footerStatus,
+    sessionPromptTokens: state.sessionPromptTokens,
+    sessionCompletionTokens: state.sessionCompletionTokens,
+    hiddenRows: hidden,
+  })
+  const footerFits = (left: string): boolean =>
+    displayWidth(left) + (footerRightFull ? displayWidth(footerRightFull) + 2 : 0) <= discW
+  const footerMode = footerFits(footerLeftFull) ? 'full' : footerFits(footerLeftShort) ? 'short' : 'truncated'
+  const footerRight = truncateToWidth(footerRightFull, Math.max(0, discW - displayWidth(footerLeftFull) - 3))
+  const footerLeft = truncateToWidth(footerLeftFull, Math.max(0, discW - displayWidth(footerRight) - (footerRight ? 3 : 0)))
+  const renderFooterLeft = (withHelp: boolean): React.JSX.Element => (
+    <Text color={THEME.muted}>
+      <Text color={THEME.body}>[Enter]</Text> Send · <Text color={THEME.body}>[Shift+Enter]</Text> Line · <Text color={THEME.body}>[Ctrl+P]</Text> Cmds{withHelp ? (
+        <> · <Text color={THEME.body}>/help</Text></>
+      ) : null}
+    </Text>
+  )
+  const renderFooterRight = (): React.JSX.Element => (
+    <Text color={THEME.muted}>
+      {rightSegs.map((seg, index) => (
+        <React.Fragment key={index}>
+          {index > 0 ? ' · ' : null}
+          <Text color={seg.color}>{seg.text}</Text>
+        </React.Fragment>
+      ))}
+    </Text>
   )
 
   const paletteItems: PaletteItem[] = [
     { id: 'connect', label: 'Connect / manage providers', hint: 'keys + test' },
     { id: 'status', label: 'Show status', hint: '/status' },
     { id: 'model', label: 'List / switch model', hint: '/model' },
+    { id: 'effort', label: 'Show / switch reasoning effort', hint: '/effort' },
     { id: 'provider', label: 'List / switch provider', hint: '/provider' },
     { id: 'key', label: 'API key status', hint: '/key' },
     { id: 'approval', label: 'Approval mode', hint: '/approval' },
@@ -551,10 +757,28 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   return (
     // Ink's cursor protocol needs a trailing newline. Reserve its terminal row
     // so repaint and cursor-only updates share the same output origin.
-    <Box flexDirection="column" paddingX={1} height={termHeight == null ? undefined : Math.max(1, termHeight - 1)}>
-      <Box borderStyle="round" borderColor="gray" paddingX={1} flexShrink={0}>
-        <Text bold color={THEME.accent}>janus</Text>
-        <Text color="gray"> · {state.workspaceLabel} · {state.modelLabel} · {state.approvalLabel}</Text>
+    <Box flexDirection="column" paddingX={TUI_HORIZONTAL_PADDING} height={termHeight == null ? undefined : Math.max(1, termHeight - 1)}>
+      {/* Seamless statusline (design/janus-TUI-design.html): no closed box,
+          split left/right with a faint bottom rule that melts into the
+          terminal. marginTop keeps it off the very first terminal row. */}
+      <Box flexDirection="column" flexShrink={0} marginTop={1}>
+        <Box justifyContent="space-between">
+          <Text>
+            <Text bold color={THEME.accent}>janus</Text>
+            <Text color={THEME.muted}> │ ws: </Text>
+            <Text color={THEME.body}>{headerWs}</Text>
+          </Text>
+          <Text>
+            <Text color={THEME.muted}>model: </Text>
+            <Text color={THEME.body}>{headerModel}</Text>
+            <Text color={THEME.muted}> · appr: </Text>
+            <Text color={THEME.body}>{headerAppr}</Text>
+            <Text color={THEME.muted}> │ </Text>
+            <Text color={busy ? THEME.accent : TUI_CHROME.green}>● </Text>
+            <Text color={THEME.body}>{headerStatus}</Text>
+          </Text>
+        </Box>
+        <Text color={TUI_CHROME.subtleBorder}>{'─'.repeat(Math.max(8, discW))}</Text>
       </Box>
 
       <Box ref={viewportRef} flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden" marginY={1}>
@@ -567,12 +791,13 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
           <Box ref={contentRef} flexDirection="column" flexShrink={0} marginTop={-visibleTop}>
             {visibleBlocks.map((block) => <TimelineRow key={block.id} block={block} width={discW} live={block.id === liveId} thinkingExpanded={state.thinkingExpanded} toolsExpanded={state.toolsExpanded} />)}
             {busy ? <Activity text={approval ? `awaiting approval · ${approval.toolName}` : state.statusText || 'working…'} startedAt={state.turnStartedAt} />
-              : state.turnEndedAt && state.turnStartedAt ? <Text color={THEME.muted}>{state.statusText || 'done'} · {duration(state.turnEndedAt - state.turnStartedAt)}{state.promptTokens || state.completionTokens ? ` · ${state.promptTokens} in / ${state.completionTokens} out` : ''}</Text> : null}
+              : state.turnEndedAt && state.turnStartedAt ? <Text color={THEME.muted}>{state.statusText || 'done'} · {duration(state.turnEndedAt - state.turnStartedAt)}{state.promptTokens || state.completionTokens ? ` · ${formatTokenUsage(state.promptTokens, state.completionTokens)}` : ''}</Text> : null}
           </Box>
         )}
       </Box>
 
       <Box flexShrink={0} flexDirection="column">
+        <TodoStickyBar todos={state.todos} width={discW} expanded={state.todosExpanded} />
         {pending.length > 0 ? (
           <Text color={THEME.muted}>{truncateToWidth(`queued (${pending.length}): ${pending[0]?.replace(/\s+/g, ' ')}`, discW)}</Text>
         ) : null}
@@ -608,7 +833,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
               dispatch({
                 type: 'info',
                 text: mode === 'per-action'
-                  ? 'approval: per-action (each write/create will ask y/N)'
+                  ? 'approval: per-action (each write/create asks Confirm/Cancel)'
                   : 'approval: auto-run',
               })
               setOverlay(null)
@@ -617,11 +842,27 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             onClose={() => setOverlay(null)}
           />
         ) : null}
+        {overlay?.kind === 'effort' ? (
+          <EffortPanel
+            current={sessionRef.current.getEffort()}
+            onPick={(level) => {
+              try {
+                sessionRef.current.setEffort(level)
+                const meta = effortMeta(level)
+                dispatch({ type: 'info', text: `effort switched: ${level} — ${meta.hint} (${meta.detail})` })
+              } catch (error) {
+                dispatch({ type: 'error', text: error instanceof Error ? error.message : String(error) })
+              }
+              setOverlay(null)
+              refreshContext()
+            }}
+            onClose={() => setOverlay(null)}
+          />
+        ) : null}
         {approval ? (
-          <Box borderStyle="round" borderColor={THEME.accent} paddingX={1} flexDirection="column">
-            <Text color={THEME.accent} bold>
-              ◇ approve {approval.toolName}[{approval.workspaceId}] risk={approval.actionRisk}
-              {approval.summary ? ` — ${approval.summary}` : ''}{approval.paths?.length ? ` (${approval.paths.join(', ')})` : ''}
+          <PanelFrame title={`! Approve ${approval.toolName} [${approval.actionRisk}]`} hint="← → move · Enter confirm · Esc cancel">
+            <Text color={THEME.body}>
+              [{approval.workspaceId}]{approval.summary ? ` ${approval.summary}` : ''}{approval.paths?.length ? ` (${approval.paths.join(', ')})` : ''}
             </Text>
             {approval.detail ? approval.detail.split('\n').slice(0, 8).map((line, index) => (
               <Text key={index} color={THEME.body}>  {line || ' '}</Text>
@@ -629,21 +870,53 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             {approval.detail && approval.detail.split('\n').length > 8 ? (
               <Text color={THEME.muted}>  … ({approval.detail.split('\n').length - 8} more)</Text>
             ) : null}
-            <Text color={THEME.muted}>Allow? press <Text bold color={THEME.body}>y</Text> / <Text bold color={THEME.body}>n</Text></Text>
-          </Box>
+            <Box flexDirection="row" gap={2} marginTop={1}>
+              <Text
+                backgroundColor={approvalChoice === 'confirm' ? TUI_CHROME.green : undefined}
+                color={approvalChoice === 'confirm' ? 'black' : THEME.muted}
+                bold={approvalChoice === 'confirm'}
+              >
+                {approvalChoice === 'confirm' ? '▸ Confirm' : '  Confirm'}
+              </Text>
+              <Text
+                backgroundColor={approvalChoice === 'cancel' ? TUI_CHROME.red : undefined}
+                color={approvalChoice === 'cancel' ? 'black' : THEME.muted}
+                bold={approvalChoice === 'cancel'}
+              >
+                {approvalChoice === 'cancel' ? '▸ Cancel' : '  Cancel'}
+              </Text>
+            </Box>
+          </PanelFrame>
+        ) : state.awaitingQuestion ? (
+          <QuestionPanel
+            view={state.awaitingQuestion}
+            onResolve={(answer) => questionResolveRef.current?.(answer)}
+          />
         ) : (
           <Composer
             value={input}
             onChange={setInput}
             onSubmit={submit}
-            disabled={approval != null || overlay != null}
+            disabled={approval != null || overlay != null || state.awaitingQuestion != null}
             busy={busy}
+            history={inputHistory}
+            historyIndex={historyIndex}
+            historyDraft={historyDraft}
+            onHistoryRecall={handleHistoryRecall}
           />
         )}
       </Box>
 
-      <Box marginTop={1} flexShrink={0}>
-        <Text color="gray">{footerText}</Text>
+      <Box flexDirection="column" flexShrink={0}>
+        <Text color={TUI_CHROME.subtleBorder}>{'─'.repeat(Math.max(8, discW))}</Text>
+        <Box justifyContent="space-between">
+          {footerMode === 'full' ? renderFooterLeft(true)
+            : footerMode === 'short' ? renderFooterLeft(false)
+              : <Text color={THEME.muted}>{footerLeft}</Text>}
+          {footerMode === 'truncated'
+            ? (footerRight ? <Text color={THEME.muted}>{footerRight}</Text> : null)
+            : (footerRightFull ? renderFooterRight() : null)}
+        </Box>
       </Box>
     </Box>
   )
