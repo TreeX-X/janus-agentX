@@ -57,6 +57,8 @@ const THEME = {
   accent: LOGO_TONE.orange,
   muted: LOGO_TONE.dim,
   body: LOGO_TONE.lit,
+  /** Empty-state logo secondary: high-contrast gray, not the muted text tone. */
+  logoDim: LOGO_TONE.xDim,
 } as const
 
 export interface InkHost {
@@ -73,7 +75,7 @@ interface AppProps {
   initialNotices?: string[]
 }
 
-/** JanusX empty-state banner: JANUS in gray-white, X in orange/gray dual tone. */
+/** JanusX empty-state banner: JANUS in gray-white, X in orange/light-gray dual tone. */
 function EmptyBanner(): React.JSX.Element {
   return (
     <Box flexDirection="column">
@@ -84,7 +86,7 @@ function EmptyBanner(): React.JSX.Element {
           {renderLogoXLine(row).map((run, index) => (
             <Text
               key={index}
-              color={run.tone === 'orange' ? THEME.accent : run.tone === 'dim' ? THEME.muted : undefined}
+              color={run.tone === 'orange' ? THEME.accent : run.tone === 'dim' ? THEME.logoDim : undefined}
             >
               {run.text}
             </Text>

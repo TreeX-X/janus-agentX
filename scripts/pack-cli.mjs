@@ -82,7 +82,29 @@ const bundle = await rollup({
     }
     return false
   },
-  plugins: [nodeResolve({ preferBuiltins: true }), commonjs(), json()],
+  plugins: [
+    {
+      // chalk 5 resolves strategies via the package-private `#supports-color`
+      // import (`node` -> real TTY detection, `default` -> browser stub that
+      // always reports level 0). Rollup picks `default` here, which permanently
+      // disables ALL CLI colors in every terminal (no SGR is ever emitted).
+      // Pin the node build explicitly; scoped to chalk's own sources so no
+      // other package's `#`-imports are affected.
+      name: 'chalk-node-supports-color',
+      resolveId(source, importer) {
+        if (
+          source === '#supports-color'
+          && (importer || '').replace(/\\/g, '/').includes('/chalk/source/')
+        ) {
+          return join(root, 'node_modules', 'chalk', 'source', 'vendor', 'supports-color', 'index.js')
+        }
+        return null
+      },
+    },
+    nodeResolve({ preferBuiltins: true }),
+    commonjs(),
+    json(),
+  ],
   onwarn: (warning, defaultHandler) => {
     // `ai`/`@ai-sdk` ship harmless circular re-exports; keep the log readable.
     if (warning.code === 'CIRCULAR_DEPENDENCY') return
@@ -105,6 +127,18 @@ try {
   chmodSync(outFile, 0o755)
 } catch {
   // Non-POSIX filesystems (Windows ACLs) ignore chmod; npm still shims bin.
+}
+
+// Regression gate: chalk 5 must resolve its NODE supports-color build.
+// The browser stub (`test(globalThis.navigator.userAgent)` -> level 0) would
+// silently disable every CLI color in all terminals; the node build carries
+// the Win32 build-number branch (`14931`).
+const bundledText = readFileSync(outFile, 'utf8')
+if (bundledText.includes('test(globalThis.navigator.userAgent)')) {
+  fail('bundled chalk browser supports-color stub (level 0): colors would be dead')
+}
+if (!bundledText.includes('14931')) {
+  fail('bundled chalk node supports-color detection is missing')
 }
 
 const stagePkg = {

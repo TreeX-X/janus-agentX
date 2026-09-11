@@ -26,6 +26,10 @@ export const LOGO_TONE = {
   orange: '#c87a3b',
   /** Secondary text. */
   dim: '#525866',
+  /** Logo-only secondary (X dim strokes): brighter than `dim` so the `░░`
+   * shade cells stay legible on pure-black terminals (~7:1 on black).
+   * `dim` itself is untouched — muted body text keeps its quieter tone. */
+  xDim: '#8e96a8',
 } as const
 
 /**

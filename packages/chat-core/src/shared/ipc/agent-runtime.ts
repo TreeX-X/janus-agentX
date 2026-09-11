@@ -48,6 +48,9 @@ export type PolicyReasonCode =
   | 'WORKSPACE_UNAVAILABLE'
   | 'TARGET_UNAVAILABLE'
   | 'TARGET_NOT_REGULAR'
+  | 'PROTECTED_PATH'
+  | 'DIRECTORY_NOT_EMPTY'
+  | 'DESTRUCTIVE_COMMAND'
 
 export interface PolicyDecision {
   outcome: PolicyOutcome
