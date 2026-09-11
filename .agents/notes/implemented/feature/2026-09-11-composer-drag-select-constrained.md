@@ -14,7 +14,7 @@ Status: implemented
 
 `Composer` 发布框几何并暴露 `mouseControl`，`App` 负责分词、路由与原点。按下必须位于边框内部，四边框线和框外点击不能启动选择。合法起选后，左右越界收束到所在行的文本边缘，上下越界收束到可见内容首尾，空白填充行落到文本末尾；松开也执行相同收束，不依赖最后一次移动事件。提示符、边框、占位提示、补齐空格和省略标记永不作为复制字符，缓冲区中的换行和 Tab 保留原值。
 
-同一 `rowWindow` 同时提供高亮绘制与鼠标映射数据。松开把缓冲选区写入应用内剪贴板，并通过 OSC52 请求系统复制，选区保持高亮；点击不创建非空选区。按下与松开同块到达时，锚点和末端使用 ref，避免依赖 React 批提交顺序。鼠标与文本混合块整体丢弃。显式关闭上报时，注入字节不建查询、不建选区；CPR 只写真实 TTY。
+同一 `rowWindow` 同时提供高亮绘制与鼠标映射数据。松开把缓冲选区交给[剪贴板模块](./2026-09-11-composer-select-copy-paste.md)写应用缓冲和系统剪贴板，选区保持高亮；点击不创建非空选区。按下与松开同块到达时，锚点和末端使用 ref，避免依赖 React 批提交顺序。鼠标与文本混合块整体丢弃。显式关闭上报时，注入字节不建查询、不建选区；CPR 只写真实 TTY。
 
 讨论区按下不启动输入选区。应用没有讨论区渲染行到原文的映射，讨论区复制使用终端原生入口。
 
@@ -29,6 +29,6 @@ Status: implemented
 
 输入框的空间边界同时约束选择起点和复制内容。`packages/cli/tests/tui-composer-clipboard.test.tsx` 覆盖四向越界、框外起选、中文、换行与 Tab；`tui-mouse-drag.test.tsx` 在零原点和非零原点下解码 OSC52，断言示例结果严格等于 `test`。这两个文件加 `tui-scroll.test.ts`、`tui-scroll-wheel.test.tsx` 共 41 个用例通过，命令为在 `packages/cli` 执行 `npx vitest run tests/tui-scroll.test.ts tests/tui-composer-clipboard.test.tsx tests/tui-mouse-drag.test.tsx tests/tui-scroll-wheel.test.tsx`。
 
-系统剪贴板是否接受 OSC52 取决于终端，应用内复制缓冲可作为回退；CPR 不支持或坐标不稳定时，鼠标选择无法完成，键盘选择仍可用。自动化测试模拟终端回显，没有验证真实终端宿主的原点和系统剪贴板授权。输入框不提供越界自动滚动；超过可见窗口的文本可用键盘全选。若渲染器提供可靠的终端绝对坐标，应重新评估 CPR 查询的必要性。
+系统复制的本机 Windows 路径与 OSC52 回退限制见剪贴板记录；CPR 不支持或坐标不稳定时，鼠标选择无法完成，键盘选择仍可用。Windows ConPTY 加 JanusX 同版 xterm 的浏览器验证覆盖真实鼠标、高亮和系统复制，其他终端仍以模拟回显测试为主。输入框不提供越界自动滚动；超过可见窗口的文本可用键盘全选。若渲染器提供可靠的终端绝对坐标，应重新评估 CPR 查询的必要性。
 
 文本高亮颜色取舍见[框选模式与降暗高亮](./2026-09-11-composer-mouse-select-mode.md)。应用拖拽的坐标与边界行为以本文为准。

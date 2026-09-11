@@ -14,7 +14,7 @@ Status: implemented
 
 模式可见性收敛在页脚与 `/help`。右栏徽标 `框选·Esc退出`，忘记退出时常驻提醒。左栏 full 档追加 `[Ctrl+B] 框选`，窄终端按既有分档回落。`/help` 的 Keys 行同步开关、退出键与复制方式。
 
-选中色单独降暗。`TUI_CHROME` 新增 `selectionBg`，比行拾取的 `selectBg` 低一档，行拾取与文本标记是两种 affordance，不共用。Composer 文本高亮改用它，正文色保留，对比足够认出选中范围，又不形成亮带。补全弹窗选中行沿用 `selectBg`。
+选区使用独立的 `TUI_CHROME.selectionBg`，颜色为 `#46505f`，正文色保留。JanusX 终端背景为 `#151517`，接近背景的 `#171b22` 即使正确绘制，也难以辨认选中范围。选区底色必须明显区别于终端画布；补全弹窗仍使用自己的 `selectBg`，两者不共用。
 
 ## Alternatives considered
 
@@ -29,6 +29,6 @@ Status: implemented
 - **Gains**: 输入框与讨论区可原生拖拽框选，复制进真系统剪贴板，键盘选中高亮降暗。守卫为 `npx tsc --noEmit` 加 `npx vitest run`（均在 `packages/cli`，32 文件 283 用例全过，新增 5：暂停语义 2、App 开关 2、Composer 让位 1）。
 - **Costs and limits**: 模式内滚轮失效，只剩键盘滚动；原生选中色归终端主题所有，应用侧只降暗自有键盘高亮；模式需手动进出，徽标是唯一的防忘提醒；粘贴仍走终端原生。当渲染方案暴露点击坐标、框选成为高频动作或用户要求自动进出时重访本决策。
 
-当前鼠标默认值与退出条件见[鼠标默认行为](./2026-09-11-composer-native-select-default.md)。运行中没有暂停语义和 Ctrl+B 开关，本文的降暗选中色取舍仍然适用。
+当前鼠标默认值与退出条件见[鼠标默认行为](./2026-09-11-composer-native-select-default.md)。运行中没有暂停语义和 Ctrl+B 开关，本文关于独立选区颜色的取舍仍然适用。JanusX 同版 xterm、同色画布与 ConPTY 的 Playwright 鼠标验证确认正文四个字符的背景为 `0x46505f`，提示符和补齐区仍使用默认背景；实测截图确认选区可以辨认。
 
 应用内拖拽后由 [2026-09-11-composer-drag-select-constrained](./2026-09-11-composer-drag-select-constrained.md) 以收敛形态落地（上报开启下 CPR 懒定位加内容约束），本 Note 当时以跨终端脆弱为由的否决被该实现取代。

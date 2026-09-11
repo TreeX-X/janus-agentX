@@ -3,6 +3,7 @@
  * row spans (markers never highlight), and the OSC52/in-app clipboard.
  */
 import { describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import {
   bufferOffsetAtCell,
   deleteSelection,
@@ -21,7 +22,10 @@ import {
   OSC52_MAX_BYTES,
   createComposerClipboard,
   osc52CopySequence,
+  writeWindowsClipboard,
 } from '../src/tui/clipboard.js'
+
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }))
 
 describe('selectionRange', () => {
   it('is null without an anchor or when collapsed', () => {
@@ -249,6 +253,55 @@ describe('bufferOffsetAtCell (constrained mouse mapping)', () => {
 })
 
 describe('composer clipboard', () => {
+  it('writes exact Unicode and multiline content without interpolating text into the Windows command', () => {
+    const text = 'test\n中文\t" $() & |\n'
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.alloc(0))
+    expect(writeWindowsClipboard(text)).toBe(true)
+    const [file, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!
+    expect(file).toMatch(/WindowsPowerShell[/\\]v1\.0[/\\]powershell\.exe$/)
+    expect(args!.slice(0, 4)).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command'])
+    expect(args!.at(-1)).not.toContain(text)
+    expect(options).toMatchObject({ windowsHide: true, timeout: 2000, stdio: ['pipe', 'ignore', 'ignore'] })
+    expect(Buffer.from(options!.input as string, 'base64').toString('utf8')).toBe(text)
+    expect(options).not.toHaveProperty('shell')
+  })
+
+  it('allows OSC52 fallback when the Windows clipboard command fails', () => {
+    vi.mocked(execFileSync).mockImplementationOnce(() => { throw new Error('clipboard unavailable') })
+    expect(writeWindowsClipboard('test')).toBe(false)
+  })
+
+  it.runIf(process.platform === 'win32')('copies locally on Windows and uses OSC52 for SSH or command failures', () => {
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+    const write = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    try {
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+      for (const name of ['SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY']) vi.stubEnv(name, undefined)
+      const command = vi.mocked(execFileSync)
+      command.mockClear()
+      const clipboard = createComposerClipboard(process.stdout)
+      expect(clipboard.copy('local')).toEqual({ stored: true, viaSystem: true })
+      expect(command).toHaveBeenCalledTimes(1)
+      expect(write).not.toHaveBeenCalled()
+
+      vi.stubEnv('SSH_CONNECTION', 'remote')
+      clipboard.copy('remote')
+      expect(command).toHaveBeenCalledTimes(1)
+      expect(write).toHaveBeenLastCalledWith(osc52CopySequence('remote'))
+
+      vi.stubEnv('SSH_CONNECTION', undefined)
+      command.mockImplementationOnce(() => { throw new Error('clipboard busy') })
+      expect(clipboard.copy('fallback')).toEqual({ stored: true, viaSystem: true })
+      expect(write).toHaveBeenLastCalledWith(osc52CopySequence('fallback'))
+      expect(clipboard.paste()).toBe('fallback')
+    } finally {
+      write.mockRestore()
+      if (tty) Object.defineProperty(process.stdout, 'isTTY', tty)
+      else Reflect.deleteProperty(process.stdout, 'isTTY')
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('builds a decodable OSC52 sequence', () => {
     const sequence = osc52CopySequence('hi 你好')
     expect(sequence.startsWith('\x1b]52;c;')).toBe(true)

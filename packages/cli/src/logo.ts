@@ -51,11 +51,9 @@ export const TUI_CHROME = {
   cardBorder: '#232732',
   /** Selected-row highlight (replaces the old orange block). */
   selectBg: '#1f232c',
-  /** Text-mark highlight (composer selection): a whisper above black, dimmer
-   * than `selectBg` — row-pick and text-mark stay distinct affordances, and
-   * the mark never reads as a bright band. Body text keeps its tone on top
-   * so the marked range stays legible. */
-  selectionBg: '#171b22',
+  /** Text selection must remain visible on embedded terminal backgrounds. */
+  // Note: JanusX uses a near-black canvas - see .agents/notes/implemented/feature/2026-09-11-composer-mouse-select-mode.md
+  selectionBg: '#46505f',
   /** Soft functional colors. */
   cyan: '#38bdf8',
   yellow: '#d97706',
