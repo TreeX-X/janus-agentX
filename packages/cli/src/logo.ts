@@ -51,6 +51,11 @@ export const TUI_CHROME = {
   cardBorder: '#232732',
   /** Selected-row highlight (replaces the old orange block). */
   selectBg: '#1f232c',
+  /** Text-mark highlight (composer selection): a whisper above black, dimmer
+   * than `selectBg` — row-pick and text-mark stay distinct affordances, and
+   * the mark never reads as a bright band. Body text keeps its tone on top
+   * so the marked range stays legible. */
+  selectionBg: '#171b22',
   /** Soft functional colors. */
   cyan: '#38bdf8',
   yellow: '#d97706',

@@ -50,6 +50,31 @@ export function isMouseCaptureDisabled(env: NodeJS.ProcessEnv = process.env): bo
   return env['JANUS_NO_MOUSE'] === '1'
 }
 
+/* ── Capture suspension (native terminal box-selection mode) ─────────────
+   While suspended, the recovery timer below skips its reassert and no new
+   capture is written, so the terminal owns the mouse: plain drag selects
+   text natively and the terminal's own copy (Ctrl+Shift+C / right-click)
+   lands in the real system clipboard. Keyboard flows are untouched (wheel
+   falls back to PgUp/PgDn/Ctrl+arrows). `App` owns the toggle; the flag is
+   module state so the timer and the toggle never fight each other. */
+
+let mouseCaptureSuspended = false
+
+/** True while native-selection mode holds the mouse. */
+export function isMouseCaptureSuspended(): boolean {
+  return mouseCaptureSuspended
+}
+
+/**
+ * Release (`true`) or reclaim (`false`) mouse capture. Writes go through
+ * the TTY-gated helpers, so pipes and test doubles never see mode bytes.
+ */
+export function setMouseCaptureSuspended(suspended: boolean, stdout?: TTYGatedStream | null): void {
+  mouseCaptureSuspended = suspended
+  if (suspended) disableMouseReporting(stdout ?? null)
+  else enableMouseReporting(stdout ?? null)
+}
+
 interface TTYGatedStream {
   isTTY?: unknown
   write: (data: string) => unknown
@@ -60,7 +85,11 @@ interface TTYGatedStream {
 /** A host can recreate its emulator without restarting the PTY process. */
 export function maintainMouseReporting(stdout: TTYGatedStream): () => void {
   if (stdout.isTTY !== true) return () => undefined
-  const restore = () => enableMouseReporting(stdout)
+  // A suspended capture stays released: the timer skips its reassert so a
+  // native-selection session survives idle periods and resizes.
+  const restore = () => {
+    if (!isMouseCaptureSuspended()) enableMouseReporting(stdout)
+  }
   restore()
   stdout.on?.('resize', restore)
   // Reassert even when an idle/recreated host keeps the same dimensions.
@@ -69,6 +98,7 @@ export function maintainMouseReporting(stdout: TTYGatedStream): () => void {
   return () => {
     clearInterval(timer)
     stdout.off?.('resize', restore)
+    mouseCaptureSuspended = false
     disableMouseReporting(stdout)
   }
 }
