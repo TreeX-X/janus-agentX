@@ -17,29 +17,46 @@
  * the native cursor, so CJK composition lands on the caret instead of the
  * frame bottom. Buffer rules and cursor math live in `composer-state.ts`;
  * this host only renders + routes keys.
+ *
+ * Keyboard text selection: Shift+arrows/Home/End extends a selection anchor
+ * (plain moves collapse it, Esc clears it, edits replace it). Ctrl+A selects
+ * all; Ctrl+C copies the selection to the system clipboard (OSC52) plus an
+ * in-app buffer and clears it; Ctrl+X cuts; Ctrl+V pastes the in-app buffer
+ * (native terminal paste keeps arriving as text, as before). With no
+ * selection Ctrl+C falls through to `onInterrupt` (clear/abort/exit), so
+ * `App` skips its own Ctrl+C while this composer is active.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Box, Text, useInput, type DOMElement } from 'ink'
+import { Box, Text, useInput, useStdout, type DOMElement } from 'ink'
 import {
   applyCompletion,
   cursorLineOf,
   deleteBackward,
   deleteForward,
+  deleteSelection,
   displayWidth,
+  expandTabsWithMap,
   filterCompletions,
   firstToken,
-  insertText,
   offsetOfLine,
   padToWidth,
   recallInputHistory,
+  replaceSelection,
   resolveComposerWindow,
+  rowSelectionSpan,
+  type RowSelectionSpan,
+  selectedText,
+  selectionRange,
   sliceAroundCursor,
+  sliceAroundCursorEx,
+  splitSelectedText,
   truncateToWidth,
   visibleStart,
 } from './composer-state.js'
+import { createComposerClipboard } from './clipboard.js'
 import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
 import { containsMouseSequence } from './scroll.js'
 import { useSyncedCaret, type CaretDebugSnapshot } from './native-cursor.js'
@@ -62,10 +79,20 @@ interface ComposerProps {
   /** Unsent draft preserved when recall starts. */
   historyDraft?: string
   onHistoryRecall?: (next: { value: string; index: number | null; draft: string }) => void
+  /**
+   * Ctrl+C with no selection (clear input / abort turn / double-press exit).
+   * The composer owns Ctrl+C while active so copy-vs-interrupt never races
+   * `App`'s own handler; `App` skips its Ctrl+C exactly when `disabled` is false.
+   */
+  onInterrupt: () => void
+  /** Any copy/cut/paste/select-all gesture (lets `App` drop its exit window). */
+  onSelectionAction?: () => void
 }
 
-export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall }: ComposerProps): React.JSX.Element {
+// Note: keyboard selection + clipboard copy/cut/paste live in this composer — see .agents/notes/implemented/feature/2026-09-11-composer-select-copy-paste.md
+export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall, onInterrupt, onSelectionAction }: ComposerProps): React.JSX.Element {
   const [cursor, setCursor] = useState(0)
+  const [anchor, setAnchor] = useState<number | null>(null)
   const [highlight, setHighlight] = useState(0)
   const [dismissedFor, setDismissedFor] = useState<string | null>(null)
   // Live terminal size: every resize re-renders with fresh geometry instead
@@ -88,6 +115,33 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
   useEffect(() => {
     if (cursor !== safeCursor) setCursor(safeCursor)
   }, [cursor, safeCursor])
+
+  // Active selection (render + clipboard only; stale anchors clamp, wipes clear).
+  const selection = active ? selectionRange(value, anchor, safeCursor) : null
+  const clearSelection = (): void => setAnchor(null)
+
+  useEffect(() => {
+    if (disabled && anchor !== null) {
+      setAnchor(null)
+      return
+    }
+    if (anchor !== null && (value === '' || anchor < 0 || anchor > value.length)) {
+      setAnchor(value === '' ? null : Math.max(0, Math.min(anchor, value.length)))
+    }
+  }, [anchor, disabled, value])
+
+  const { stdout } = useStdout()
+  const clipboard = useMemo(() => createComposerClipboard(stdout), [stdout])
+
+  /** Copy the selection out (system clipboard + in-app buffer), then drop it. */
+  const copySelection = (): boolean => {
+    if (!selection) return false
+    const text = selectedText(value, anchor, safeCursor)
+    if (text) clipboard.copy(text)
+    setAnchor(null)
+    onSelectionAction?.()
+    return true
+  }
 
   const candidates = useMemo(() => filterCompletions(value, safeCursor), [value, safeCursor])
   const token = firstToken(value)
@@ -112,8 +166,71 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
       writeCaretDebug()
       return
     }
-    // App owns Ctrl+C / Ctrl+D; other control combos are ignored here.
+    // App owns Ctrl+D; other control combos are ignored here.
+    // Exception: clipboard keys while active — Ctrl+C copies a selection and
+    // only falls through to `onInterrupt` (clear/abort/exit) with none, so
+    // copy-vs-interrupt is decided in this one handler, never raced with App.
+    if (key.ctrl && !key.meta && (input === 'a' || input === 'c' || input === 'x' || input === 'v')) {
+      if (input === 'a') {
+        if (value.length > 0) {
+          setAnchor(0)
+          setCursor(value.length)
+          onSelectionAction?.()
+        }
+        return
+      }
+      if (input === 'c') {
+        if (copySelection()) return
+        onInterrupt()
+        return
+      }
+      if (input === 'x') {
+        if (selection) {
+          copySelection()
+          const next = deleteSelection(value, anchor, cursor)
+          onChange(next.value)
+          setCursor(next.cursor)
+        }
+        return
+      }
+      const pasted = clipboard.paste()
+      if (pasted) {
+        const next = replaceSelection(value, anchor, cursor, pasted)
+        onChange(next.value)
+        setCursor(next.cursor)
+        clearSelection()
+        onSelectionAction?.()
+      }
+      return
+    }
     if (key.ctrl || key.meta) return
+
+    // Keyboard selection: Shift+arrows/Home/End extends from the anchor
+    // (starting it at the cursor). Edge lines extend to the buffer ends
+    // instead of recalling history — an explicit shift means "select".
+    if (key.shift && (key.leftArrow || key.rightArrow || key.upArrow || key.downArrow || key.home || key.end)) {
+      const from = anchor ?? cursor
+      let next = cursor
+      if (key.leftArrow) next = cursor - 1
+      else if (key.rightArrow) next = cursor + 1
+      else if (key.home) {
+        const { line } = cursorLineOf(value, cursor)
+        next = offsetOfLine(value, line, 0)
+      } else if (key.end) {
+        const { line } = cursorLineOf(value, cursor)
+        const lineText = value.split('\n')[line] ?? ''
+        next = offsetOfLine(value, line, lineText.length)
+      } else if (key.upArrow || key.downArrow) {
+        const { line, column } = cursorLineOf(value, cursor)
+        const totalLines = value.split('\n').length
+        if (key.upArrow && line > 0) next = offsetOfLine(value, line - 1, column)
+        else if (key.downArrow && line < totalLines - 1) next = offsetOfLine(value, line + 1, column)
+        else next = key.upArrow ? 0 : value.length
+      }
+      setAnchor(Math.max(0, Math.min(from, value.length)))
+      move(next)
+      return
+    }
 
     if (showList) {
       if (key.upArrow) {
@@ -134,10 +251,12 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
           const applied = applyCompletion(value, picked)
           onChange(applied.value)
           setCursor(applied.cursor)
+          clearSelection()
         }
         return
       }
     } else if (key.escape) {
+      if (selection) clearSelection()
       return
     }
 
@@ -148,49 +267,78 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
     }
     // Shift+Enter newline (kitty return+shift, or legacy LF from ConPTY).
     if ((key.return && key.shift) || input === '\n') {
-      const next = insertText(value, cursor, '\n')
+      const next = replaceSelection(value, anchor, cursor, '\n')
       onChange(next.value)
       setCursor(next.cursor)
+      clearSelection()
       return
     }
     if (key.tab) {
-      const next = insertText(value, cursor, '  ')
+      const next = replaceSelection(value, anchor, cursor, '  ')
       onChange(next.value)
       setCursor(next.cursor)
+      clearSelection()
       return
     }
     if (key.backspace) {
+      if (selection) {
+        const next = deleteSelection(value, anchor, cursor)
+        onChange(next.value)
+        setCursor(next.cursor)
+        clearSelection()
+        return
+      }
       const next = deleteBackward(value, cursor)
       onChange(next.value)
       setCursor(next.cursor)
       return
     }
     if (key.delete) {
+      if (selection) {
+        const next = deleteSelection(value, anchor, cursor)
+        onChange(next.value)
+        setCursor(next.cursor)
+        clearSelection()
+        return
+      }
       const next = deleteForward(value, cursor)
       onChange(next.value)
       setCursor(next.cursor)
       return
     }
     if (key.leftArrow) {
+      if (selection) {
+        setCursor(selection.start)
+        clearSelection()
+        return
+      }
       move(cursor - 1)
       return
     }
     if (key.rightArrow) {
+      if (selection) {
+        setCursor(selection.end)
+        clearSelection()
+        return
+      }
       move(cursor + 1)
       return
     }
     if (key.home) {
+      clearSelection()
       const { line } = cursorLineOf(value, cursor)
       move(offsetOfLine(value, line, 0))
       return
     }
     if (key.end) {
+      clearSelection()
       const { line } = cursorLineOf(value, cursor)
       const lineText = value.split('\n')[line] ?? ''
       move(offsetOfLine(value, line, lineText.length))
       return
     }
     if (key.upArrow || key.downArrow) {
+      clearSelection()
       const { line, column } = cursorLineOf(value, cursor)
       const totalLines = value.split('\n').length
       if (key.upArrow && line > 0) {
@@ -218,10 +366,12 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
     }
     // Remaining control keys carry no text.
     if (input.length === 0) return
-    // Typing or paste (multiline chunks insert, never submit).
-    const next = insertText(value, cursor, input)
+    // Typing or paste (multiline chunks insert, never submit): a selection
+    // is replaced instead of kept alongside the new text.
+    const next = replaceSelection(value, anchor, cursor, input)
     onChange(next.value)
     setCursor(next.cursor)
+    clearSelection()
   }, { isActive: !disabled })
 
   // Frame geometry from the live terminal size (never frozen, never
@@ -320,6 +470,47 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
 
   const renderTextRow = (line: string, lineIndex: number): React.JSX.Element => {
     const prompt = lineIndex === start ? '› ' : '  '
+    // Selected char span inside a painted row: window markers (`…`) and
+    // padding never highlight, only buffer-backed content does.
+    const spanForRow = (
+      displayed: string,
+      sliceStart: number,
+      leading: boolean,
+      trailing: boolean,
+    ): RowSelectionSpan | null => {
+      if (!selection) return null
+      const rawLine = rawLines[lineIndex]
+      if (rawLine === undefined) return null
+      const contentLength = [...displayed].length - (leading ? 1 : 0) - (trailing ? 1 : 0)
+      return rowSelectionSpan({
+        expandedOffsets: expandTabsWithMap(rawLine).offsets,
+        lineStartOffset: offsetOfLine(value, lineIndex, 0),
+        selection,
+        sliceStart,
+        contentLength,
+        leadingEllipsis: leading,
+      })
+    }
+    const paintedRow = (displayed: string, span: RowSelectionSpan | null): React.JSX.Element => {
+      const [before, selected, after] = splitSelectedText(displayed, span)
+      const rest = Math.max(0, textW - displayWidth(displayed))
+      if (!selected) {
+        return (
+          <Text>
+            <Text color={promptColor}>{prompt}</Text>
+            <Text color={BODY}>{displayed}{' '.repeat(rest)}</Text>
+          </Text>
+        )
+      }
+      return (
+        <Text>
+          <Text color={promptColor}>{prompt}</Text>
+          <Text color={BODY}>{before}</Text>
+          <Text backgroundColor={TUI_CHROME.selectBg} color={BODY}>{selected}</Text>
+          <Text color={BODY}>{after}{' '.repeat(rest)}</Text>
+        </Text>
+      )
+    }
     if (value === '' && lineIndex === 0) {
       const hint = busy ? 'message' : 'message (/help)'
       // The native caret stays visible during turns; disabled overlays own focus.
@@ -342,22 +533,14 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
       )
     }
     if (lineIndex !== position.line) {
-      return (
-        <Text>
-          <Text color={promptColor}>{prompt}</Text>
-          <Text color={BODY}>{padToWidth(truncateToWidth(line, textW), textW)}</Text>
-        </Text>
-      )
+      const truncated = truncateToWidth(line, textW)
+      const trailing = displayWidth(line) > textW
+      return paintedRow(truncated, spanForRow(truncated, 0, false, trailing))
     }
     // Only a disabled, idle composer paints a dim placeholder caret.
-    const sliced = sliceAroundCursor(line, textW, caretExpandedCol)
+    const sliced = sliceAroundCursorEx(line, textW, caretExpandedCol)
     if (active || busy) {
-      return (
-        <Text>
-          <Text color={promptColor}>{prompt}</Text>
-          <Text color={BODY}>{padToWidth(sliced.text, textW)}</Text>
-        </Text>
-      )
+      return paintedRow(sliced.text, spanForRow(sliced.text, sliced.start, sliced.leadingEllipsis, sliced.trailingEllipsis))
     }
     const chars = [...sliced.text]
     const before = chars.slice(0, sliced.cursor).join('')

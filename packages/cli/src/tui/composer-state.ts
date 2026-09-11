@@ -279,15 +279,39 @@ export function truncateToWidth(text: string, width: number): string {
  * the very end of the line reserves one cell for its block.
  */
 export function sliceAroundCursor(line: string, width: number, cursorCol: number): { text: string; cursor: number } {
+  const { text, cursor } = sliceAroundCursorEx(line, width, cursorCol)
+  return { text, cursor }
+}
+
+export interface SlicedLine {
+  text: string
+  cursor: number
+  /** Expanded-char index where the displayed content starts (leading `…` excluded). */
+  start: number
+  /** First displayed char is a window marker, not buffer content. */
+  leadingEllipsis: boolean
+  /** Last displayed char is a truncation marker, not buffer content. */
+  trailingEllipsis: boolean
+}
+
+/**
+ * `sliceAroundCursor` with window provenance for selection highlight: the
+ * caller maps a buffer selection onto displayed chars via `start` plus the
+ * two marker flags (markers never highlight). Behavior is identical to
+ * `sliceAroundCursor`; that wrapper delegates here.
+ */
+export function sliceAroundCursorEx(line: string, width: number, cursorCol: number): SlicedLine {
   const chars = [...line]
   const safe = Math.max(0, Math.min(cursorCol, chars.length))
   const atEnd = safe >= chars.length
   const budget = Math.max(1, atEnd ? width - 1 : width)
-  if (displayWidth(line) <= budget) return { text: line, cursor: safe }
+  if (displayWidth(line) <= budget) return { text: line, cursor: safe, start: 0, leadingEllipsis: false, trailingEllipsis: false }
   const headWidth = displayWidth(chars.slice(0, safe).join(''))
   if (headWidth <= budget - 1) {
     const head = truncateToWidth(line, budget)
-    return { text: head, cursor: Math.min(safe, [...head].length) }
+    // The whole-line check above failed, so `truncateToWidth` always cuts
+    // here (budget >= 1): the trailing `…` is a marker, never content.
+    return { text: head, cursor: Math.min(safe, [...head].length), start: 0, leadingEllipsis: false, trailingEllipsis: true }
   }
   let used = 1 // leading …
   let start = safe
@@ -297,7 +321,131 @@ export function sliceAroundCursor(line: string, width: number, cursorCol: number
     used += w
     start -= 1
   }
-  return { text: `…${chars.slice(start, safe).join('')}`, cursor: 1 + (safe - start) }
+  return { text: `…${chars.slice(start, safe).join('')}`, cursor: 1 + (safe - start), start, leadingEllipsis: true, trailingEllipsis: false }
+}
+
+/* ── Keyboard text selection (copy/cut/paste) ────────────────────────────
+   The composer owns a selection anchor alongside its cursor: Shift+arrows
+   extend it, plain moves collapse it, edits replace it. Ranges stay in
+   buffer (UTF-16) offsets — the same units the cursor uses — while display
+   mapping below works in expanded code points. */
+
+export interface SelectionRange {
+  start: number
+  end: number
+}
+
+/** Non-empty selected buffer range, or null when nothing is selected. */
+export function selectionRange(value: string, anchor: number | null | undefined, cursor: number): SelectionRange | null {
+  if (anchor === null || anchor === undefined) return null
+  const a = Math.max(0, Math.min(anchor, value.length))
+  const c = Math.max(0, Math.min(cursor, value.length))
+  if (a === c) return null
+  return a < c ? { start: a, end: c } : { start: c, end: a }
+}
+
+/** Selected text (empty when there is no selection). */
+export function selectedText(value: string, anchor: number | null | undefined, cursor: number): string {
+  const range = selectionRange(value, anchor, cursor)
+  return range ? value.slice(range.start, range.end) : ''
+}
+
+/** Delete the selection; a collapsed/missing selection is a no-op. */
+export function deleteSelection(value: string, anchor: number | null | undefined, cursor: number): { value: string; cursor: number } {
+  const range = selectionRange(value, anchor, cursor)
+  if (!range) return { value, cursor: Math.max(0, Math.min(cursor, value.length)) }
+  return { value: value.slice(0, range.start) + value.slice(range.end), cursor: range.start }
+}
+
+/** Replace the selection with text (paste-safe); falls back to insert. */
+export function replaceSelection(
+  value: string,
+  anchor: number | null | undefined,
+  cursor: number,
+  text: string,
+): { value: string; cursor: number } {
+  const range = selectionRange(value, anchor, cursor)
+  if (!range) return insertText(value, cursor, text)
+  const next = normalizePastedText(text)
+  return {
+    value: value.slice(0, range.start) + next + value.slice(range.end),
+    cursor: range.start + next.length,
+  }
+}
+
+export interface ExpandedLine {
+  /** Tabs expanded to `tabSize` spaces (what the composer paints). */
+  text: string
+  /** Per expanded code point: UTF-16 offset of its raw char within the line. */
+  offsets: number[]
+}
+
+/** Expand tabs while remembering which raw char each painted char came from. */
+export function expandTabsWithMap(line: string, tabSize = 2): ExpandedLine {
+  const pad = ' '.repeat(Math.max(1, tabSize))
+  let text = ''
+  const offsets: number[] = []
+  let unit = 0
+  for (const char of line) {
+    if (char === '\t') {
+      text += pad
+      for (let index = 0; index < pad.length; index += 1) offsets.push(unit)
+    } else {
+      text += char
+      offsets.push(unit)
+    }
+    unit += char.length
+  }
+  return { text, offsets }
+}
+
+export interface RowSelectionSpan {
+  /** Char range `[from, to)` inside the displayed row text to highlight. */
+  from: number
+  to: number
+}
+
+/**
+ * Selected char span inside an already windowed row. `sliceStart` is the
+ * expanded-char index of the first content char (leading `…` excluded) and
+ * `contentLength` counts only buffer-backed chars (markers excluded), so
+ * window markers never highlight and padding never maps.
+ */
+export function rowSelectionSpan(options: {
+  expandedOffsets: readonly number[]
+  lineStartOffset: number
+  selection: SelectionRange | null
+  sliceStart: number
+  contentLength: number
+  leadingEllipsis: boolean
+}): RowSelectionSpan | null {
+  const { expandedOffsets, lineStartOffset, selection, sliceStart, contentLength, leadingEllipsis } = options
+  if (!selection || contentLength <= 0) return null
+  let from = -1
+  let to = -1
+  for (let index = 0; index < contentLength; index += 1) {
+    const rawInLine = expandedOffsets[sliceStart + index]
+    if (rawInLine === undefined) continue
+    const absolute = lineStartOffset + rawInLine
+    if (absolute >= selection.start && absolute < selection.end) {
+      if (from < 0) from = index
+      to = index + 1
+    }
+  }
+  if (from < 0) return null
+  const base = leadingEllipsis ? 1 : 0
+  return { from: base + from, to: base + to }
+}
+
+/** Split displayed row text into before/selected/after runs for painting. */
+export function splitSelectedText(displayed: string, span: RowSelectionSpan | null): [string, string, string] {
+  if (!span) return [displayed, '', '']
+  const chars = [...displayed]
+  return [
+    chars.slice(0, span.from).join(''),
+    chars.slice(span.from, span.to).join(''),
+    chars.slice(span.to).join(''),
+  ]
 }
 
 /* ── Native cursor visibility ────────────────────────────────────────────

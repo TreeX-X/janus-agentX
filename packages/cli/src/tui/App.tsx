@@ -583,21 +583,38 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     setHistoryDraft(next.draft)
   }, [])
 
+  // Ctrl+C while the composer owns focus (clear input / abort turn /
+  // double-press exit). The active composer calls this only with no text
+  // selected — a selection copies instead — so this handler skips while the
+  // composer is active and the composer alone decides copy-vs-interrupt.
+  const handleInterrupt = useCallback((): void => {
+    const now = performance.now()
+    if (lastInterruptRef.current !== null && now - lastInterruptRef.current <= 1000) {
+      lastInterruptRef.current = null
+      controllerRef.current?.abort()
+      exitRef.current(0)
+      return
+    }
+    lastInterruptRef.current = now
+    setInput('')
+    setHistoryIndex(null)
+    setHistoryDraft('')
+    setOverlay(null)
+    controllerRef.current?.abort()
+  }, [])
+
+  // Any composer copy/cut/paste/select-all is intervening keyboard input: it
+  // cancels a pending double-press exit so copy-then-interrupt never quits.
+  const handleSelectionAction = useCallback((): void => {
+    lastInterruptRef.current = null
+  }, [])
+
   useInput((inputValue, key) => {
     if (key.ctrl && inputValue === 'c') {
-      const now = performance.now()
-      if (lastInterruptRef.current !== null && now - lastInterruptRef.current <= 1000) {
-        lastInterruptRef.current = null
-        controllerRef.current?.abort()
-        exitRef.current(0)
-        return
-      }
-      lastInterruptRef.current = now
-      setInput('')
-      setHistoryIndex(null)
-      setHistoryDraft('')
-      setOverlay(null)
-      controllerRef.current?.abort()
+      // The mounted composer owns Ctrl+C (see `handleInterrupt`); overlays,
+      // the approval gate and the question panel keep App-level behavior.
+      if (overlay === null && state.awaitingApproval == null && !state.awaitingQuestion) return
+      handleInterrupt()
       return
     }
     // Mouse reports do not count as intervening keyboard input.
@@ -905,6 +922,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             historyIndex={historyIndex}
             historyDraft={historyDraft}
             onHistoryRecall={handleHistoryRecall}
+            onInterrupt={handleInterrupt}
+            onSelectionAction={handleSelectionAction}
           />
         )}
       </Box>
