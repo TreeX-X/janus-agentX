@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
+  bufferOffsetAtCell,
   deleteSelection,
   displayWidth,
   expandTabsWithMap,
@@ -184,6 +185,66 @@ describe('rowSelectionSpan', () => {
     expect(splitSelectedText('ab', first)).toEqual(['a', 'b', ''])
     expect(splitSelectedText('cdef', second)).toEqual(['', 'cde', 'f'])
     expect(third).toBeNull()
+  })
+})
+
+describe('bufferOffsetAtCell (constrained mouse mapping)', () => {
+  const atCell = (
+    rawLine: string,
+    displayed: string,
+    sliceStart: number,
+    leading: boolean,
+    cell: number,
+  ): number => {
+    const trailing = false
+    return bufferOffsetAtCell({
+      expandedOffsets: expandTabsWithMap(rawLine).offsets,
+      lineStartOffset: 0,
+      lineLength: rawLine.length,
+      displayed,
+      sliceStart,
+      contentLength: [...displayed].length - (leading ? 1 : 0) - (trailing ? 1 : 0),
+      leadingEllipsis: leading,
+      cell,
+    })
+  }
+
+  it('maps cells to offsets on a whole line and clamps the edges', () => {
+    expect(atCell('hello world', 'hello world', 0, false, 0)).toBe(0)
+    expect(atCell('hello world', 'hello world', 0, false, 1)).toBe(1)
+    expect(atCell('hello world', 'hello world', 0, false, 10)).toBe(10)
+    // Prompt side clamps to the line start, padding side to the line end.
+    expect(atCell('hello world', 'hello world', 0, false, -3)).toBe(0)
+    expect(atCell('hello world', 'hello world', 0, false, 99)).toBe(11)
+  })
+
+  it('follows a tail window without ever resolving the marker', () => {
+    const sliced = sliceAroundCursorEx('hello world', 5, 11)
+    expect(sliced.text).toBe('…rld')
+    expect(atCell('hello world', sliced.text, sliced.start, true, 1)).toBe(8)
+    expect(atCell('hello world', sliced.text, sliced.start, true, 2)).toBe(9)
+    expect(atCell('hello world', sliced.text, sliced.start, true, 3)).toBe(10)
+    expect(atCell('hello world', sliced.text, sliced.start, true, 9)).toBe(11)
+  })
+
+  it('keeps wide chars atomic across their cells', () => {
+    // '中' is one UTF-16 unit and two cells: units a=0 中=1 b=2.
+    expect(atCell('a中b', 'a中b', 0, false, 0)).toBe(0)
+    expect(atCell('a中b', 'a中b', 0, false, 1)).toBe(1)
+    expect(atCell('a中b', 'a中b', 0, false, 2)).toBe(1)
+    expect(atCell('a中b', 'a中b', 0, false, 3)).toBe(2)
+    expect(atCell('a中b', 'a中b', 0, false, 9)).toBe(3)
+  })
+
+  it('maps both cells of an expanded tab to the tab offset', () => {
+    expect(atCell('a\tb', 'a  b', 0, false, 0)).toBe(0)
+    expect(atCell('a\tb', 'a  b', 0, false, 1)).toBe(1)
+    expect(atCell('a\tb', 'a  b', 0, false, 2)).toBe(1)
+    expect(atCell('a\tb', 'a  b', 0, false, 3)).toBe(2)
+  })
+
+  it('returns the line start when there is no content', () => {
+    expect(atCell('', '', 0, false, 3)).toBe(0)
   })
 })
 

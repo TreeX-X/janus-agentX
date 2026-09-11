@@ -11,7 +11,8 @@
 import React, { useState } from 'react'
 import { render } from 'ink-testing-library'
 import { describe, expect, it } from 'vitest'
-import { Composer } from '../src/tui/Composer.js'
+import { Composer, type ComposerMouseControl } from '../src/tui/Composer.js'
+import type { ComposerFrameRect, TerminalOffset } from '../src/tui/composer-state.js'
 
 async function waitForFrame(check: () => boolean, timeoutMs = 8000): Promise<void> {
   const start = Date.now()
@@ -41,12 +42,18 @@ interface Harness {
   stdin: { write: (data: string) => void }
   lastFrame: () => string | undefined
   unmount: () => void
+  frameRectRef: { current: ComposerFrameRect | null }
+  terminalOffsetRef: { current: TerminalOffset | null }
+  mouseControlRef: { current: ComposerMouseControl | null }
 }
 
 function mountComposer(): Harness {
   let current = ''
   let interruptCount = 0
   let selectionCount = 0
+  const frameRectRef: Harness['frameRectRef'] = { current: null }
+  const terminalOffsetRef: Harness['terminalOffsetRef'] = { current: null }
+  const mouseControlRef: Harness['mouseControlRef'] = { current: null }
   function Wrapper(): React.JSX.Element {
     const [value, setValue] = useState('')
     return (
@@ -63,6 +70,9 @@ function mountComposer(): Harness {
         onSelectionAction={() => {
           selectionCount += 1
         }}
+        frameRectRef={frameRectRef}
+        terminalOffsetRef={terminalOffsetRef}
+        mouseControlRef={mouseControlRef}
         disabled={false}
         busy={false}
       />
@@ -76,12 +86,37 @@ function mountComposer(): Harness {
     stdin: app.stdin,
     lastFrame: app.lastFrame,
     unmount: app.unmount,
+    frameRectRef,
+    terminalOffsetRef,
+    mouseControlRef,
   }
 }
 
 async function typeHello(composer: Harness): Promise<void> {
   composer.stdin.write('hello')
   await waitForFrame(() => (composer.lastFrame() ?? '').includes('hello'))
+}
+
+/** Drive a mouse drag through `mouseControl` and wait for the commit.
+ *
+ * Direct calls bypass Ink's discrete-update flush, so the commit they
+ * schedule lands on React's own (racy) timetable — unlike production, where
+ * every stdin chunk flushes synchronously. The control handle is recreated
+ * on every commit, so its identity flip proves the drag state landed.
+ */
+async function drag(
+  composer: Harness,
+  pressCell: [number, number],
+  moveCell: [number, number],
+  releaseCell: [number, number],
+): Promise<{ press: boolean; move: boolean; release: boolean }> {
+  const before = composer.mouseControlRef.current
+  const control = before!
+  const press = control.press(...pressCell)
+  const move = control.move(...moveCell)
+  const release = control.release(...releaseCell)
+  await waitForFrame(() => composer.mouseControlRef.current !== null && composer.mouseControlRef.current !== before)
+  return { press, move, release }
 }
 
 /** One keypress per stdin chunk (rapid writes would coalesce into one). */
@@ -177,6 +212,73 @@ describe('Composer selection + clipboard', () => {
       composer.stdin.write(CTRL_C)
       await waitForFrame(() => composer.interrupts() === 1)
       expect(composer.latest()).toBe('hello')
+    } finally {
+      composer.unmount()
+    }
+  })
+
+  it('constrains mouse drags to content and auto-copies on release', async () => {
+    const composer = mountComposer()
+    try {
+      await typeHello(composer)
+      // Zero offset pretends terminal cells equal Ink cells.
+      composer.terminalOffsetRef.current = { dx: 0, dy: 0 }
+      await waitForFrame(() => composer.frameRectRef.current !== null && composer.mouseControlRef.current !== null)
+      const rect = composer.frameRectRef.current!
+      // 1-based terminal cells over 'e' (char 1) and the second 'l' (char 3).
+      const row = rect.y + 1 + 1
+      const colAt = (charIdx: number): number => rect.x + 4 + charIdx + 1
+      const result = await drag(composer, [colAt(1), row], [colAt(3), row], [colAt(3), row])
+      expect(result).toEqual({ press: true, move: true, release: true })
+      // Drag resolved [1,3) = 'el': Backspace deletes exactly it, no chrome.
+      await press(composer, '\x7f')
+      await waitForFrame(() => composer.latest() === 'hlo')
+    } finally {
+      composer.unmount()
+    }
+  })
+
+  it('keeps the mouse selection for keyboard copy after release', async () => {
+    const composer = mountComposer()
+    try {
+      await typeHello(composer)
+      composer.terminalOffsetRef.current = { dx: 0, dy: 0 }
+      await waitForFrame(() => composer.frameRectRef.current !== null && composer.mouseControlRef.current !== null)
+      const rect = composer.frameRectRef.current!
+      const row = rect.y + 1 + 1
+      const colAt = (charIdx: number): number => rect.x + 4 + charIdx + 1
+      await drag(composer, [colAt(1), row], [colAt(3), row], [colAt(3), row])
+      // Release auto-copied 'el' and kept the highlight: keyboard copy takes
+      // the same range, then paste proves the clipboard content.
+      await press(composer, CTRL_C)
+      await waitForFrame(() => composer.selections() > 0)
+      expect(composer.latest()).toBe('hello')
+      await press(composer, CTRL_A)
+      await press(composer, 'X')
+      await waitForFrame(() => composer.latest() === 'X')
+      await press(composer, CTRL_V)
+      await waitForFrame(() => composer.latest() === 'Xel')
+    } finally {
+      composer.unmount()
+    }
+  })
+
+  it('clamps frame-side presses to content edges and ignores borders', async () => {
+    const composer = mountComposer()
+    try {
+      await typeHello(composer)
+      composer.terminalOffsetRef.current = { dx: 0, dy: 0 }
+      await waitForFrame(() => composer.frameRectRef.current !== null && composer.mouseControlRef.current !== null)
+      const rect = composer.frameRectRef.current!
+      const row = rect.y + 1 + 1
+      const control = composer.mouseControlRef.current!
+      // Top border is not content.
+      expect(control.press(rect.x + 4 + 1, rect.y + 1)).toBe(false)
+      // Prompt side clamps to the line start: typing then prepends.
+      const result = await drag(composer, [rect.x + 1, row], [rect.x + 1, row], [rect.x + 1, row])
+      expect(result.press).toBe(true)
+      await press(composer, 'X')
+      await waitForFrame(() => composer.latest() === 'Xhello')
     } finally {
       composer.unmount()
     }

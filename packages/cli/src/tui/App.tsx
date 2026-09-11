@@ -31,21 +31,26 @@ import { effortMeta } from '../effort.js'
 import { ConnectPanel } from './connect-panel.js'
 import { parseInputLine } from '../commands.js'
 import { LOGO_TONE, TUI_CHROME, renderLogoJanusLine, renderLogoXLine } from '../logo.js'
-import { Composer } from './Composer.js'
+import { Composer, type ComposerMouseControl } from './Composer.js'
 import { Markdown } from './Markdown.js'
 import { Activity, duration } from './Activity.js'
 import { displayText } from '../tool-display.js'
 import { toolCardFg, toolCardLine } from './tool-card.js'
-import { displayWidth, padToWidth, pushInputHistory, truncateToWidth } from './composer-state.js'
+import { displayWidth, padToWidth, pushInputHistory, truncateToWidth, type ComposerFrameRect, type TerminalOffset } from './composer-state.js'
 import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
 import {
   clampScrollOffset,
   containsMouseSequence,
   maintainMouseReporting,
+  CPR_QUERY,
   LINE_SCROLL_LINES,
   pageStep,
+  parseCprReplies,
+  parseSgrMouseEvents,
   parseWheelDelta,
   shouldCaptureMouse,
+  type CprPosition,
+  type SgrMouseEvent,
 } from './scroll.js'
 
 /**
@@ -608,6 +613,160 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     lastInterruptRef.current = null
   }, [])
 
+  // Constrained drag selection (capture on): the terminal→Ink translation is
+  // established once per geometry via CPR and cached; Composer publishes its
+  // frame rect (caret included for snapshots) and exposes the drag handle.
+  // Pending press/drag/release events wait for the CPR reply, then flush in
+  // order — mapping always resolves against buffer content, never chrome.
+  const frameRectRef = useRef<ComposerFrameRect | null>(null)
+  const terminalOffsetRef = useRef<TerminalOffset | null>(null)
+  const offsetTermRef = useRef<{ cols: number; rows: number } | null>(null)
+  const composerMouseRef = useRef<ComposerMouseControl | null>(null)
+  const cprPendingRef = useRef<{
+    caretX: number
+    caretY: number
+    rectX: number
+    rectY: number
+    cols: number
+    rows: number
+    tries: number
+    events: Array<{ kind: 'press' | 'move' | 'release'; x: number; y: number }>
+  } | null>(null)
+
+  const composerActiveForMouse = (): boolean =>
+    overlay === null && state.awaitingApproval == null && !state.awaitingQuestion
+
+  // A drag started behind an overlay/panel can never resolve: drop it.
+  useEffect(() => {
+    if (overlay !== null || state.awaitingApproval != null || state.awaitingQuestion) {
+      cprPendingRef.current = null
+    }
+  }, [overlay, state.awaitingApproval, state.awaitingQuestion])
+
+  const offsetValid = (): boolean => {
+    const term = offsetTermRef.current
+    return terminalOffsetRef.current !== null
+      && term !== null
+      && term.cols === columns
+      && term.rows === (termHeight ?? 0)
+  }
+
+  const requestCpr = useCallback((): void => {
+    try {
+      const out = stdout as unknown as { isTTY?: unknown; write?: (data: string) => unknown }
+      if (out?.isTTY === true && typeof out.write === 'function') out.write(CPR_QUERY)
+    } catch {
+      // Best effort: without a reply the gesture is dropped, never misplaced.
+    }
+  }, [stdout])
+
+  const snapshotCpr = (): { caretX: number; caretY: number; rectX: number; rectY: number; cols: number; rows: number } | null => {
+    const rect = frameRectRef.current
+    if (!rect) return null
+    return { caretX: rect.caretX, caretY: rect.caretY, rectX: rect.x, rectY: rect.y, cols: columns, rows: termHeight ?? 0 }
+  }
+
+  const flushCprPending = (): void => {
+    const pending = cprPendingRef.current
+    cprPendingRef.current = null
+    if (!pending) return
+    const control = composerMouseRef.current
+    if (!control || !composerActiveForMouse()) return
+    for (const event of pending.events) {
+      if (event.kind === 'press') control.press(event.x, event.y)
+      else if (event.kind === 'move') control.move(event.x, event.y)
+      else control.release(event.x, event.y)
+    }
+  }
+
+  const resolveCprReplies = (replies: CprPosition[]): void => {
+    const pending = cprPendingRef.current
+    const reply = replies.length > 0 ? replies[replies.length - 1] : undefined
+    if (!pending || !reply) return
+    if (!shouldCaptureMouse()) {
+      cprPendingRef.current = null
+      return
+    }
+    const now = snapshotCpr()
+    const settled = now !== null
+      && now.caretX === pending.caretX && now.caretY === pending.caretY
+      && now.rectX === pending.rectX && now.rectY === pending.rectY
+      && now.cols === pending.cols && now.rows === pending.rows
+    if (settled) {
+      terminalOffsetRef.current = { dx: (reply.col - 1) - pending.caretX, dy: (reply.row - 1) - pending.caretY }
+      offsetTermRef.current = { cols: pending.cols, rows: pending.rows }
+      flushCprPending()
+      return
+    }
+    if (pending.tries < 2 && now !== null) {
+      pending.caretX = now.caretX
+      pending.caretY = now.caretY
+      pending.rectX = now.rectX
+      pending.rectY = now.rectY
+      pending.cols = now.cols
+      pending.rows = now.rows
+      pending.tries += 1
+      requestCpr()
+      return
+    }
+    cprPendingRef.current = null
+  }
+
+  const routeDragEvents = (events: SgrMouseEvent[]): void => {
+    // Routing exists only under capture: without it the terminal never emits
+    // these bytes, and injected ones must not arm queries or selections.
+    if (!shouldCaptureMouse()) {
+      cprPendingRef.current = null
+      return
+    }
+    if (!composerActiveForMouse() || composerMouseRef.current === null) {
+      cprPendingRef.current = null
+      return
+    }
+    for (const event of events) {
+      // SGR release always reports button 3 (no button encoded): any release
+      // ends the gesture. Press/drag route left-button only; the rest is dead.
+      if (event.kind === 'release') {
+        const pending = cprPendingRef.current
+        if (pending) {
+          if (pending.events.length < 256) pending.events.push({ kind: 'release', x: event.x, y: event.y })
+        } else {
+          composerMouseRef.current?.release(event.x, event.y)
+        }
+        continue
+      }
+      if (event.button !== 0) continue
+      if (event.kind === 'press') {
+        if (offsetValid()) {
+          composerMouseRef.current?.press(event.x, event.y)
+          continue
+        }
+        const snapshot = snapshotCpr()
+        if (!snapshot) continue
+        const pending = cprPendingRef.current
+        if (
+          !pending
+          || pending.caretX !== snapshot.caretX || pending.caretY !== snapshot.caretY
+          || pending.rectX !== snapshot.rectX || pending.rectY !== snapshot.rectY
+          || pending.cols !== snapshot.cols || pending.rows !== snapshot.rows
+        ) {
+          // A new gesture supersedes an unanswered one (stale caret/frame).
+          cprPendingRef.current = { ...snapshot, tries: 0, events: [] }
+          requestCpr()
+        }
+        cprPendingRef.current?.events.push({ kind: 'press', x: event.x, y: event.y })
+      } else if (event.kind === 'drag') {
+        const pending = cprPendingRef.current
+        if (pending) {
+          if (pending.events.length < 256) pending.events.push({ kind: 'move', x: event.x, y: event.y })
+        } else {
+          composerMouseRef.current?.move(event.x, event.y)
+        }
+      }
+    }
+    if ((cprPendingRef.current?.events.length ?? 0) > 256) cprPendingRef.current = null
+  }
+
   useInput((inputValue, key) => {
     if (key.ctrl && inputValue === 'c') {
       // The mounted composer owns Ctrl+C (see `handleInterrupt`); overlays,
@@ -624,6 +783,18 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     }
     if (key.ctrl && inputValue === 'd') {
       exitRef.current(0)
+      return
+    }
+    // Captured mouse routing (JANUS_MOUSE=1): CPR replies anchor the
+    // terminal→Ink translation; press/drag/release drive the composer's
+    // constrained drag selection (frame chrome can never resolve). Wheel-only
+    // chunks keep flowing to the scroll path below; anything else
+    // mouse-shaped (fragments, legacy) stays swallowed below.
+    const cprReplies = parseCprReplies(inputValue)
+    if (cprReplies.length > 0) resolveCprReplies(cprReplies)
+    const mouseEvents = parseSgrMouseEvents(inputValue)
+    if (mouseEvents.some((event) => event.kind === 'press' || event.kind === 'drag' || event.kind === 'release')) {
+      routeDragEvents(mouseEvents)
       return
     }
     // Scroll measured terminal rows; plain arrows remain composer editing keys.
@@ -923,6 +1094,9 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             onHistoryRecall={handleHistoryRecall}
             onInterrupt={handleInterrupt}
             onSelectionAction={handleSelectionAction}
+            frameRectRef={frameRectRef}
+            terminalOffsetRef={terminalOffsetRef}
+            mouseControlRef={composerMouseRef}
           />
         )}
       </Box>

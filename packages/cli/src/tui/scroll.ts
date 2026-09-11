@@ -35,16 +35,16 @@ const X10_MOUSE_RE = /\[M([\s\S]{3})/g
 const SGR_LEAD_FRAGMENT_RE = /\[<\d{1,3}(;\d{0,4}){0,2}$/
 
 /**
- * SGR mouse enable/disable (pi read-mode shape): normal tracking (clicks +
- * wheel) with SGR extended encoding. Deliberately NOT `1002`/`1003`
- * (button-motion / any-motion): drag tracking would steal text selection.
- * Set `JANUS_NO_MOUSE=1` to keep the terminal's native wheel/selection
- * behavior and scroll with the keyboard instead (also the escape hatch for
- * terminals where the wheel never reaches the app, e.g. VS Code's xterm
- * dead-wheel regression or tmux without `mouse on`).
+ * SGR mouse enable/disable (pi read-mode shape): button tracking (clicks +
+ * wheel) plus button-motion drag tracking, with SGR extended encoding.
+ * `1002` (not `1003` any-motion: hover motion would only add noise) routes
+ * drags into the app so selection is content-constrained by construction —
+ * under capture there is no native selection to grab frame chrome. Capture
+ * stays opt-in (`shouldCaptureMouse`): by default the terminal owns the
+ * mouse and plain drag selects natively.
  */
-export const MOUSE_ENABLE = '\x1b[?1000h\x1b[?1006h'
-export const MOUSE_DISABLE = '\x1b[?1000l\x1b[?1006l'
+export const MOUSE_ENABLE = '\x1b[?1000h\x1b[?1002h\x1b[?1006h'
+export const MOUSE_DISABLE = '\x1b[?1000l\x1b[?1002l\x1b[?1006l'
 
 export function isMouseCaptureDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env['JANUS_NO_MOUSE'] === '1'
@@ -116,6 +116,84 @@ function isWheelButton(button: number): 'up' | 'down' | null {
  * positive = down). Handles coalesced sequences (fast wheels arrive batched)
  * in both SGR and legacy X10 encodings; returns 0 for clicks/moves/text.
  */
+export type SgrMouseKind = 'press' | 'drag' | 'release' | 'wheel'
+
+export interface SgrMouseEvent {
+  kind: SgrMouseKind
+  /** 0 left, 1 middle, 2 right (wheel reports 0 plus a direction). */
+  button: number
+  direction?: 'up' | 'down'
+  /** 1-based terminal cells. */
+  x: number
+  y: number
+  shift: boolean
+  meta: boolean
+  ctrl: boolean
+}
+
+const SGR_EVENT_RE = /(?:\x1b)?\[<(\d+);(\d+);(\d+)([mM])/g
+
+/**
+ * Every SGR mouse event in one Ink `useInput` chunk (coalesced drags arrive
+ * batched). Wheel, press, button-motion drag and release share the `Cb`
+ * low bits (button), bit 5 (motion) and bit 6 (wheel); the `m` suffix marks
+ * release. Legacy X10 bytes stay with `parseWheelDelta`/`containsMouseSequence`.
+ */
+export function parseSgrMouseEvents(input: string): SgrMouseEvent[] {
+  if (!input || !input.includes('[<')) return []
+  const events: SgrMouseEvent[] = []
+  SGR_EVENT_RE.lastIndex = 0
+  for (let match = SGR_EVENT_RE.exec(input); match !== null; match = SGR_EVENT_RE.exec(input)) {
+    const code = Number.parseInt(match[1] ?? '', 10)
+    const x = Number.parseInt(match[2] ?? '', 10)
+    const y = Number.parseInt(match[3] ?? '', 10)
+    if (!Number.isFinite(code) || !Number.isFinite(x) || !Number.isFinite(y) || x < 1 || y < 1) continue
+    const mods = { shift: (code & 4) !== 0, meta: (code & 8) !== 0, ctrl: (code & 16) !== 0 }
+    const wheel = isWheelButton(code)
+    if (wheel) {
+      events.push({ kind: 'wheel', button: 0, direction: wheel, x, y, ...mods })
+      continue
+    }
+    if ((match[4] ?? '') === 'm') {
+      events.push({ kind: 'release', button: code & 3, x, y, ...mods })
+      continue
+    }
+    if ((code & 32) !== 0) {
+      events.push({ kind: 'drag', button: code & 3, x, y, ...mods })
+      continue
+    }
+    events.push({ kind: 'press', button: code & 3, x, y, ...mods })
+  }
+  return events
+}
+
+export interface CprPosition {
+  row: number
+  col: number
+}
+
+const CPR_RE = /\[(\d+);(\d+)R/g
+
+/**
+ * Cursor-position replies (`\x1b[{row};{col}R`) answering a `CPR_QUERY`.
+ * Callers must only honor these against a pending query — the byte shape
+ * can theoretically occur in pasted text.
+ */
+export function parseCprReplies(input: string): CprPosition[] {
+  if (!input || !input.includes('R')) return []
+  const out: CprPosition[] = []
+  CPR_RE.lastIndex = 0
+  for (let match = CPR_RE.exec(input); match !== null; match = CPR_RE.exec(input)) {
+    const row = Number.parseInt(match[1] ?? '', 10)
+    const col = Number.parseInt(match[2] ?? '', 10)
+    if (Number.isFinite(row) && Number.isFinite(col) && row >= 1 && col >= 1) out.push({ row, col })
+  }
+  return out
+}
+
+/** Device-status query whose reply (`parseCprReplies`) anchors mouse cells. */
+export const CPR_QUERY = '\x1b[6n'
+
 export function parseWheelDelta(input: string): number {
   if (!input || (!input.includes('[<') && !input.includes('[M'))) return 0
   let delta = 0

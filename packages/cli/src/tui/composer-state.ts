@@ -448,6 +448,65 @@ export function splitSelectedText(displayed: string, span: RowSelectionSpan | nu
   ]
 }
 
+/* ── Mouse cell → buffer offset (constrained in-app drag selection) ──────
+   Drag selection maps terminal cells onto buffer content only: borders,
+   prompts and padding never resolve to an offset, so a drag can never
+   carry frame chrome into the clipboard. Units mirror the cursor
+   (UTF-16 buffer offsets; expanded code points for display). */
+
+/** Published composer frame geometry (0-based Ink cells; borders included). */
+export interface ComposerFrameRect {
+  x: number
+  y: number
+  w: number
+  h: number
+  /** Caret cell (CPR snapshots anchor the terminal→Ink translation here). */
+  caretX: number
+  caretY: number
+}
+
+/** Terminal→Ink translation in cells (established by CPR, cached per geometry). */
+export interface TerminalOffset {
+  dx: number
+  dy: number
+}
+
+/**
+ * Buffer offset for a 0-based cell inside a displayed row. Cells on the
+ * prompt side resolve to the line start, cells past the content (padding)
+ * to the line end; window markers never resolve. Callers clamp rows to
+ * content rows, so borders never reach here.
+ */
+export function bufferOffsetAtCell(options: {
+  expandedOffsets: readonly number[]
+  lineStartOffset: number
+  lineLength: number
+  displayed: string
+  sliceStart: number
+  contentLength: number
+  leadingEllipsis: boolean
+  cell: number
+}): number {
+  const { expandedOffsets, lineStartOffset, lineLength, displayed, sliceStart, contentLength, leadingEllipsis, cell } = options
+  if (contentLength <= 0) return lineStartOffset
+  const base = leadingEllipsis ? 1 : 0
+  // Cells count in displayed coordinates: skip the leading marker's cell so
+  // content-relative widths line up with the caller's cell.
+  const contentCell = cell - (leadingEllipsis ? 1 : 0)
+  const contentChars = [...displayed].slice(base, base + contentLength)
+  let used = 0
+  for (let index = 0; index < contentChars.length; index += 1) {
+    const w = Math.max(1, displayWidth(contentChars[index] ?? ''))
+    if (contentCell < used + w) {
+      const rawInLine = expandedOffsets[sliceStart + index]
+      if (rawInLine === undefined) continue
+      return lineStartOffset + Math.min(rawInLine, lineLength)
+    }
+    used += w
+  }
+  return lineStartOffset + lineLength
+}
+
 /* ── Native cursor visibility ────────────────────────────────────────────
    The caret itself is painted (see the breathing block below). Mid-run the
    native cursor is hidden through Ink's official `useCursor` channel (see

@@ -30,3 +30,5 @@ Status: implemented
 - **Costs and limits**: 模式内滚轮失效，只剩键盘滚动；原生选中色归终端主题所有，应用侧只降暗自有键盘高亮；模式需手动进出，徽标是唯一的防忘提醒；粘贴仍走终端原生。当渲染方案暴露点击坐标、框选成为高频动作或用户要求自动进出时重访本决策。
 
 本决策被部分取代，见 [2026-09-11-composer-native-select-default](./2026-09-11-composer-native-select-default.md)（上报改默认关闭，暂停语义与 Ctrl+B 开关退役，降暗选中色继续有效，两边互链）。
+
+应用内拖拽后由 [2026-09-11-composer-drag-select-constrained](./2026-09-11-composer-drag-select-constrained.md) 以收敛形态落地（上报开启下 CPR 懒定位加内容约束），本 Note 当时以跨终端脆弱为由的否决被该实现取代。

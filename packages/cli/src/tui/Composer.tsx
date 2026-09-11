@@ -25,14 +25,19 @@
  * (native terminal paste keeps arriving as text, as before). With no
  * selection Ctrl+C falls through to `onInterrupt` (clear/abort/exit), so
  * `App` skips its own Ctrl+C while this composer is active.
+ *
+ * Mouse drag selection (capture on): `App` forwards raw terminal cells to
+ * `mouseControl`; cells resolve to buffer content only, so frame chrome can
+ * never enter the clipboard. Release auto-copies and keeps the highlight.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Box, Text, useInput, useStdout, type DOMElement } from 'ink'
+import { Box, Text, measureElement, useInput, useStdout, type DOMElement } from 'ink'
 import {
   applyCompletion,
+  bufferOffsetAtCell,
   cursorLineOf,
   deleteBackward,
   deleteForward,
@@ -47,7 +52,6 @@ import {
   replaceSelection,
   resolveComposerWindow,
   rowSelectionSpan,
-  type RowSelectionSpan,
   selectedText,
   selectionRange,
   sliceAroundCursor,
@@ -55,10 +59,13 @@ import {
   splitSelectedText,
   truncateToWidth,
   visibleStart,
+  type ComposerFrameRect,
+  type RowSelectionSpan,
+  type TerminalOffset,
 } from './composer-state.js'
 import { createComposerClipboard } from './clipboard.js'
 import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
-import { containsMouseSequence } from './scroll.js'
+import { containsMouseSequence, parseCprReplies } from './scroll.js'
 import { useSyncedCaret, type CaretDebugSnapshot } from './native-cursor.js'
 import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 
@@ -87,10 +94,35 @@ interface ComposerProps {
   onInterrupt: () => void
   /** Any copy/cut/paste/select-all gesture (lets `App` drop its exit window). */
   onSelectionAction?: () => void
+  /**
+   * Published frame geometry for mouse hit-testing (written every commit,
+   * cleared on unmount). Owned by `App`, which also reads the caret cell
+   * for CPR snapshots.
+   */
+  frameRectRef?: RefObject<ComposerFrameRect | null>
+  /** Terminal→Ink translation established by `App` via CPR (null = unknown). */
+  terminalOffsetRef?: RefObject<TerminalOffset | null>
+  /** Imperative drag handle for `App`-routed mouse events (see below). */
+  mouseControlRef?: RefObject<ComposerMouseControl | null>
+}
+
+/**
+ * Imperative mouse handle: `App` owns capture, tokenizing and the CPR
+ * origin, and forwards raw 1-based terminal cells. Coordinates resolve to
+ * buffer content only — borders, prompts and padding clamp to the nearest
+ * content edge, so a drag physically cannot carry frame chrome.
+ */
+export interface ComposerMouseControl {
+  /** Begin a drag (returns false outside content rows). */
+  press: (x: number, y: number) => boolean
+  /** Extend the drag (returns false when not dragging). */
+  move: (x: number, y: number) => boolean
+  /** Finish the drag and auto-copy a non-empty selection (kept visible). */
+  release: (x: number, y: number) => boolean
 }
 
 // Note: keyboard selection + clipboard copy/cut/paste live in this composer — see .agents/notes/implemented/feature/2026-09-11-composer-select-copy-paste.md
-export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall, onInterrupt, onSelectionAction }: ComposerProps): React.JSX.Element {
+export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall, onInterrupt, onSelectionAction, frameRectRef, terminalOffsetRef, mouseControlRef }: ComposerProps): React.JSX.Element {
   const [cursor, setCursor] = useState(0)
   const [anchor, setAnchor] = useState<number | null>(null)
   const [highlight, setHighlight] = useState(0)
@@ -134,11 +166,11 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
   const clipboard = useMemo(() => createComposerClipboard(stdout), [stdout])
 
   /** Copy the selection out (system clipboard + in-app buffer), then drop it. */
-  const copySelection = (): boolean => {
+  const copySelection = (clear = true): boolean => {
     if (!selection) return false
     const text = selectedText(value, anchor, safeCursor)
     if (text) clipboard.copy(text)
-    setAnchor(null)
+    if (clear) setAnchor(null)
     onSelectionAction?.()
     return true
   }
@@ -156,10 +188,12 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
   }
 
   useInput((input, key) => {
-    // SGR mouse reporting (enabled by `App` for wheel scrolling) arrives as
-    // escape text that Ink 7 cannot parse — swallow it so wheel/click bytes
-    // never land in the buffer. `App` consumes the wheel part for scrolling.
-    if (containsMouseSequence(input)) return
+    // SGR mouse reporting (capture on: wheel + drag) arrives as escape text
+    // that Ink 7 cannot parse — swallow it so mouse bytes never land in the
+    // buffer. `App` routes drags back here through `mouseControl`.
+    // CPR position replies (our own `\x1b[6n` queries for mouse mapping) are
+    // swallowed the same way; `App` extracts them first.
+    if (containsMouseSequence(input) || parseCprReplies(input).length > 0) return
     // Forensic dump (see `writeCaretDebug` below): never blocks input.
     // BEL (`\x07`) is Ctrl+G on the wire; accept both parser mappings.
     if ((key.ctrl && input === 'g') || input === '\x07') {
@@ -468,27 +502,150 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
     </Text>
   )
 
-  const renderTextRow = (line: string, lineIndex: number): React.JSX.Element => {
+  // Windowed row content shared by highlight paint and mouse mapping, so
+  // both always agree on what is visible: head/tail slices and truncate
+  // markers. Null only for rows past the buffer (frame filler).
+  const rowWindow = (
+    target: number,
+  ): { displayed: string; sliceStart: number; leading: boolean; trailing: boolean; cursor: number } | null => {
+    const expanded = rows[target - start]
+    if (expanded === undefined) return null
+    if (target === position.line) {
+      const sliced = sliceAroundCursorEx(expanded, textW, caretExpandedCol)
+      return { displayed: sliced.text, sliceStart: sliced.start, leading: sliced.leadingEllipsis, trailing: sliced.trailingEllipsis, cursor: sliced.cursor }
+    }
+    return { displayed: truncateToWidth(expanded, textW), sliceStart: 0, leading: false, trailing: displayWidth(expanded) > textW, cursor: 0 }
+  }
+
+  // Raw 1-based terminal cell → buffer offset, or null outside content rows.
+  // Borders resolve to null (ignored); prompt-side and padding-side cells
+  // clamp to the line edges — a drag physically cannot carry frame chrome.
+  const offsetAtTerminalCell = (termX: number, termY: number): number | null => {
+    const off = terminalOffsetRef?.current
+    const rect = frameRectRef?.current
+    if (!off || !rect) return null
+    const ix = termX - 1 + off.dx
+    const iy = termY - 1 + off.dy
+    const rowIdx = iy - rect.y - 1
+    if (rowIdx < 0) return null
+    const lineIndex = start + rowIdx
+    const rawLine = rawLines[lineIndex]
+    const win = rowWindow(lineIndex)
+    if (rawLine === undefined || !win) return null
+    return bufferOffsetAtCell({
+      expandedOffsets: expandTabsWithMap(rawLine).offsets,
+      lineStartOffset: offsetOfLine(value, lineIndex, 0),
+      lineLength: rawLine.length,
+      displayed: win.displayed,
+      sliceStart: win.sliceStart,
+      contentLength: [...win.displayed].length - (win.leading ? 1 : 0) - (win.trailing ? 1 : 0),
+      leadingEllipsis: win.leading,
+      cell: ix - rect.x - 4, // '│ ' frame + 2-cell prompt
+    })
+  }
+
+  // Publish frame geometry for hit-testing and CPR snapshots (App reads).
+  useEffect(() => {
+    if (!frameRectRef) return undefined
+    const node = frameRef.current
+    if (!node) {
+      frameRectRef.current = null
+      return undefined
+    }
+    try {
+      const measured = measureElement(node)
+      frameRectRef.current = {
+        x: measured.x,
+        y: measured.y,
+        w: totalW,
+        h: rows.length + 2,
+        caretX: measured.x + caretDx,
+        caretY: measured.y + caretDy,
+      }
+    } catch {
+      // Best effort: a missed frame keeps the previous rect.
+    }
+    return () => {
+      if (frameRectRef) frameRectRef.current = null
+    }
+  })
+
+  // Imperative drag handle (see `ComposerMouseControl`): App forwards raw
+  // terminal cells while capture is on. The drag anchor lives in a ref so
+  // press+release inside one input chunk still resolve the exact range.
+  const dragAnchorRef = useRef<number | null>(null)
+  const dragEndRef = useRef<number | null>(null)
+  const draggingRef = useRef(false)
+  useEffect(() => {
+    if (!mouseControlRef) return undefined
+    mouseControlRef.current = {
+      press: (x: number, y: number): boolean => {
+        const offset = offsetAtTerminalCell(x, y)
+        if (offset === null) {
+          draggingRef.current = false
+          dragAnchorRef.current = null
+          dragEndRef.current = null
+          return false
+        }
+        dragAnchorRef.current = offset
+        dragEndRef.current = offset
+        setAnchor(offset)
+        setCursor(offset)
+        draggingRef.current = true
+        return true
+      },
+      move: (x: number, y: number): boolean => {
+        if (!draggingRef.current) return false
+        const offset = offsetAtTerminalCell(x, y)
+        if (offset === null) return false
+        dragEndRef.current = offset
+        setCursor(offset)
+        return true
+      },
+      release: (x: number, y: number): boolean => {
+        if (!draggingRef.current) return false
+        draggingRef.current = false
+        const offset = offsetAtTerminalCell(x, y)
+        const end = offset ?? dragEndRef.current ?? cursor
+        const anchorNow = dragAnchorRef.current
+        dragAnchorRef.current = null
+        dragEndRef.current = null
+        setCursor(end)
+        // Anchor and end come from refs (not state): press+release inside one
+        // chunk must still resolve the exact range despite batching.
+        const range = selectionRange(value, anchorNow, end)
+        if (range) {
+          const text = value.slice(range.start, range.end)
+          if (text) clipboard.copy(text)
+          onSelectionAction?.()
+        }
+        return true
+      },
+    }
+    return () => {
+      if (mouseControlRef) mouseControlRef.current = null
+    }
+  })
+
+  const renderTextRow = (lineIndex: number): React.JSX.Element => {
     const prompt = lineIndex === start ? '› ' : '  '
     // Selected char span inside a painted row: window markers (`…`) and
     // padding never highlight, only buffer-backed content does.
-    const spanForRow = (
-      displayed: string,
-      sliceStart: number,
-      leading: boolean,
-      trailing: boolean,
+    const spanForWindow = (
+      target: number,
+      win: { displayed: string; sliceStart: number; leading: boolean; trailing: boolean },
     ): RowSelectionSpan | null => {
       if (!selection) return null
-      const rawLine = rawLines[lineIndex]
+      const rawLine = rawLines[target]
       if (rawLine === undefined) return null
-      const contentLength = [...displayed].length - (leading ? 1 : 0) - (trailing ? 1 : 0)
+      const contentLength = [...win.displayed].length - (win.leading ? 1 : 0) - (win.trailing ? 1 : 0)
       return rowSelectionSpan({
         expandedOffsets: expandTabsWithMap(rawLine).offsets,
-        lineStartOffset: offsetOfLine(value, lineIndex, 0),
+        lineStartOffset: offsetOfLine(value, target, 0),
         selection,
-        sliceStart,
+        sliceStart: win.sliceStart,
         contentLength,
-        leadingEllipsis: leading,
+        leadingEllipsis: win.leading,
       })
     }
     const paintedRow = (displayed: string, span: RowSelectionSpan | null): React.JSX.Element => {
@@ -533,20 +690,21 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
       )
     }
     if (lineIndex !== position.line) {
-      const truncated = truncateToWidth(line, textW)
-      const trailing = displayWidth(line) > textW
-      return paintedRow(truncated, spanForRow(truncated, 0, false, trailing))
+      const win = rowWindow(lineIndex)
+      if (!win) return paintedRow('', null)
+      return paintedRow(win.displayed, spanForWindow(lineIndex, win))
     }
     // Only a disabled, idle composer paints a dim placeholder caret.
-    const sliced = sliceAroundCursorEx(line, textW, caretExpandedCol)
+    const win = rowWindow(lineIndex)
+    if (!win) return paintedRow('', null)
     if (active || busy) {
-      return paintedRow(sliced.text, spanForRow(sliced.text, sliced.start, sliced.leadingEllipsis, sliced.trailingEllipsis))
+      return paintedRow(win.displayed, spanForWindow(lineIndex, win))
     }
-    const chars = [...sliced.text]
-    const before = chars.slice(0, sliced.cursor).join('')
-    const at = chars[sliced.cursor] ?? ' '
-    const after = chars.slice(sliced.cursor + 1).join('')
-    const rest = Math.max(0, textW - displayWidth(sliced.text))
+    const chars = [...win.displayed]
+    const before = chars.slice(0, win.cursor).join('')
+    const at = chars[win.cursor] ?? ' '
+    const after = chars.slice(win.cursor + 1).join('')
+    const rest = Math.max(0, textW - displayWidth(win.displayed))
     return (
       <Text>
         <Text color={promptColor}>{prompt}</Text>
@@ -583,7 +741,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
         : null}
       <Box flexDirection="column" ref={frameRef}>
         {frameRow('╭', '─'.repeat(totalW - 2), '╮', 'top')}
-        {rows.map((line, index) => contentRow(renderTextRow(line, start + index), `line-${start + index}`))}
+        {rows.map((_, index) => contentRow(renderTextRow(start + index), `line-${start + index}`))}
         {frameRow('╰', '─'.repeat(totalW - 2), '╯', 'bottom')}
       </Box>
     </Box>

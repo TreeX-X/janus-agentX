@@ -6,10 +6,15 @@ import {
   blockLineHeight,
   clampScrollOffset,
   containsMouseSequence,
+  CPR_QUERY,
   estimateViewportRows,
   isMouseCaptureDisabled,
   LINE_SCROLL_LINES,
+  MOUSE_DISABLE,
+  MOUSE_ENABLE,
   pageStep,
+  parseCprReplies,
+  parseSgrMouseEvents,
   parseWheelDelta,
   shouldCaptureMouse,
   sliceVisualLines,
@@ -117,6 +122,54 @@ describe('viewport math', () => {
     // The legacy opt-out wins on conflict.
     expect(shouldCaptureMouse({ JANUS_MOUSE: '1', JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(false)
     expect(shouldCaptureMouse({ JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('tracks button-motion drags for constrained selection', () => {
+    expect(MOUSE_ENABLE).toContain('?1002h')
+    expect(MOUSE_DISABLE).toContain('?1002l')
+    expect(parseSgrMouseEvents('[<0;10;20M')).toEqual([
+      { kind: 'press', button: 0, x: 10, y: 20, shift: false, meta: false, ctrl: false },
+    ])
+    // Leading ESC (pre-strip chunk) parses identically.
+    expect(parseSgrMouseEvents('\x1b[<0;10;20M')).toEqual(parseSgrMouseEvents('[<0;10;20M'))
+    expect(parseSgrMouseEvents('[<32;15;20M')).toEqual([
+      { kind: 'drag', button: 0, x: 15, y: 20, shift: false, meta: false, ctrl: false },
+    ])
+    expect(parseSgrMouseEvents('[<34;15;20M')).toEqual([
+      { kind: 'drag', button: 2, x: 15, y: 20, shift: false, meta: false, ctrl: false },
+    ])
+    // Release reports button 3 regardless of the released button.
+    expect(parseSgrMouseEvents('[<3;15;20m')).toEqual([
+      { kind: 'release', button: 3, x: 15, y: 20, shift: false, meta: false, ctrl: false },
+    ])
+    expect(parseSgrMouseEvents('[<64;10;20M')).toEqual([
+      { kind: 'wheel', button: 0, direction: 'up', x: 10, y: 20, shift: false, meta: false, ctrl: false },
+    ])
+    expect(parseSgrMouseEvents('[<65;10;20M')[0]?.direction).toBe('down')
+    // Shift modifier survives (button 0 + shift bit).
+    expect(parseSgrMouseEvents('[<4;10;20M')).toEqual([
+      { kind: 'press', button: 0, x: 10, y: 20, shift: true, meta: false, ctrl: false },
+    ])
+    // Coalesced drags arrive batched and stay ordered.
+    expect(parseSgrMouseEvents('[<0;10;20M[<32;15;20M[<3;15;20m').map((event) => event.kind)).toEqual([
+      'press',
+      'drag',
+      'release',
+    ])
+    expect(parseSgrMouseEvents('hello')).toEqual([])
+    expect(parseSgrMouseEvents('')).toEqual([])
+  })
+
+  it('parses CPR position replies for the mouse origin', () => {
+    expect(CPR_QUERY).toBe('\x1b[6n')
+    expect(parseCprReplies('[24;5R')).toEqual([{ row: 24, col: 5 }])
+    expect(parseCprReplies('\x1b[24;5R')).toEqual([{ row: 24, col: 5 }])
+    expect(parseCprReplies('[24;5R[25;6R')).toEqual([
+      { row: 24, col: 5 },
+      { row: 25, col: 6 },
+    ])
+    expect(parseCprReplies('hello')).toEqual([])
+    expect(parseCprReplies('[0;0R')).toEqual([])
   })
 })
 
