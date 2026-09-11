@@ -116,9 +116,10 @@ describe('viewport math', () => {
     expect(LINE_SCROLL_LINES).toBeGreaterThan(0)
   })
 
-  it('leaves capture off by default and takes it only on JANUS_MOUSE=1', () => {
-    expect(shouldCaptureMouse({} as NodeJS.ProcessEnv)).toBe(false)
+  it('captures by default and honors explicit native-selection opt-outs', () => {
+    expect(shouldCaptureMouse({} as NodeJS.ProcessEnv)).toBe(true)
     expect(shouldCaptureMouse({ JANUS_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(shouldCaptureMouse({ JANUS_MOUSE: '0' } as NodeJS.ProcessEnv)).toBe(false)
     // The legacy opt-out wins on conflict.
     expect(shouldCaptureMouse({ JANUS_MOUSE: '1', JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(false)
     expect(shouldCaptureMouse({ JANUS_NO_MOUSE: '1' } as NodeJS.ProcessEnv)).toBe(false)

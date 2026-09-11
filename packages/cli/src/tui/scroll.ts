@@ -39,9 +39,8 @@ const SGR_LEAD_FRAGMENT_RE = /\[<\d{1,3}(;\d{0,4}){0,2}$/
  * wheel) plus button-motion drag tracking, with SGR extended encoding.
  * `1002` (not `1003` any-motion: hover motion would only add noise) routes
  * drags into the app so selection is content-constrained by construction —
- * under capture there is no native selection to grab frame chrome. Capture
- * stays opt-in (`shouldCaptureMouse`): by default the terminal owns the
- * mouse and plain drag selects natively.
+ * under capture there is no native selection to grab frame chrome.
+ * Capture defaults on; `shouldCaptureMouse` honors explicit opt-outs.
  */
 export const MOUSE_ENABLE = '\x1b[?1000h\x1b[?1002h\x1b[?1006h'
 export const MOUSE_DISABLE = '\x1b[?1000l\x1b[?1002l\x1b[?1006l'
@@ -51,14 +50,14 @@ export function isMouseCaptureDisabled(env: NodeJS.ProcessEnv = process.env): bo
 }
 
 /**
- * Mouse capture is opt-in: by default the terminal owns the mouse, so plain
- * drag box-selects natively and copy/paste stay terminal-native. `JANUS_MOUSE=1`
- * takes capture for wheel scrolling (tmux needs `mouse on`); `JANUS_NO_MOUSE=1`
- * keeps forcing it off and wins on conflict.
+ * Capture owns input drag selection and wheel scrolling by default.
+ * `JANUS_MOUSE=0` or `JANUS_NO_MOUSE=1` returns selection to the terminal;
+ * the latter wins even when `JANUS_MOUSE=1` is also set.
  */
+// Note: native terminal selection cannot enforce input bounds - see .agents/notes/implemented/feature/2026-09-11-composer-native-select-default.md
 export function shouldCaptureMouse(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env['JANUS_NO_MOUSE'] === '1') return false
-  return env['JANUS_MOUSE'] === '1'
+  return env['JANUS_MOUSE'] !== '0'
 }
 
 interface TTYGatedStream {

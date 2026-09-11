@@ -432,8 +432,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     }
   }, [])
 
-  // Mouse capture is opt-in (`JANUS_MOUSE=1`): by default the terminal owns
-  // the mouse, so plain drag box-selects natively and wheel falls back to
+  // Capture enables constrained input selection and wheel scrolling by
+  // default. Explicit opt-outs return the mouse to the terminal and use
   // PgUp/PgDn/Ctrl+arrows. Captured wheel ticks arrive as SGR sequences
   // that `parseWheelDelta` turns into scroll steps in `useInput` below.
   useEffect(() => {
@@ -693,7 +693,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       && now.rectX === pending.rectX && now.rectY === pending.rectY
       && now.cols === pending.cols && now.rows === pending.rows
     if (settled) {
-      terminalOffsetRef.current = { dx: (reply.col - 1) - pending.caretX, dy: (reply.row - 1) - pending.caretY }
+      terminalOffsetRef.current = { dx: pending.caretX - (reply.col - 1), dy: pending.caretY - (reply.row - 1) }
       offsetTermRef.current = { cols: pending.cols, rows: pending.rows }
       flushCprPending()
       return
@@ -785,7 +785,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       exitRef.current(0)
       return
     }
-    // Captured mouse routing (JANUS_MOUSE=1): CPR replies anchor the
+    // Captured mouse routing: CPR replies anchor the
     // terminal→Ink translation; press/drag/release drive the composer's
     // constrained drag selection (frame chrome can never resolve). Wheel-only
     // chunks keep flowing to the scroll path below; anything else

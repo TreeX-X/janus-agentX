@@ -9,7 +9,7 @@ import { PassThrough, Writable } from 'node:stream'
 import React from 'react'
 import { render as renderInteractive } from 'ink'
 import { render } from 'ink-testing-library'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../src/tui/App.js'
 import { CliSession, isSessionValidationError } from '../src/session.js'
 import { memoryConversationStore } from '../src/conversations.js'
@@ -43,7 +43,13 @@ async function openLongSession(stream?: AsyncGenerator<string>): Promise<CliSess
 }
 
 describe('App scrollback', () => {
-  it('leaves mouse capture off by default so plain drag selects natively', async () => {
+  beforeEach(() => {
+    vi.stubEnv('JANUS_MOUSE', undefined)
+    vi.stubEnv('JANUS_NO_MOUSE', undefined)
+  })
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('captures mouse input by default and restores it on exit', async () => {
     const session = await openLongSession()
     const writes: string[] = []
     const stdout = Object.assign(new Writable({
@@ -62,10 +68,9 @@ describe('App scrollback', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
       stdin.write('\r')
       await waitForFrame(() => writes.join('').includes('scroll-line-29'))
-      // No capture bytes on a default mount: the terminal owns the mouse.
-      expect(writes.join('')).not.toContain(MOUSE_ENABLE)
+      expect(writes.join('')).toContain(MOUSE_ENABLE)
       expect(writes.join('')).not.toContain(MOUSE_DISABLE)
-      // Injected wheel bytes still parse (the JANUS_MOUSE=1 path reuses it).
+      // Fragmented wheel reports still scroll without entering the input.
       writes.length = 0
       stdin.write('\x1b[<64;')
       stdin.write('1;1M')
@@ -77,12 +82,11 @@ describe('App scrollback', () => {
       app.cleanup()
       await session.close()
     }
-    expect(writes.join('')).not.toContain(MOUSE_DISABLE)
+    expect(writes.join('')).toContain(MOUSE_DISABLE)
   })
 
   it('takes and restores mouse capture on JANUS_MOUSE=1', async () => {
-    const previous = process.env['JANUS_MOUSE']
-    process.env['JANUS_MOUSE'] = '1'
+    vi.stubEnv('JANUS_MOUSE', '1')
     const session = await openLongSession()
     const writes: string[] = []
     const stdout = Object.assign(new Writable({
@@ -103,8 +107,6 @@ describe('App scrollback', () => {
       await app.waitUntilExit()
       app.cleanup()
       await session.close()
-      if (previous === undefined) delete process.env['JANUS_MOUSE']
-      else process.env['JANUS_MOUSE'] = previous
     }
     expect(writes.join('')).toContain(MOUSE_DISABLE)
   })

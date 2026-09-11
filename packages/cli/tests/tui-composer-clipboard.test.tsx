@@ -263,7 +263,7 @@ describe('Composer selection + clipboard', () => {
     }
   })
 
-  it('clamps frame-side presses to content edges and ignores borders', async () => {
+  it('ignores presses outside the inner frame and clamps the prompt to the line start', async () => {
     const composer = mountComposer()
     try {
       await typeHello(composer)
@@ -274,11 +274,47 @@ describe('Composer selection + clipboard', () => {
       const control = composer.mouseControlRef.current!
       // Top border is not content.
       expect(control.press(rect.x + 4 + 1, rect.y + 1)).toBe(false)
+      expect(control.press(rect.x + 1, row)).toBe(false)
+      expect(control.press(rect.x + rect.w, row)).toBe(false)
+      expect(control.press(rect.x, row)).toBe(false)
+      expect(control.press(rect.x + rect.w + 2, row)).toBe(false)
+      expect(control.press(rect.x + 5, rect.y + rect.h)).toBe(false)
+      expect(control.move(rect.x + 5, row)).toBe(false)
+      expect(control.release(rect.x + 8, row)).toBe(false)
+      expect(composer.selections()).toBe(0)
       // Prompt side clamps to the line start: typing then prepends.
-      const result = await drag(composer, [rect.x + 1, row], [rect.x + 1, row], [rect.x + 1, row])
+      const result = await drag(composer, [rect.x + 3, row], [rect.x + 3, row], [rect.x + 3, row])
       expect(result.press).toBe(true)
       await press(composer, 'X')
       await waitForFrame(() => composer.latest() === 'Xhello')
+    } finally {
+      composer.unmount()
+    }
+  })
+
+  it.each(['up', 'down', 'left', 'right'])('clamps a drag leaving the %s edge and copies only the selected text', async (edge) => {
+    const composer = mountComposer()
+    const value = 'ab中\n\tcd'
+    try {
+      composer.stdin.write(value)
+      await waitForFrame(() => composer.latest() === value && composer.frameRectRef.current !== null)
+      composer.terminalOffsetRef.current = { dx: 0, dy: 0 }
+      const rect = composer.frameRectRef.current!
+      const col = rect.x + 5
+      const row = rect.y + 2
+      const first: [number, number] = edge === 'up' ? [col + 4, row + 1]
+        : edge === 'left' ? [col + 4, row] : [col, row]
+      const outside: [number, number] = edge === 'up' ? [col + 1, rect.y]
+        : edge === 'down' ? [col + 1, rect.y + rect.h + 2]
+        : edge === 'left' ? [rect.x, row] : [rect.x + rect.w + 3, row]
+      const result = await drag(composer, first, outside, outside)
+      expect(result).toEqual({ press: true, move: true, release: true })
+      expect(composer.selections()).toBe(1)
+      await press(composer, CTRL_A)
+      await press(composer, 'X')
+      await waitForFrame(() => composer.latest() === 'X')
+      await press(composer, CTRL_V)
+      expect(composer.latest()).toBe(`X${edge === 'left' || edge === 'right' ? 'ab中' : value}`)
     } finally {
       composer.unmount()
     }

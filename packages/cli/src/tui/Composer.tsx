@@ -113,7 +113,7 @@ interface ComposerProps {
  * content edge, so a drag physically cannot carry frame chrome.
  */
 export interface ComposerMouseControl {
-  /** Begin a drag (returns false outside content rows). */
+  /** Begin a drag (returns false on borders or outside the inner frame). */
   press: (x: number, y: number) => boolean
   /** Extend the drag (returns false when not dragging). */
   move: (x: number, y: number) => boolean
@@ -517,17 +517,18 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
     return { displayed: truncateToWidth(expanded, textW), sliceStart: 0, leading: false, trailing: displayWidth(expanded) > textW, cursor: 0 }
   }
 
-  // Raw 1-based terminal cell → buffer offset, or null outside content rows.
-  // Borders resolve to null (ignored); prompt-side and padding-side cells
-  // clamp to the line edges — a drag physically cannot carry frame chrome.
-  const offsetAtTerminalCell = (termX: number, termY: number): number | null => {
+  // Note: start inside the frame, clamp drag endpoints to content - see .agents/notes/implemented/feature/2026-09-11-composer-drag-select-constrained.md
+  const offsetAtTerminalCell = (termX: number, termY: number, extend = false): number | null => {
     const off = terminalOffsetRef?.current
     const rect = frameRectRef?.current
-    if (!off || !rect) return null
+    if (!active || !off || !rect) return null
     const ix = termX - 1 + off.dx
     const iy = termY - 1 + off.dy
+    if (!extend && (ix <= rect.x || ix >= rect.x + rect.w - 1 || iy <= rect.y || iy >= rect.y + rect.h - 1)) return null
     const rowIdx = iy - rect.y - 1
-    if (rowIdx < 0) return null
+    const lastLine = Math.min(rawLines.length, start + rows.length) - 1
+    if (rowIdx < 0) return offsetOfLine(value, start, 0)
+    if (start + rowIdx > lastLine) return offsetOfLine(value, lastLine, rawLines[lastLine]!.length)
     const lineIndex = start + rowIdx
     const rawLine = rawLines[lineIndex]
     const win = rowWindow(lineIndex)
@@ -596,7 +597,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
       },
       move: (x: number, y: number): boolean => {
         if (!draggingRef.current) return false
-        const offset = offsetAtTerminalCell(x, y)
+        const offset = offsetAtTerminalCell(x, y, true)
         if (offset === null) return false
         dragEndRef.current = offset
         setCursor(offset)
@@ -605,7 +606,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
       release: (x: number, y: number): boolean => {
         if (!draggingRef.current) return false
         draggingRef.current = false
-        const offset = offsetAtTerminalCell(x, y)
+        const offset = offsetAtTerminalCell(x, y, true)
         const end = offset ?? dragEndRef.current ?? cursor
         const anchorNow = dragAnchorRef.current
         dragAnchorRef.current = null
