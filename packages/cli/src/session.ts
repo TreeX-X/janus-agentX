@@ -24,6 +24,7 @@ import { TOOL_TRACE_MAX_ENTRIES } from '@janus-agent/chat-core'
 import type { ChatTodoItem } from '@janus-agent/chat-core'
 import { runChatTurn, type AskUserPortAnswer, type AskUserPortRequest, type ChatTurnPorts, type ChatTurnResult } from '@janus-agent/janus-agent'
 import { createChatModel } from './model.js'
+import { FALLBACK_MODEL_LIMITS, resolveModelLimits } from './model-limits.js'
 import { saveAuthFile } from './auth.js'
 import { JobManager, registerNodeHostTools } from '@janus-agent/node-hosts'
 import type { ApprovalModeOption } from './args.js'
@@ -448,6 +449,14 @@ export class CliSession {
     return this.baseUrlOverride ?? this.activeEntry().baseURL ?? DEFAULT_BASE_URL
   }
 
+  /** Single precedence chain (config override > built-in table > fallback) shared by create and rebuilds. */
+  private resolveLimits(entry: ProviderEntry, modelId: string | undefined) {
+    return resolveModelLimits({
+      modelId,
+      override: { contextWindow: entry.contextWindow, maxOutputTokens: entry.maxOutputTokens },
+    })
+  }
+
   private rebuildTransport(): void {
     const entry = this.activeEntry()
     const modelId = this.resolveModelId(entry)
@@ -467,8 +476,16 @@ export class CliSession {
     const model = createChatModel({ baseURL, apiKey, modelId })
     const previous = this.ports.model
     const effort = this.effortId
+    const limits = this.resolveLimits(entry, modelId)
     this.ports.model = {
-      resolve: async () => ({ model, modelId, supportsFunctionCalling: true, effort }),
+      resolve: async () => ({
+        model,
+        modelId,
+        supportsFunctionCalling: true,
+        effort,
+        contextWindow: limits.limits.contextWindow,
+        maxOutputTokens: limits.limits.maxOutputTokens,
+      }),
       getMaxTurns: () => previous.getMaxTurns(),
     }
   }
@@ -542,6 +559,20 @@ export class CliSession {
 
   getModelId(): string | undefined {
     return this.modelId
+  }
+
+  /**
+   * Effective context window for the active provider/model. Unknown ids
+   * return the conservative fallback with `estimated: true` so callers
+   * (e.g. /status) can say so instead of stating a guess as fact.
+   */
+  getContextWindow(): { value: number; estimated: boolean } {
+    try {
+      const resolved = this.resolveLimits(this.activeEntry(), this.modelId)
+      return { value: resolved.limits.contextWindow, estimated: resolved.estimated }
+    } catch {
+      return { value: FALLBACK_MODEL_LIMITS.contextWindow, estimated: true }
+    }
   }
 
   getEffort(): EffortLevel {

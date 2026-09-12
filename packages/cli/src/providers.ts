@@ -18,6 +18,10 @@ export interface ProviderEntry {
   modelId?: string
   models?: string[]
   defaultModelId?: string
+  /** Context-window override for every model on this provider (wins over the built-in table). */
+  contextWindow?: number
+  /** Max-output override for every model on this provider. */
+  maxOutputTokens?: number
   /** CodeX parity: per-provider default reasoning effort (e.g. "medium"). */
   effort?: string
   enabled?: boolean
@@ -56,6 +60,8 @@ function sanitizeEntry(value: unknown): ProviderEntry | null {
       ? name
       : undefined
   }
+  const optionalPositiveInt = (input: unknown): number | undefined =>
+    typeof input === 'number' && Number.isSafeInteger(input) && input > 0 ? input : undefined
   return {
     id: record.id.trim(),
     name: optionalString(record.name),
@@ -64,6 +70,8 @@ function sanitizeEntry(value: unknown): ProviderEntry | null {
     modelId: optionalString(record.modelId),
     models: strings(record.models),
     defaultModelId: optionalString(record.defaultModelId),
+    contextWindow: optionalPositiveInt(record.contextWindow),
+    maxOutputTokens: optionalPositiveInt(record.maxOutputTokens),
     effort: optionalEffort(record.effort),
     // NOTE: apiKey is deliberately never read from disk.
     enabled: record.enabled === false ? false : undefined,

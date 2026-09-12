@@ -35,6 +35,8 @@ export interface CommandSession {
   keySourceFor(providerId: string): string | null
   getEffectiveBaseUrl(): string
   getConfigPath(): string | null
+  /** Effective window for the active provider/model; estimated flags the fallback guess. */
+  getContextWindow(): { value: number; estimated: boolean }
   setApiKey(key: string): void
   getWorkspaceRoot(): string
   getApprovalMode(): ApprovalModeOption
@@ -184,9 +186,11 @@ export async function executeCommand(
     }
     case 'status': {
       const keySource = session.getApiKeySource()
+      const context = session.getContextWindow()
       return continued([
         `provider: ${session.getProviderId()} · model: ${session.getModelId() ?? '(no model)'} · effort: ${session.getEffort()}`,
         `baseURL: ${session.getEffectiveBaseUrl()}`,
+        `context: ${context.value} tokens${context.estimated ? ' (estimated — set contextWindow for this provider in config to override)' : ''}`,
         `api key: ${keySource ? `set (via ${keySource})` : 'missing (/connect, /key, --api-key, <apiKeyEnv>, or JANUS_API_KEY)'}`,
         `config: ${session.getConfigPath() ?? '(memory only, no file)'}`,
       ])

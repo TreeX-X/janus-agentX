@@ -146,6 +146,7 @@ describe('executeCommand', () => {
     expect(out).toContain('model: m')
     expect(out).toContain('effort: medium')
     expect(out).toContain('baseURL: https://api.openai.com/v1')
+    expect(out).toContain('context: 16384 tokens (estimated')
     expect(out).toContain('api key: set (via --api-key)')
     expect(out).toContain('config: (memory only, no file)')
     expect(out).not.toContain('sk-')

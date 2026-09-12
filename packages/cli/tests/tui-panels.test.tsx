@@ -208,24 +208,30 @@ describe('panels', () => {
         onExit={() => {}}
       />,
     )
-    const countMarks = (frame: string): number => frame.split('config:').length - 1
+    const frameHas = (text: string): boolean => (lastFrame() ?? '').includes(text)
     try {
-      // Two /status runs = 8 info blocks, one `config:` line per run.
+      // One /status run per provider: the two outputs overflow the viewport,
+      // so only the newest run stays visible. Markers differ per provider
+      // because identical /status text cannot tell old from new.
       await typeLine(stdin, '/status')
-      await waitForFrame(() => (lastFrame() ?? '').includes('config:'))
+      await waitForFrame(() => frameHas('config:'))
+      await typeLine(stdin, '/provider oa')
+      await waitForFrame(() => frameHas('provider switched: oa'))
       await typeLine(stdin, '/status')
-      await waitForFrame(() => countMarks(lastFrame() ?? '') >= 2)
-      const full = countMarks(lastFrame() ?? '')
-      // PgUp hides the newest rows (line granularity): the second run's
-      // `config:` drops out of the window and the tail-hidden badge appears.
+      await waitForFrame(() => frameHas('provider: oa'))
+      expect(frameHas('provider: ds')).toBe(false)
+      // PgUp pages back to the older run and raises the tail-hidden badge.
       await press(stdin, '[5~')
-      await waitForFrame(() => (lastFrame() ?? '').includes('↑'))
-      expect(countMarks(lastFrame() ?? '')).toBeLessThan(full)
+      await press(stdin, '[5~')
+      await press(stdin, '[5~')
+      await waitForFrame(() => frameHas('↑'))
+      expect(frameHas('provider: ds')).toBe(true)
       // PgDn past the bottom re-follows the tail.
       await press(stdin, '[6~')
       await press(stdin, '[6~')
-      await waitForFrame(() => !(lastFrame() ?? '').includes('↑'))
-      expect(countMarks(lastFrame() ?? '')).toBe(full)
+      await press(stdin, '[6~')
+      await waitForFrame(() => !frameHas('↑'))
+      expect(frameHas('provider: oa')).toBe(true)
     } finally {
       unmount()
       await session.close()
