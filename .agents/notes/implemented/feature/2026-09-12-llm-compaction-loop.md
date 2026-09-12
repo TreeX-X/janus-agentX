@@ -8,9 +8,9 @@ Status: implemented
 
 ## Decision
 
-`ChatSessionRuntime` 持有单份摘要与头指纹。`maybeCompact` 在自动模式只压预算丢弃的旧 unit，在 `force` 模式压除最新 N 个（默认 1，可配 1 到 50并钳制）之外的全部历史；head 永不切开 tool 调用与其结果，系统消息永不进 head，tool 结果逐条截断到 `2000` 字符，head 全文封顶 `24000` 字符。摘要提示词模板固定七节，缺 `Goal/Progress/Next Steps` 即纠正一次再判失败；成功存入 `8000` 字符封顶的单版摘要，旧版丢弃。指纹只对 head 内容寻址，同一 head 永不重复烧调用，新裁剪内容触发迭代更新并带上前版摘要。任何失败（抛错、空回、非法格式、预算内无 head）都返回 false 走确定性 digest 老路，压缩永不打断 turn。`buildContext` 把摘要以 user 口吻拼在 evidence 之后、digest 与原文之前，持久历史不删除。
+`ChatSessionRuntime` 持有单份摘要与头指纹。`maybeCompact` 在自动模式只压预算丢弃的旧 unit，在 `force` 模式压除最新 N 个（默认 1，可配 1 到 50并钳制）之外的全部历史；head 永不切开 tool 调用与其结果，系统消息永不进 head，tool 结果逐条截断到 `2000` 字符，head 全文封顶 `24000` 字符。摘要提示词模板固定七节，缺 `Goal/Progress/Next Steps` 即纠正一次再判失败；成功存入 `8000` 字符封顶的单版摘要，旧版丢弃。指纹对全文 head 寻址而 prompt 截断只为调用封顶，同尾异头必触发新摘要；同一 head 永不重复烧调用，新裁剪内容触发迭代更新并带上前版摘要。任何失败（抛错、空回、非法格式、预算内无 head）都返回 false 走确定性 digest 老路，压缩永不打断 turn。`buildContext` 把摘要以 user 口吻拼在 evidence 之后、digest 与原文之前，digest 拼装对 window 校验而非 budget，summary 预留只扣一次，否则紧预算下 digest 被无故丢弃，持久历史不删除。
 
-自动触发住在 `runChatTurn` 的 `transformContext`：每轮发送前试压一次，指纹去重保证重复调用零成本，调用方缺 summarizer 时行为与从前一致。手动 `/compact` 经 `compactActiveConversation` 立即执行同一 `maybeCompact(force)` 并落盘，不依赖 turn。摘要与指纹随会话持久化（`compactionSummary/compactionKey`），重启与切换会话时回填，短历史、已是最新、传输缺失、摘要非法各有明确回执。
+自动触发住在 `runChatTurn` 的 `transformContext`：每轮发送前试压一次，指纹去重保证重复调用零成本，调用方缺 summarizer 时行为与从前一致。手动 `/compact` 经 `compactActiveConversation` 立即执行同一 `maybeCompact(force)` 并落盘，不依赖 turn；持久历史只存 prose 而 tool 结果留在 `toolTraces`，手动 head 为 prose-only，in-loop 的 tool 粘连只属于自动路径。摘要与指纹随会话持久化（`compactionSummary/compactionKey`），重启与切换会话时回填，短历史、已是最新、传输缺失、摘要非法各有明确回执。
 
 ## Alternatives considered
 

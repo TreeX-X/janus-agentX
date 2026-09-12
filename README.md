@@ -28,7 +28,7 @@ Janus 对话式 Agent 引擎：对话 + 工作区工具调用循环（`runJanusA
 - **Key 安全**：密钥只进 `~/.janus/auth.json`（0600）或环境变量，永不写入 catalog、不回显、不打日志
 - **审批 gate**：`auto-run` 直接执行；`per-action` 对写操作逐个 `y/N` 确认；失败默认拒绝（fail-closed）
 - **推理力度**：`none|minimal|low|medium|high|xhigh|max|ultra`，与 CodeX 语义对齐
-- **多会话**：`/new /list /switch /rename /delete`，历史落盘 `~/.janus/history/`
+- **多会话**：`/new /switch /rename /delete`（`/switch` 空参即列出），历史落盘 `~/.janus/history/`
 - **Agent 工具箱**：工作区读写查改、命令执行（含后台任务）、`git.*`、中途反问（`ask_user`）、todo  tracking
 
 ## 环境要求
@@ -90,7 +90,7 @@ janus chat -C . -m <model-id> -- "用一句话介绍这个仓库"
 |---|---|
 | model | `--model` > `JANUS_API_KEY` 同级的 `JANUS_MODEL` > 配置文件 `defaultModel` > provider 自身默认 |
 | baseURL | `--base-url` > `JANUS_BASE_URL` > provider 条目 `baseURL`（默认 `https://api.openai.com/v1`）|
-| key | 会话内 `/key`（仅内存）> `--api-key` > `auth.json` > `<apiKeyEnv>` > `JANUS_API_KEY` |
+| key | 会话内存（仅内存，无斜杠命令）> `--api-key` > `auth.json` > `<apiKeyEnv>` > `JANUS_API_KEY` |
 | effort | `--effort` > `JANUS_EFFORT` > 配置文件 `defaultEffort` > provider `effort`（默认 `medium`）|
 
 环境变量速查：`JANUS_MODEL` / `JANUS_BASE_URL` / `JANUS_API_KEY` / `JANUS_EFFORT`
@@ -124,7 +124,7 @@ janus chat -C . -m <model-id> -- "用一句话介绍这个仓库"
 
 - `chat` 默认**不读任何文件**（flags/env only），除非显式 `--config <path>` 才加载 catalog；
   `tui` 默认读 `~/.janus/config.json`，`--no-config` 可关闭一切文件（纯内存）
-- 没有 model 或 key 也能进 TUI（只转圈提醒），但 turn 会失败，直到 `/model` / `/key`（或 `/connect`）配好；
+- 没有 model 或 key 也能进 TUI（只转圈提醒），但 turn 会失败，直到 `/model` / `/connect` 配好；
   `chat` 则直接拒绝（exit 2），因为 headless 没有补救路径
 - provider 声明了非空 `models` 即为“闭世界”：写错的 model id 在本地就被拒绝并给出
   `Did you mean ...?`，不会把 typo 送到计费端
@@ -159,12 +159,11 @@ TUI 内斜杠命令（`/` 开头 Tab 可补全，未知命令直接报错、绝�
 | `/connect [id] [key] [base-url]` | provider 配置向导（key 只进 auth.json） |
 | `/provider [id]` / `/provider rm <id>` | 列出 / 切换 / 删除 provider |
 | `/model [id]` | 列出 / 切换模型 |
-| `/key [api-key]` | 查看 key 状态 / 设 key（仅内存） |
 | `/effort [level\|序号]` | 推理力度（空参进 picker） |
 | `/approval [mode]` | 查看 / 切换 `auto-run\|per-action` |
-| `/new [标题]` `/list` `/switch <n\|id>` `/rename <标题>` `/delete [n\|id]` | 多会话管理 |
+| `/new [标题]` `/switch [n\|id]` `/rename <标题>` `/delete [n\|id]` | 多会话管理（`/switch` 空参即列出） |
 | `/workspace <dir>` | 切换工作区（历史清空） |
-| `/clear` | 清空当前会话历史 |
+| `/compact` | 压缩当前会话上下文为摘要 |
 | `/exit` | 退出（`Ctrl+D` 同效） |
 
 按键：`Enter` 发送 · `↑/↓` 输入历史 · `Ctrl+C` 清空输入/取消 turn（1 秒内两次则退出）·
@@ -214,7 +213,7 @@ Mid-turn 模型可能反问：TUI 用 `↑↓/Space/c/Enter/Esc` 作答，纯文
 | 现象 | 处理 |
 |---|---|
 | `missing model` | `--model <id>` / `JANUS_MODEL` / TUI 内 `/model <id>` |
-| `missing API key` | `--api-key` / `JANUS_API_KEY` / `/connect` / `/key <key>`（`/status` 看来源）|
+| `missing API key` | `--api-key` / `JANUS_API_KEY` / `/connect`（`/status` 看来源）|
 | `unknown model ... Available: ...` | 照提示改 id；闭世界 provider 会本地拦截 typo |
 | `no enabled providers` | `~/.janus/config.json` 为空且没传 `--model`；跑 `/connect` 加一个 |
 | `workspace is not a directory` | 检查 `-C/--workspace` 路径 |

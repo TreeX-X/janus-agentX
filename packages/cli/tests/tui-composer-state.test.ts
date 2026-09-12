@@ -45,8 +45,8 @@ describe('filterCompletions', () => {
     expect(filterCompletions('/x', 2)).toEqual([])
   })
 
-  it('covers the latest commands (key/effort/connect/status)', () => {
-    for (const name of ['key', 'effort', 'connect', 'status']) {
+  it('covers the latest commands (effort/connect/status)', () => {
+    for (const name of ['effort', 'connect', 'status']) {
       expect(filterCompletions(`/${name.slice(0, 2)}`, 3).map((item) => item.name)).toContain(name)
     }
   })
@@ -181,7 +181,7 @@ describe('completion coverage', () => {
     for (const name of KNOWN_COMMAND_NAMES) {
       expect(COMMAND_COMPLETIONS.some((item) => item.name === name)).toBe(true)
     }
-    for (const name of ['help', 'key', 'model', 'effort', 'provider', 'connect', 'status', 'workspace', 'clear', 'new', 'list', 'switch', 'rename', 'delete', 'approval', 'exit']) {
+    for (const name of ['help', 'model', 'effort', 'provider', 'connect', 'status', 'workspace', 'new', 'switch', 'rename', 'delete', 'approval', 'exit']) {
       expect(COMMAND_COMPLETIONS.some((item) => item.name === name)).toBe(true)
     }
   })

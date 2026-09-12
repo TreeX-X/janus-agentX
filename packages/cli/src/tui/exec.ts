@@ -13,7 +13,6 @@ import type { ConversationSummary } from '../conversations.js'
 
 /** Structural subset of CliSession used by commands (satisfied by CliSession). */
 export interface CommandSession {
-  clearHistory(): Promise<void>
   createConversation(title?: string): Promise<ConversationSummary>
   listConversations(): ConversationSummary[]
   switchConversation(ref: string): Promise<ConversationSummary | null>
@@ -29,7 +28,7 @@ export interface CommandSession {
   removeProvider(ref: string): { id: string; removedKey: boolean }
   getProviderId(): string
   hasApiKey(): boolean
-  /** Key origin: '/key' | '--api-key' | 'auth.json' | env var name | null. */
+  /** Key origin: 'session' | '--api-key' | 'auth.json' | env var name | null. */
   getApiKeySource(): string | null
   /** Key source for any provider id (auth file or env); never key material. */
   keySourceFor(providerId: string): string | null
@@ -42,7 +41,6 @@ export interface CommandSession {
    * call immediately (no turn needed) and persists the result.
    */
   compactActiveConversation(): Promise<string>
-  setApiKey(key: string): void
   getWorkspaceRoot(): string
   getApprovalMode(): ApprovalModeOption
   setApprovalMode(mode: ApprovalModeOption): void
@@ -81,22 +79,8 @@ export async function executeCommand(
   switch (command) {
     case 'help':
       return continued([commandHelpText()])
-    case 'key': {
-      if (args.length === 0) {
-        return continued([`api key: ${session.hasApiKey() ? 'set' : 'missing'} (/key > --api-key > <apiKeyEnv> > JANUS_API_KEY, memory only)`])
-      }
-      try {
-        session.setApiKey(args[0])
-      } catch (error) {
-        return continued([], [error instanceof Error ? error.message : String(error)])
-      }
-      return continued(['api key set for this run (memory only, never written to disk). Use /connect to persist per-provider keys.'])
-    }
     case 'exit':
       return { stdout: [], stderr: [], exit: true }
-    case 'clear':
-      await session.clearHistory()
-      return continued(['history cleared.'])
     case 'compact': {
       try {
         return continued([await session.compactActiveConversation()])
@@ -109,12 +93,11 @@ export async function executeCommand(
       const index = session.listConversations().findIndex((item) => item.id === summary.id)
       return continued([`new conversation: ${formatConversation(index, summary)}`])
     }
-    case 'list': {
-      const conversations = session.listConversations()
-      return continued([conversations.map((summary, index) => formatConversation(index, summary)).join('\n')])
-    }
     case 'switch': {
-      if (args.length === 0) return continued([], ['usage: /switch <number|id>'])
+      if (args.length === 0) {
+        const conversations = session.listConversations()
+        return continued([conversations.map((summary, index) => formatConversation(index, summary)).join('\n')])
+      }
       const summary = await session.switchConversation(args[0])
       if (!summary) return continued([], [`no conversation matches: ${args[0]}`])
       const index = session.listConversations().findIndex((item) => item.id === summary.id)
@@ -203,7 +186,7 @@ export async function executeCommand(
         `provider: ${session.getProviderId()} · model: ${session.getModelId() ?? '(no model)'} · effort: ${session.getEffort()}`,
         `baseURL: ${session.getEffectiveBaseUrl()}`,
         `context: ${context.value} tokens${context.estimated ? ' (estimated — set contextWindow for this provider in config to override)' : ''}`,
-        `api key: ${keySource ? `set (via ${keySource})` : 'missing (/connect, /key, --api-key, <apiKeyEnv>, or JANUS_API_KEY)'}`,
+        `api key: ${keySource ? `set (via ${keySource})` : 'missing (/connect, --api-key, <apiKeyEnv>, or JANUS_API_KEY)'}`,
         `config: ${session.getConfigPath() ?? '(memory only, no file)'}`,
       ])
     }

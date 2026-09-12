@@ -73,28 +73,28 @@ describe('runRepl', () => {
     expect(seen[1].some((content) => content.includes('first question'))).toBe(true)
   })
 
-  it('handles /model /clear, unknown and staged commands without exiting', async () => {
+  it('handles /model /switch, unknown and staged commands without exiting', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-repl-commands-'))
     const c = collect()
     const code = await runRepl(
       { workspace: dir, model: 'm', apiKey: 'k', plain: true },
       {
         ...c.io,
-        lines: arrayLineSource(['/model', '/model m2', '/clear', '/nope', '/switch x', '/provider', '/help', null]),
+        lines: arrayLineSource(['/model', '/model m2', '/switch', '/nope', '/switch x', '/provider', '/help', null]),
         streamTextFn: textStub('hi'),
       },
     )
     expect(code).toBe(0)
     expect(c.out.join('')).toContain('model: m')
     expect(c.out.join('')).toContain('model switched: m2')
-    expect(c.out.join('')).toContain('history cleared.')
+    expect(c.out.join('')).toContain('New conversation')
     expect(c.out.join('')).toContain('* openai-compatible')
     expect(c.out.join('')).toContain('Commands:')
     expect(c.err.join('')).toContain('unknown command: /nope')
     expect(c.err.join('')).toContain('no conversation matches: x')
   })
 
-  it('enters without an api key; turns fail gracefully until /key sets one', async () => {
+  it('enters without an api key; turns fail gracefully until /connect sets one', async () => {
     const c = collect()
     const code = await runRepl(
       { workspace: tmpdir() },
@@ -105,20 +105,20 @@ describe('runRepl', () => {
     expect(c.err.join('')).toContain('JANUS_API_KEY')
   })
 
-  it('recovers via /key and keeps chatting on the stub transport', async () => {
+  it('recovers via /connect and keeps chatting on the stub transport', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-repl-key-'))
     const c = collect()
     const code = await runRepl(
       { workspace: dir, model: 'm', plain: true },
       {
         ...c.io,
-        lines: arrayLineSource(['/key', '/key sk-test', 'hi', '/exit']),
+        testConnection: async () => ({ ok: true, models: [] }),
+        lines: arrayLineSource(['/connect openai-compatible sk-test', 'hi', '/exit']),
         streamTextFn: textStub('recovered'),
       },
     )
     expect(code).toBe(0)
-    expect(c.out.join('')).toContain('api key: missing')
-    expect(c.out.join('')).toContain('api key set for this run')
+    expect(c.out.join('')).toContain('connected: openai-compatible')
     expect(c.out.join('')).toContain('recovered')
   })
 

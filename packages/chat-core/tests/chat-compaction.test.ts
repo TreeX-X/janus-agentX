@@ -141,8 +141,29 @@ describe('ChatSessionRuntime.maybeCompact', () => {
     expect(runtime.getSummary()).toBeNull()
   })
 
-  it('round-trips persisted summary state without re-summarizing', async () => {
+  it('reserves summary budget so the compacted view never exceeds the window', async () => {
     const runtime = new ChatSessionRuntime()
+    const model = { contextWindow: 1200, maxOutputTokens: 100 }
+    const budget = 1200 - 100 - 512
+    const messages = [
+      user(`old ${'a'.repeat(2600)}`),
+      user(`mid ${'b'.repeat(2200)}`),
+      user('now'),
+    ] as JanusAgentMessage[]
+    let calls = 0
+    const summarize = async () => { calls += 1; return VALID_SUMMARY }
+    expect(await runtime.maybeCompact(messages, { model }, summarize, new AbortController().signal)).toBe(true)
+    // Reserving the first summary evicts `mid` too; the loop converges in a second pass.
+    expect(calls).toBe(2)
+    const context = runtime.buildContext(messages, { model })
+    const total = context.reduce((sum, message) => sum + Math.ceil(message.content.length / 4), 0)
+    expect(total).toBeLessThanOrEqual(budget)
+    expect(context.at(-1)?.content).toBe('now')
+    expect(context.some((message) => message.content.includes('## Goal'))).toBe(true)
+    expect(context.some((message) => message.content.includes('b'.repeat(50)))).toBe(false)
+  })
+
+  it('round-trips persisted summary state without re-summarizing', async () => {    const runtime = new ChatSessionRuntime()
     const messages = [user(`old ${'x'.repeat(800)}`), user('now')] as JanusAgentMessage[]
     let calls = 0
     const summarize = async () => { calls += 1; return VALID_SUMMARY }

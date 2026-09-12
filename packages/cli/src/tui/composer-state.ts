@@ -38,18 +38,15 @@ export interface CompletionItem {
 /** Mirrors the known `/` commands in `commands.ts` (kept in sync by test). Order follows `commandHelpText()`. */
 export const COMMAND_COMPLETIONS: readonly CompletionItem[] = [
   { name: 'help', hint: 'Show this help.' },
-  { name: 'key', hint: 'Show key status or set the API key.' },
   { name: 'model', hint: 'List models or switch the model.' },
   { name: 'effort', hint: 'Show or switch reasoning effort.' },
   { name: 'provider', hint: 'List providers or switch provider.' },
   { name: 'connect', hint: 'Provider setup wizard.' },
   { name: 'status', hint: 'Show provider/model/key/config.' },
   { name: 'workspace', hint: 'Switch workspace (history is cleared).' },
-  { name: 'clear', hint: 'Clear this conversation history.' },
   { name: 'compact', hint: 'Compact conversation context into a summary.' },
   { name: 'new', hint: 'Start a conversation (and switch to it).' },
-  { name: 'list', hint: 'List conversations (* = active).' },
-  { name: 'switch', hint: 'Switch conversation.' },
+  { name: 'switch', hint: 'List conversations or switch conversation.' },
   { name: 'rename', hint: 'Rename the active conversation.' },
   { name: 'delete', hint: 'Delete a conversation (default: active).' },
   { name: 'approval', hint: 'Show or switch auto-run|per-action.' },
@@ -209,7 +206,7 @@ export function visibleStart(lines: number, cursorLine: number, maxRows: number 
 /**
  * True when completion entries and known `/` commands match exactly in both
  * directions: no stale entries, no missing commands (e.g. newly added
- * `/effort`, `/key`, `/connect`, `/status` must appear here).
+ * `/effort`, `/connect`, `/status` must appear here).
  */
 export function completionsCoverKnownCommands(known: readonly string[] = KNOWN_COMMAND_NAMES): boolean {
   const completionNames = new Set(COMMAND_COMPLETIONS.map((item) => item.name))

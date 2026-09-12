@@ -491,7 +491,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     stderr('janus: no model — entering without model access. Set one with /model <id>, --model, or JANUS_MODEL.\n')
   }
   if (!created.hasApiKey()) {
-    stderr('janus: no API key — entering without model access. Set one with /connect, /key <key>, --api-key, or JANUS_API_KEY.\n')
+    stderr('janus: no API key — entering without model access. Set one with /connect, --api-key, or JANUS_API_KEY.\n')
   }
   // Every restart begins with a new empty conversation; previous ones are
   // dropped. An explicit --conversation id opts back into resume.

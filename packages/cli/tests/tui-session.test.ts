@@ -43,7 +43,7 @@ describe('CliSession.create', () => {
     expect(session.hasApiKey()).toBe(false)
     expect(session.getApiKey()).toBeUndefined()
     await expect(session.sendTurn('hi')).rejects.toThrow(/missing API key/)
-    expect(() => session.setApiKey('   ')).toThrow(/usage: \/key/)
+    expect(() => session.setApiKey('   ')).toThrow(/must not be empty/)
     session.setApiKey('k')
     expect(session.hasApiKey()).toBe(true)
     expect(session.getApiKey()).toBe('k')
@@ -64,7 +64,7 @@ describe('CliSession.create', () => {
 })
 
 describe('CliSession provider keys', () => {
-  it('resolves <apiKeyEnv> per provider; /key unlocks every provider', async () => {
+  it('resolves <apiKeyEnv> per provider; session key unlocks every provider', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-session-provkey-'))
     const catalog = {
       version: 1 as const,
@@ -90,9 +90,9 @@ describe('CliSession provider keys', () => {
     expect(session.getApiKeySource()).toBeNull()
     expect(session.getEffectiveBaseUrl()).toBe('http://oa/v1')
     session.setApiKey('k-run')
-    expect(session.getApiKeySource()).toBe('/key')
+    expect(session.getApiKeySource()).toBe('session')
     session.setProvider('ds')
-    expect(session.getApiKeySource()).toBe('/key')
+    expect(session.getApiKeySource()).toBe('session')
     await session.close()
   })
 

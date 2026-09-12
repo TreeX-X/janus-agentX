@@ -2,24 +2,21 @@
  * @file Pure slash-command parsing for the resident TUI loop.
  * @description `/`-prefixed lines are commands; everything else is chat
  * input. No side effects, unit tested. Multi-session commands
- * (/new /list /switch /rename /delete) and /provider land with §4.6 (M1/M2);
+ * (/new /switch /rename /delete) and /provider land with §4.6 (M1/M2);
  * unknown commands stay an error so typos never reach the model.
  */
 
 export type BuiltinCommandName =
   | 'help'
-  | 'key'
   | 'model'
   | 'effort'
   | 'provider'
   | 'connect'
   | 'status'
   | 'workspace'
-  | 'clear'
   | 'compact'
   | 'exit'
   | 'new'
-  | 'list'
   | 'switch'
   | 'rename'
   | 'delete'
@@ -38,18 +35,15 @@ export interface ParsedInput {
 
 const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'help',
-  'key',
   'model',
   'effort',
   'provider',
   'connect',
   'status',
   'workspace',
-  'clear',
   'compact',
   'exit',
   'new',
-  'list',
   'switch',
   'rename',
   'delete',
@@ -82,7 +76,6 @@ export function commandHelpText(): string {
   return [
     'Commands:',
     '  /help                 Show this help.',
-    '  /key [api-key]        Show key status or set the API key (memory only).',
     '  /model [id]           List models or switch the model.',
     '  /effort [level|num]   Pick reasoning effort (bare opens picker) or switch directly.',
     '  /provider [id]        List providers or switch provider.',
@@ -91,11 +84,9 @@ export function commandHelpText(): string {
     '                          Provider setup wizard (key lands in auth.json).',
     '  /status               Show the effective provider/model/baseURL/key/config.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
-    '  /clear                Clear this conversation history.',
     '  /compact              Compact conversation context into a summary.',
     '  /new [title]          Start a conversation (and switch to it).',
-    '  /list                 List conversations (* = active).',
-    '  /switch <n|id>        Switch conversation.',
+    '  /switch [n|id]        List conversations (bare) or switch conversation.',
     '  /rename <title>       Rename the active conversation.',
     '  /delete [n|id]        Delete a conversation (default: active).',
     '  /approval [mode]      Show or switch auto-run|per-action.',

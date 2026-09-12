@@ -28,10 +28,13 @@ describe('parseInputLine', () => {
   })
 
   it('exposes known-command checks and help', () => {
-    expect(isKnownCommand('clear')).toBe(true)
+    expect(isKnownCommand('new')).toBe(true)
     expect(isKnownCommand('nope')).toBe(false)
+    expect(isKnownCommand('key')).toBe(false)
+    expect(isKnownCommand('clear')).toBe(false)
+    expect(isKnownCommand('list')).toBe(false)
     expect(commandHelpText()).toContain('/exit')
-    expect(commandHelpText()).toContain('/key')
+    expect(commandHelpText()).toContain('/switch')
     expect(commandHelpText()).toContain('/status')
     expect(commandHelpText()).toContain('/connect')
     expect(commandHelpText()).toContain('Ctrl+C')

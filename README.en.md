@@ -38,7 +38,7 @@ operate git — all approval-gated and auditable.
 - **Approval gates**: `auto-run` executes immediately; `per-action` confirms each write
   with `y/N`; fail-closed on empty input / EOF / abort
 - **Reasoning effort**: `none|minimal|low|medium|high|xhigh|max|ultra`, CodeX-aligned semantics
-- **Multi-session**: `/new /list /switch /rename /delete`, history persisted to `~/.janus/history/`
+- **Multi-session**: `/new /switch /rename /delete` (bare `/switch` lists), history persisted to `~/.janus/history/`
 - **Agent toolbox**: workspace file ops, command execution (incl. background jobs),
   `git.*`, mid-turn user questions (`ask_user`), todo tracking
 
@@ -104,7 +104,7 @@ One precedence chain shared by `chat` and `tui` (earlier wins):
 |---|---|
 | model | `--model` > `JANUS_MODEL` > file `defaultModel` > provider default |
 | baseURL | `--base-url` > `JANUS_BASE_URL` > entry `baseURL` (default `https://api.openai.com/v1`) |
-| key | in-session `/key` (memory only) > `--api-key` > `auth.json` > `<apiKeyEnv>` > `JANUS_API_KEY` |
+| key | session memory (memory only, no slash command) > `--api-key` > `auth.json` > `<apiKeyEnv>` > `JANUS_API_KEY` |
 | effort | `--effort` > `JANUS_EFFORT` > file `defaultEffort` > provider `effort` (default `medium`) |
 
 Env cheat-sheet: `JANUS_MODEL` / `JANUS_BASE_URL` / `JANUS_API_KEY` / `JANUS_EFFORT`
@@ -142,7 +142,7 @@ More behavior notes:
   to load a catalog. `tui` reads `~/.janus/config.json` by default; `--no-config` disables
   every file (pure memory)
 - The TUI starts fine without a model or key (it just reminds you); turns fail until
-  `/model` / `/key` (or `/connect`) is set. `chat` refuses immediately (exit 2) since
+  `/model` / `/connect` is set. `chat` refuses immediately (exit 2) since
   headless has no recovery path
 - A provider declaring a non-empty `models` list is "closed-world": a mistyped model id is
   rejected locally with `Did you mean ...?` and never reaches billing
@@ -178,12 +178,11 @@ and never reach the model):
 | `/connect [id] [key] [base-url]` | provider setup wizard (keys go to auth.json only) |
 | `/provider [id]` / `/provider rm <id>` | list / switch / remove providers |
 | `/model [id]` | list / switch models |
-| `/key [api-key]` | show key status / set key (memory only) |
 | `/effort [level\|number]` | reasoning effort (bare opens the picker) |
 | `/approval [mode]` | show / switch `auto-run\|per-action` |
-| `/new [title]` `/list` `/switch <n\|id>` `/rename <title>` `/delete [n\|id]` | multi-session management |
+| `/new [title]` `/switch [n\|id]` `/rename <title>` `/delete [n\|id]` | multi-session management (bare `/switch` lists) |
 | `/workspace <dir>` | switch workspace (history is cleared) |
-| `/clear` | clear current conversation history |
+| `/compact` | compact conversation context into a summary |
 | `/exit` | leave (`Ctrl+D` works too) |
 
 Keys: `Enter` send · `↑/↓` input history · `Ctrl+C` clear input / cancel turn (twice within
@@ -237,7 +236,7 @@ What the model may call during a turn (all approved and audited through the runt
 | Symptom | Fix |
 |---|---|
 | `missing model` | `--model <id>` / `JANUS_MODEL` / `/model <id>` in the TUI |
-| `missing API key` | `--api-key` / `JANUS_API_KEY` / `/connect` / `/key <key>` (check `/status` for the source) |
+| `missing API key` | `--api-key` / `JANUS_API_KEY` / `/connect` (check `/status` for the source) |
 | `unknown model ... Available: ...` | fix the id from the hint; closed-world providers catch typos locally |
 | `no enabled providers` | empty `~/.janus/config.json` and no `--model`; add one via `/connect` |
 | `workspace is not a directory` | check the `-C/--workspace` path |

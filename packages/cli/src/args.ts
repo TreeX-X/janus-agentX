@@ -159,8 +159,7 @@ function parseSharedFlag(
       shared.conversationId = value
       return undefined
     }
-    case '--effort':
-    case '--reasoning-effort': {
+    case '--effort': {
       const value = takeValue()
       const level = typeof value === 'string' ? value.trim().toLowerCase() : ''
       if (!['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(level)) {
@@ -299,7 +298,7 @@ export function helpText(): string {
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
     '      Reasoning effort falls back to JANUS_EFFORT (default medium). Inspect with /status, switch with /effort.',
     '      Provider keys: --api-key > <apiKeyEnv> > JANUS_API_KEY. Inspect with /status.',
-    '      Starts without a model/API key; chat turns then fail until set (/model <id>, /key <key>).',
+    '      Starts without a model/API key; chat turns then fail until set (/model <id>, /connect).',
     '  janus chat [--workspace <dir>] [--model <id>] [--provider <id>] [--base-url <url>] [--api-key <key>]',
     '             [--config <path>]',
     '             [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run]',

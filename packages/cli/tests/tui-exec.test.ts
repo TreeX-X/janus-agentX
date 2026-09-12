@@ -36,11 +36,10 @@ async function openSession(): Promise<CliSession> {
 }
 
 describe('executeCommand', () => {
-  it('runs help/exit/clear', async () => {
+  it('runs help/exit', async () => {
     const session = await openSession()
     expect((await executeCommand(session, 'help', [])).stdout.join('')).toContain('/exit')
     expect((await executeCommand(session, 'exit', [])).exit).toBe(true)
-    expect((await executeCommand(session, 'clear', [])).stdout).toEqual(['history cleared.'])
     await session.close()
   })
 
@@ -48,11 +47,10 @@ describe('executeCommand', () => {
     const session = await openSession()
     const created = await executeCommand(session, 'new', ['research'])
     expect(created.stdout.join('')).toContain('new conversation:')
-    const listed = await executeCommand(session, 'list', [])
+    const listed = await executeCommand(session, 'switch', [])
     expect(listed.stdout.join('')).toContain('research')
     const switched = await executeCommand(session, 'switch', ['2'])
     expect(switched.stdout.join('')).toContain('switched to:')
-    expect((await executeCommand(session, 'switch', [])).stderr).toEqual(['usage: /switch <number|id>'])
     expect((await executeCommand(session, 'switch', ['nope'])).stderr).toEqual(['no conversation matches: nope'])
     const renamed = await executeCommand(session, 'rename', ['main'])
     expect(renamed.stdout).toEqual(['renamed to: main'])
@@ -83,15 +81,11 @@ describe('executeCommand', () => {
     await session.close()
   })
 
-  it('shows api-key status and sets it without echoing', async () => {
+  it('rejects removed commands', async () => {
     const session = await openSession()
-    expect((await executeCommand(session, 'key', [])).stdout).toEqual([
-      'api key: set (/key > --api-key > <apiKeyEnv> > JANUS_API_KEY, memory only)',
-    ])
-    const set = await executeCommand(session, 'key', ['sk-rotated'])
-    expect(set.stdout).toEqual(['api key set for this run (memory only, never written to disk). Use /connect to persist per-provider keys.'])
-    expect(set.stdout.join('')).not.toContain('sk-rotated')
-    expect(session.getApiKey()).toBe('sk-rotated')
+    expect((await executeCommand(session, 'key', [])).stderr).toEqual(['unknown command: /key (type /help)'])
+    expect((await executeCommand(session, 'clear', [])).stderr).toEqual(['unknown command: /clear (type /help)'])
+    expect((await executeCommand(session, 'list', [])).stderr).toEqual(['unknown command: /list (type /help)'])
     await session.close()
   })
 

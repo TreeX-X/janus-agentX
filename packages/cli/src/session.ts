@@ -57,7 +57,7 @@ import {
 export const CLI_WORKSPACE_ID = 'cli'
 /** Shown when a turn needs the model transport but no key is configured. */
 export const MISSING_API_KEY_MESSAGE =
-  'janus: missing API key. Pass --api-key <key>, set JANUS_API_KEY, or run /connect (or /key <key>) in this session.'
+  'janus: missing API key. Pass --api-key <key>, set JANUS_API_KEY, or run /connect in this session.'
 /** Shown when a turn needs a model but none is configured. */
 export const MISSING_MODEL_MESSAGE =
   'janus: missing model. Pass --model <id>, set JANUS_MODEL, or run /model <id> in this session.'
@@ -150,9 +150,9 @@ export class CliSession {
   private onApproval?: (prompt: ApprovalPrompt, signal: AbortSignal) => Promise<boolean>
   private onQuestion?: (prompt: QuestionPrompt, signal: AbortSignal) => Promise<AskUserPortAnswer>
   private readonly baseUrlOverride?: string
-  /** From the --api-key flag (wins over env; /key wins over this). */
+  /** From the --api-key flag (wins over env; session key wins over this). */
   private readonly flagApiKey: string | undefined
-  /** From /key for this run (memory only, wins over flag and env). */
+  /** Programmatic session key for this run (memory only, wins over flag and env). */
   private sessionKey: string | undefined
   private readonly env: NodeJS.ProcessEnv
   /** True when the host injected its own model transport (tests/dev): no key needed. */
@@ -235,7 +235,7 @@ export class CliSession {
     // No key is fine here: interactive hosts (tui/repl) enter normally and
     // only fail when a turn actually needs the model transport. Headless
     // `chat` still refuses to run without one (see runChat). Key resolution
-    // is per active provider: /key > --api-key > <apiKeyEnv> > JANUS_API_KEY.
+    // is per active provider: session > --api-key > <apiKeyEnv> > JANUS_API_KEY.
 
     const workspaceRoot = resolve(config.workspace)
     try {
@@ -406,7 +406,7 @@ export class CliSession {
     return effectiveModelId(entry)
   }
 
-  /** Precedence: /key > --api-key > auth.json > <apiKeyEnv> > JANUS_API_KEY. */
+  /** Precedence: session > --api-key > auth.json > <apiKeyEnv> > JANUS_API_KEY. */
   private effectiveKey(): string | undefined {
     if (this.sessionKey) return this.sessionKey
     if (this.flagApiKey) return this.flagApiKey
@@ -421,10 +421,10 @@ export class CliSession {
 
   /**
    * Where the effective key came from:
-   * '/key' | '--api-key' | 'auth.json' | env var name | null.
+   * 'session' | '--api-key' | 'auth.json' | env var name | null.
    */
   getApiKeySource(): string | null {
-    if (this.sessionKey) return '/key'
+    if (this.sessionKey) return 'session'
     if (this.flagApiKey) return '--api-key'
     try {
       const entry = this.activeEntry()
@@ -437,7 +437,7 @@ export class CliSession {
 
   /**
    * Key source for any provider id (auth file or env only; the ACTIVE
-   * provider may additionally resolve /key or --api-key — see getApiKeySource).
+   * provider may additionally resolve session or --api-key — see getApiKeySource).
    * Used by /connect and /status lists. Never returns key material.
    */
   keySourceFor(providerId: string): string | null {
@@ -603,11 +603,14 @@ export class CliSession {
    * Forced compaction of the active conversation: summarizes everything but
    * the newest turn regardless of budget and persists the result. Short
    * histories report nothing-to-do instead of burning a model call.
+   * Prose-only by design: persisted history keeps user/assistant text while
+   * tool results live in toolTraces, so the head here never carries tool
+   * pairs (in-loop tool glue only applies to the auto path).
    */
   async compactActiveConversation(signal?: AbortSignal): Promise<string> {
     const summarizer = this.buildCompactionSummarizer()
     if (!summarizer) {
-      throw new Error('janus: compaction needs a model and an API key. Set them with /model and /connect (or /key).')
+      throw new Error('janus: compaction needs a model and an API key. Set them with /model and /connect.')
     }
     const record = this.registry.getActive()
     const messages: JanusAgentMessage[] = record.data.messages.map((message) => ({
@@ -731,7 +734,7 @@ export class CliSession {
     return this.approvalMode
   }
 
-  /** True once a key is available via /key, flags, or provider env. */
+  /** True once a key is available via session, flags, or provider env. */
   hasApiKey(): boolean {
     const key = this.effectiveKey()
     return key !== undefined && key.length > 0
@@ -748,7 +751,7 @@ export class CliSession {
    */
   setApiKey(key: string): void {
     const trimmed = key.trim()
-    if (!trimmed) throw new Error('usage: /key <api-key>')
+    if (!trimmed) throw new Error('API key must not be empty')
     this.sessionKey = trimmed
     this.rebuildTransport()
   }

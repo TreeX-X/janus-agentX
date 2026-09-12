@@ -166,11 +166,13 @@ describe('runChatTurn', () => {
     }
     const first = await runChatTurn(request, ports)
     expect(first.text).toBe('done')
+    expect(first.compacted).toBe(true)
     expect(calls).toBe(1)
     expect(JSON.stringify(seen[0])).toContain('[Compacted context')
     // Same history reuses the stored summary instead of summarizing again.
     const second = await runChatTurn({ ...request, requestId: 'r6' }, ports)
     expect(second.text).toBe('done')
+    expect(second.compacted).toBe(false)
     expect(calls).toBe(1)
   })
 })

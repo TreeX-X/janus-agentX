@@ -216,7 +216,7 @@ export interface ResolvedApiKey {
 
 /**
  * Per-provider key lookup (env only, never disk):
- * `<apiKeyEnv>` > `JANUS_API_KEY`. Flag (`--api-key`) and `/key` overrides
+ * `<apiKeyEnv>` > `JANUS_API_KEY`. Flag (`--api-key`) and session overrides
  * live in the session and win over this.
  */
 export function resolveApiKey(

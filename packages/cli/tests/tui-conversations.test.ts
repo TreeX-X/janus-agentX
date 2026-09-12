@@ -202,7 +202,7 @@ describe('CliSession conversations', () => {
 })
 
 describe('runRepl conversations', () => {
-  it('runs /new /list /switch /rename /delete without dropping turns', async () => {
+  it('runs /new /switch /rename /delete without dropping turns', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-repl-conv-'))
     const out: string[] = []
     const err: string[] = []
@@ -219,7 +219,7 @@ describe('runRepl conversations', () => {
         lines: arrayLineSource([
           '/new research',
           'deep question here',
-          '/list',
+          '/switch',
           '/switch 2',
           '/rename main',
           '/delete 1',
@@ -254,7 +254,7 @@ describe('runRepl conversations', () => {
         store,
         configPath: null,
         authPath: null,
-        lines: arrayLineSource(['/list', '/exit']),
+        lines: arrayLineSource(['/switch', '/exit']),
         streamTextFn: textStub(() => 'unused'),
       },
     )

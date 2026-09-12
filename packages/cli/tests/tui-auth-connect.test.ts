@@ -147,11 +147,11 @@ describe('CliSession auth keys', () => {
     await session.close()
   })
 
-  it('lets /key and --api-key win over auth.json', async () => {
+  it('lets session and --api-key win over auth.json', async () => {
     const session = await openSession({ authKeys: { ds: 'k-auth' } })
     expect(session.getApiKeySource()).toBe('auth.json')
     session.setApiKey('k-run')
-    expect(session.getApiKeySource()).toBe('/key')
+    expect(session.getApiKeySource()).toBe('session')
     await session.close()
 
     const flagged = await openSession({ authKeys: { ds: 'k-auth' }, apiKey: 'k-flag' })

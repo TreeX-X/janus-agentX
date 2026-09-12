@@ -367,18 +367,25 @@ interface ContextLayout {
   dropped: JanusAgentMessage[][]
   usedTokens: number
   budget: number
+  /** Full usable window before summary reservation; budget = window - reserved. */
+  window: number
 }
 
 function layoutContext(
   runtime: LoadedContextIndex,
   messages: JanusAgentMessage[],
   options: ChatContextBuildOptions,
+  reservedTokens = 0,
 ): ContextLayout {
-  const budget = budgetFor(options.model)
+  const window = budgetFor(options.model)
   const systems = messages.filter((message) => message.role === 'system')
   const systemTokens = systems.reduce((total, message) => total + estimateTokens(message.content), 0)
-  if (systemTokens >= budget) throw new Error('SYSTEM_CONTEXT_EXCEEDS_BUDGET')
+  if (systemTokens >= window) throw new Error('SYSTEM_CONTEXT_EXCEEDS_BUDGET')
 
+  // Evidence and tail fill the window MINUS the stored summary: the summary
+  // rides on top, so without this reservation the rendered view exceeds the
+  // window by exactly the summary size on strict providers.
+  const budget = Math.max(0, window - reservedTokens)
   let usedTokens = systemTokens
   const evidence = runtime.asSystemMessage(Math.max(0, budget - usedTokens))
   if (evidence) usedTokens += estimateTokens(evidence.content)
@@ -397,7 +404,7 @@ function layoutContext(
     usedTokens += unitTokens
     keptCount += 1
   }
-  return { systems, evidence, units, dropped, usedTokens, budget }
+  return { systems, evidence, units, dropped, usedTokens, budget, window }
 }
 
 export interface ChatContextBuildOptions {
@@ -464,11 +471,20 @@ export class ChatSessionRuntime {
     }
   }
 
+  private summaryCost(): number {
+    return this.summary ? estimateTokens(this.summaryMessage().content) : 0
+  }
+
   /**
-   * Summarizes the evicted head once per unseen content and stores a single
-   * summary. Auto mode compacts only budget-dropped units; force mode
-   * compacts everything but the newest units regardless of budget. Never
-   * throws: a failed summary falls back to the deterministic digest path.
+   * Summarizes the evicted head and stores a single summary. Auto mode
+   * compacts only budget-dropped units; force mode compacts everything but
+   * the newest units regardless of budget. Manual callers pass persisted
+   * prose history (no tool pairs survive across turns), so their head is
+   * prose-only while the in-loop auto path also covers tool units.
+   * Iterates (max 3 passes) because
+   * reserving the new summary can evict further units, which the next pass
+   * absorbs — every dropped unit ends covered. Never throws: a failed
+   * summary falls back to the deterministic digest path.
    */
   async maybeCompact(
     messages: JanusAgentMessage[],
@@ -477,49 +493,61 @@ export class ChatSessionRuntime {
     signal: AbortSignal = new AbortController().signal,
   ): Promise<boolean> {
     try {
-      let layout: ContextLayout
-      try {
-        layout = layoutContext(this.loadedContext, messages, options)
-      } catch {
-        return false
-      }
       const keep = Math.min(
         MAX_COMPACTION_KEEP_UNITS,
         Math.max(MIN_COMPACTION_KEEP_UNITS, Math.floor(options.keepRecentUnits ?? DEFAULT_COMPACTION_KEEP_UNITS)),
       )
-      const head = options.force ? layout.units.slice(keep) : layout.dropped
-      if (head.length === 0) return false
-      const headText = serializeConversationUnits(head.slice().reverse())
-      const boundedHead = headText.length > COMPACTION_MAX_HEAD_CHARS
-        ? `[earliest evicted history omitted for the summary call]\n${headText.slice(-COMPACTION_MAX_HEAD_CHARS)}`
-        : headText
-      // Content-addressed on the head alone: mixing the previous summary
-      // into the key would change it on every store and never hit twice.
-      const key = fingerprint(boundedHead)
-      if (key === this.summaryKey) return false
+      let compacted = false
+      for (let pass = 0; pass < 3; pass += 1) {
+        let layout: ContextLayout
+        try {
+          layout = layoutContext(this.loadedContext, messages, options, this.summaryCost())
+        } catch {
+          return compacted
+        }
+        const head = options.force ? layout.units.slice(keep) : layout.dropped
+        if (head.length === 0) return compacted
+        const headText = serializeConversationUnits(head.slice().reverse())
+        const boundedHead = headText.length > COMPACTION_MAX_HEAD_CHARS
+          ? `[earliest evicted history omitted for the summary call]\n${headText.slice(-COMPACTION_MAX_HEAD_CHARS)}`
+          : headText
+        // Content-addressed on the full head: the prompt is truncated to keep
+        // the call bounded, but the key covers omitted prefixes so distinct
+        // histories with the same tail never share a key and lose content.
+        // Mixing the previous summary into the key would change it on every
+        // store and never hit twice.
+        const key = fingerprint(headText)
+        if (key === this.summaryKey) return compacted
 
-      const { system, prompt } = buildCompactionPrompt(this.summary ?? undefined, boundedHead)
-      let text = await summarize({ system, prompt }, signal)
-      if (!isValidCompactionSummary(text)) {
-        text = await summarize({
-          system,
-          prompt: `${prompt}\n\nYour previous response missed required sections (${REQUIRED_SUMMARY_HEADINGS.join(', ')}). Reply with the full structure and nothing else.`,
-        }, signal)
-        if (!isValidCompactionSummary(text)) return false
+        const { system, prompt } = buildCompactionPrompt(this.summary ?? undefined, boundedHead)
+        let text: string
+        try {
+          text = await summarize({ system, prompt }, signal)
+          if (!isValidCompactionSummary(text)) {
+            text = await summarize({
+              system,
+              prompt: `${prompt}\n\nYour previous response missed required sections (${REQUIRED_SUMMARY_HEADINGS.join(', ')}). Reply with the full structure and nothing else.`,
+            }, signal)
+            if (!isValidCompactionSummary(text)) return compacted
+          }
+        } catch {
+          return compacted
+        }
+        const bounded = text.length > COMPACTION_MAX_SUMMARY_CHARS
+          ? `${text.slice(0, COMPACTION_MAX_SUMMARY_CHARS)}\n[truncated]`
+          : text
+        this.summary = bounded
+        this.summaryKey = key
+        compacted = true
       }
-      const bounded = text.length > COMPACTION_MAX_SUMMARY_CHARS
-        ? `${text.slice(0, COMPACTION_MAX_SUMMARY_CHARS)}\n[truncated]`
-        : text
-      this.summary = bounded
-      this.summaryKey = key
-      return true
+      return compacted
     } catch {
       return false
     }
   }
 
   buildContext(messages: JanusAgentMessage[], options: ChatContextBuildOptions = {}): JanusAgentMessage[] {
-    const layout = layoutContext(this.loadedContext, messages, options)
+    const layout = layoutContext(this.loadedContext, messages, options, this.summaryCost())
     const droppedSet = new Set(layout.dropped)
     const keptChrono = layout.units.filter((unit) => !droppedSet.has(unit)).reverse()
 
@@ -527,7 +555,7 @@ export class ChatSessionRuntime {
     if (layout.evidence) context.push(layout.evidence)
     if (this.summary) context.push(this.summaryMessage())
     for (const unit of keptChrono) context.push(...unit.map(compactToolMessage))
-    let usedTokens = layout.usedTokens + (this.summary ? estimateTokens(this.summary) : 0)
+    let usedTokens = layout.usedTokens + this.summaryCost()
     // Summarize everything pruned so exploration is not silently lost.
     // pi uses an LLM summary here; we use exact digests to keep sha256 usable.
     if (layout.dropped.length > 0) {
@@ -535,14 +563,17 @@ export class ChatSessionRuntime {
       if (handoff) {
         const handoffTokens = estimateTokens(handoff.content)
         const at = layout.systems.length + (layout.evidence ? 1 : 0) + (this.summary ? 1 : 0)
-        if (usedTokens + handoffTokens <= layout.budget) {
+        // Total view is usedTokens (systems+evidence+kept+summary) + handoff
+        // and must fit window, not budget: budget already subtracted the
+        // summary once, so checking against budget would charge it twice.
+        if (usedTokens + handoffTokens <= layout.window) {
           context.splice(at, 0, handoff)
           usedTokens += handoffTokens
         } else {
           // Budget too tight for the full digest: keep a truncated head note
           // rather than dropping exploration entirely.
-          const head = bounded(handoff.content, Math.max(256, (layout.budget - usedTokens) * 4 - 64))
-          if (usedTokens + estimateTokens(head.value) <= layout.budget) {
+          const head = bounded(handoff.content, Math.max(256, (layout.window - usedTokens) * 4 - 64))
+          if (usedTokens + estimateTokens(head.value) <= layout.window) {
             context.splice(at, 0, { role: 'system', content: head.value })
           }
         }

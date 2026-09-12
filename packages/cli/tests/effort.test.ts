@@ -49,11 +49,11 @@ describe('effort helpers', () => {
     })
   })
 
-  it('parses --effort and --reasoning-effort for chat and tui', () => {
+  it('parses --effort for chat and tui', () => {
     expect(parseArgs(['chat', '--effort', 'high', 'hi'], '/b').chat).toMatchObject({ effort: 'high' })
-    expect(parseArgs(['chat', '--reasoning-effort', 'low', 'hi'], '/b').chat).toMatchObject({ effort: 'low' })
     expect(parseArgs(['tui', '--effort', 'xhigh'], '/b').tui).toMatchObject({ effort: 'xhigh' })
     expect(parseArgs(['chat', '--effort', 'nope', 'hi'], '/b').error).toMatch(/Invalid --effort/)
+    expect(parseArgs(['chat', '--reasoning-effort', 'low', 'hi'], '/b').error).toMatch(/Unknown flag/)
   })
 
   it('resolves picker numbers/names and formats the numbered list', () => {

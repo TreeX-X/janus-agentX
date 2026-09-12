@@ -92,6 +92,8 @@ export interface ChatTurnResult {
   cancelled: boolean
   /** Live todo snapshot for the sticky bar above the composer (empty = hidden). */
   todos: ChatTodoItem[]
+  /** True when auto-compaction summarized evicted history during this turn. */
+  compacted: boolean
 }
 
 interface TrustedResource {
@@ -146,6 +148,7 @@ export async function runChatTurn(
   const callerId = request.callerId ?? 'janus-agent'
   const onEvent = callbacks.onEvent ?? (() => undefined)
   let streamedText = ''
+  let compacted = false
   const executedToolTraces: ChatToolTraceEntry[] = []
 
   const endpoint = await ports.model.resolve(providerId, request.modelId)
@@ -301,9 +304,9 @@ export async function runChatTurn(
       // stay cheap. Never throws: failure keeps deterministic pruning.
       if (request.compactionSummarizer) {
         try {
-          await chatSession.maybeCompact(context, {
+          if (await chatSession.maybeCompact(context, {
             model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
-          }, request.compactionSummarizer, signal)
+          }, request.compactionSummarizer, signal)) compacted = true
         } catch {
           // Fall through to the deterministic view below.
         }
@@ -378,7 +381,7 @@ export async function runChatTurn(
 
   if (signal?.aborted) {
     onEvent({ type: 'stream_end', requestId, cancelled: true })
-    return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: true, todos: chatSession.getTodos() }
+    return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: true, todos: chatSession.getTodos(), compacted }
   }
 
   // Persist the confirmed plan into the conversation so switch/resume shows
@@ -424,5 +427,5 @@ export async function runChatTurn(
   }
 
   onEvent({ type: 'stream_end', requestId, cancelled: false })
-  return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: false, todos: chatSession.getTodos() }
+  return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: false, todos: chatSession.getTodos(), compacted }
 }
