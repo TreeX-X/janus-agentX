@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { FALLBACK_MODEL_LIMITS, resolveModelLimits } from '../src/model-limits.js'
+import { MODEL_LIMIT_ROWS } from '../src/model-limits.table.js'
 import { CliSession, isSessionValidationError } from '../src/session.js'
 import { memoryConversationStore } from '../src/conversations.js'
 import { parseCatalog } from '../src/providers.js'
@@ -36,6 +37,33 @@ describe('resolveModelLimits', () => {
 
   it('prefers the longest matching family prefix', () => {
     expect(resolveModelLimits({ modelId: 'gpt-4.1-mini' }).limits.contextWindow).toBe(1_000_000)
+    expect(resolveModelLimits({ modelId: 'gpt-5.6-sol' }).limits).toMatchObject({
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+    })
+    expect(resolveModelLimits({ modelId: 'gpt-5-chat' }).limits.contextWindow).toBe(400_000)
+    expect(resolveModelLimits({ modelId: 'o1-mini' }).limits.contextWindow).toBe(128_000)
+    expect(resolveModelLimits({ modelId: 'o1-preview' }).limits.contextWindow).toBe(200_000)
+    expect(resolveModelLimits({ modelId: 'kimi-k3' }).limits.contextWindow).toBe(1_050_000)
+    expect(resolveModelLimits({ modelId: 'kimi-k2-0711-preview' }).limits.contextWindow).toBe(128_000)
+    expect(resolveModelLimits({ modelId: 'kimi-k2.5' }).limits.contextWindow).toBe(256_000)
+    expect(resolveModelLimits({ modelId: 'qwen3-coder-480b' }).limits.contextWindow).toBe(256_000)
+    expect(resolveModelLimits({ modelId: 'qwen2.5-32b' }).limits.contextWindow).toBe(32_000)
+    expect(resolveModelLimits({ modelId: 'deepseek-v4-pro' }).limits.contextWindow).toBe(1_000_000)
+    expect(resolveModelLimits({ modelId: 'deepseek-chat' }).limits.contextWindow).toBe(64_000)
+    expect(resolveModelLimits({ modelId: 'doubao-seed-1-6-250615' }).limits.contextWindow).toBe(256_000)
+    expect(resolveModelLimits({ modelId: 'doubao-seed-2-0-lite' }).limits.contextWindow).toBe(128_000)
+  })
+
+  it('keeps the curated table well-formed', () => {
+    expect(MODEL_LIMIT_ROWS.length).toBeGreaterThan(0)
+    const prefixes = MODEL_LIMIT_ROWS.map((row) => row.prefix)
+    expect(new Set(prefixes).size).toBe(prefixes.length)
+    for (const row of MODEL_LIMIT_ROWS) {
+      expect(row.prefix).toBe(row.prefix.toLowerCase())
+      expect(Number.isSafeInteger(row.contextWindow) && row.contextWindow > 0).toBe(true)
+      expect(Number.isSafeInteger(row.maxOutputTokens) && row.maxOutputTokens > 0).toBe(true)
+    }
   })
 
   it('falls back conservatively for unknown ids and marks the guess', () => {

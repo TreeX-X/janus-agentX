@@ -1,20 +1,18 @@
 /**
- * @file Built-in model context-window table for the janus CLI.
+ * @file Built-in model context-window lookup for the janus CLI.
  * @description Framework-agnostic, no IO. The CLI ships OpenAI-compatible
  * transports with no window metadata, so `ChatSessionRuntime.buildContext`
- * always fell back to 16384 tokens even for 1M-token models. This table
- * gives known families their documented window; unknown ids get a
- * conservative fallback flagged as estimated. Precedence per call:
- * config override > built-in family > fallback. Values stay conservative
+ * always fell back to 16384 tokens even for 1M-token models. Rows live in
+ * `./model-limits.table.ts` (curated, longest-prefix wins); unknown ids get
+ * a conservative fallback flagged as estimated. Precedence per call:
+ * config override > built-in row > fallback. Values stay conservative
  * (small) on doubt: guessing low only compacts early, guessing high
  * overflows the provider.
- *
- * Refresh pointer: values mirror models.dev / provider docs at seed time.
- * Regenerate by hand from those sources; no runtime fetch by design.
  *
  * Note: why a checked-in table instead of adaptive learning or live
  * discovery — see .agents/notes/implemented/feature/2026-09-12-model-window-table.md
  */
+import { MODEL_LIMIT_ROWS } from './model-limits.table.js'
 
 export interface ModelLimits {
   contextWindow: number
@@ -42,22 +40,14 @@ interface FamilyEntry {
   limits: ModelLimits
 }
 
-// Curated seed, conservative on doubt. Families only; per-SKU exceptions
-// get their own longer prefix when one is ever needed.
-const FAMILIES: FamilyEntry[] = [
-  { prefix: 'gpt-4.1', limits: { contextWindow: 1_000_000, maxOutputTokens: 32_768 } },
-  { prefix: 'gpt-4o', limits: { contextWindow: 128_000, maxOutputTokens: 16_384 } },
-  { prefix: 'gpt-5', limits: { contextWindow: 400_000, maxOutputTokens: 32_768 } },
-  { prefix: 'o1', limits: { contextWindow: 200_000, maxOutputTokens: 100_000 } },
-  { prefix: 'o3', limits: { contextWindow: 200_000, maxOutputTokens: 100_000 } },
-  { prefix: 'claude', limits: { contextWindow: 200_000, maxOutputTokens: 32_768 } },
-  { prefix: 'gemini', limits: { contextWindow: 1_000_000, maxOutputTokens: 32_768 } },
-  { prefix: 'deepseek', limits: { contextWindow: 64_000, maxOutputTokens: 8_000 } },
-  { prefix: 'llama', limits: { contextWindow: 128_000, maxOutputTokens: 4_096 } },
-  { prefix: 'qwen', limits: { contextWindow: 32_000, maxOutputTokens: 8_000 } },
-  { prefix: 'mistral', limits: { contextWindow: 32_000, maxOutputTokens: 8_000 } },
-  { prefix: 'glm', limits: { contextWindow: 128_000, maxOutputTokens: 8_000 } },
-].sort((a, b) => b.prefix.length - a.prefix.length)
+// Curated rows, longest prefix first so specific SKUs beat families
+// (`kimi-k3` beats `kimi-k2`, `o1-mini` beats `o1`).
+const FAMILIES: FamilyEntry[] = MODEL_LIMIT_ROWS
+  .map((row) => ({
+    prefix: row.prefix,
+    limits: { contextWindow: row.contextWindow, maxOutputTokens: row.maxOutputTokens },
+  }))
+  .sort((a, b) => b.prefix.length - a.prefix.length)
 
 function positive(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
