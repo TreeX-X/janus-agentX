@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { runChatTurn } from '../src/orchestrator/chat-turn'
+import { ChatSessionRuntime } from '@janus-agent/chat-core'
 import type { ChatTurnPorts } from '../src/ports'
 
 function stubPorts(overrides: Partial<ChatTurnPorts> = {}): ChatTurnPorts {
@@ -128,5 +129,48 @@ describe('runChatTurn', () => {
     expect(result.toolTraces.length).toBeGreaterThan(0)
     expect(result.text).toContain('done')
     expect(captured.length).toBe(1)
+  })
+
+  it('compacts evicted history through the injected summarizer exactly once', async () => {
+    const seen: unknown[] = []
+    let calls = 0
+    const ports = stubPorts({
+      model: {
+        resolve: async () => ({ model: { id: 'm' }, modelId: 'm', contextWindow: 2000, maxOutputTokens: 100 }),
+        getMaxTurns: () => 3,
+      },
+      streamTextFn: (async (opts: Record<string, unknown>) => {
+        seen.push(opts.messages)
+        return { textStream: (async function* () { yield 'done' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+    })
+    const chatSession = new ChatSessionRuntime()
+    const summarize = async () => {
+      calls += 1
+      return [
+        '## Goal', 'Keep going',
+        '## Constraints & Preferences', '(none)',
+        '## Progress', '### Done', '- [x] explored', '### In Progress', '- [ ] polish', '### Blocked', '(none)',
+        '## Key Decisions', '(none)',
+        '## Next Steps', '1. polish',
+        '## Critical Context', '(none)',
+        '## Relevant Files', '(none)',
+      ].join('\n')
+    }
+    const request = {
+      requestId: 'r5',
+      messages: [{ role: 'user' as const, content: `old exploration ${'x'.repeat(5000)}` }, { role: 'user' as const, content: 'hi' }],
+      providerId: 'p',
+      chatSession,
+      compactionSummarizer: summarize,
+    }
+    const first = await runChatTurn(request, ports)
+    expect(first.text).toBe('done')
+    expect(calls).toBe(1)
+    expect(JSON.stringify(seen[0])).toContain('[Compacted context')
+    // Same history reuses the stored summary instead of summarizing again.
+    const second = await runChatTurn({ ...request, requestId: 'r6' }, ports)
+    expect(second.text).toBe('done')
+    expect(calls).toBe(1)
   })
 })

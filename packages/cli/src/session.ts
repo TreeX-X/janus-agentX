@@ -23,6 +23,8 @@ import {
 import { TOOL_TRACE_MAX_ENTRIES } from '@janus-agent/chat-core'
 import type { ChatTodoItem } from '@janus-agent/chat-core'
 import { runChatTurn, type AskUserPortAnswer, type AskUserPortRequest, type ChatTurnPorts, type ChatTurnResult } from '@janus-agent/janus-agent'
+import type { CompactionSummarizer } from '@janus-agent/chat-core'
+import type { JanusAgentMessage } from '@janus-agent/agent-core'
 import { createChatModel } from './model.js'
 import { FALLBACK_MODEL_LIMITS, resolveModelLimits } from './model-limits.js'
 import { saveAuthFile } from './auth.js'
@@ -575,6 +577,73 @@ export class CliSession {
     }
   }
 
+  /**
+   * One-shot summarizer behind compaction, over the active transport with
+   * tools disabled. Null when no model or key is configured (mirrors the
+   * sendTurn guards): callers fall back to deterministic digest pruning.
+   */
+  buildCompactionSummarizer(): CompactionSummarizer | null {
+    const modelId = this.modelId
+    if (!modelId) return null
+    if (!this.hasApiKey() && !this.hasCustomTransport) return null
+    return async (input, signal) => {
+      const endpoint = await this.ports.model.resolve(this.activeProviderId, modelId)
+      const messages = input.system
+        ? [{ role: 'system', content: input.system }, { role: 'user', content: input.prompt }]
+        : [{ role: 'user', content: input.prompt }]
+      const out = await this.ports.streamTextFn({ model: endpoint.model, messages, abortSignal: signal })
+      let text = ''
+      for await (const delta of out.textStream) text += delta
+      if (!text.trim()) throw new Error('empty summary response')
+      return text
+    }
+  }
+
+  /**
+   * Forced compaction of the active conversation: summarizes everything but
+   * the newest turn regardless of budget and persists the result. Short
+   * histories report nothing-to-do instead of burning a model call.
+   */
+  async compactActiveConversation(signal?: AbortSignal): Promise<string> {
+    const summarizer = this.buildCompactionSummarizer()
+    if (!summarizer) {
+      throw new Error('janus: compaction needs a model and an API key. Set them with /model and /connect (or /key).')
+    }
+    const record = this.registry.getActive()
+    const messages: JanusAgentMessage[] = record.data.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }))
+    const limits = this.resolveLimits(this.activeEntry(), this.modelId)
+    const before = record.chatSession.getCompactionState()?.key ?? null
+    let failure: unknown
+    const capturing: CompactionSummarizer = async (input, signal) => {
+      try {
+        return await summarizer(input, signal)
+      } catch (error) {
+        failure = error
+        throw error
+      }
+    }
+    await record.chatSession.maybeCompact(messages, {
+      model: { contextWindow: limits.limits.contextWindow, maxOutputTokens: limits.limits.maxOutputTokens },
+      force: true,
+    }, capturing, signal ?? new AbortController().signal)
+    const state = record.chatSession.getCompactionState()
+    if (state && state.key !== before) {
+      record.data.compactionSummary = state.summary
+      record.data.compactionKey = state.key
+      await this.registry.persist(record.data.id)
+      return `Compacted context into a ${state.summary.length}-char summary. It resumes automatically next turn.`
+    }
+    if (failure) throw new Error(`janus: compaction failed: ${failure instanceof Error ? failure.message : String(failure)}`)
+    if (state) return 'Already compacted — summary is current.'
+    // Persisted messages map 1:1 to turn units (no tool pairs survive
+    // across turns), so fewer than two messages means an empty head.
+    if (messages.length < 2) return 'Nothing to compact — history is short.'
+    throw new Error('janus: compaction failed: model returned an invalid summary. History unchanged.')
+  }
+
   getEffort(): EffortLevel {
     return this.effortId
   }
@@ -881,6 +950,7 @@ export class CliSession {
           }],
           toolTraces: record.data.toolTraces,
           chatSession: record.chatSession,
+          compactionSummarizer: this.buildCompactionSummarizer() ?? undefined,
         },
         this.ports,
         {
@@ -905,6 +975,16 @@ export class CliSession {
       // per-conversation ChatSessionRuntime during the loop). Persist it so
       // switch/resume restores the sticky bar; abort keeps partial progress.
       record.data.todos = [...result.todos]
+      // A compaction summary may have been produced mid-turn (even on abort):
+      // persist it so resume rehydrates instead of re-summarizing.
+      const compaction = record.chatSession.getCompactionState()
+      if (compaction) {
+        record.data.compactionSummary = compaction.summary
+        record.data.compactionKey = compaction.key
+      } else {
+        delete record.data.compactionSummary
+        delete record.data.compactionKey
+      }
       await this.registry.persist(record.data.id)
       return result
     } finally {

@@ -37,6 +37,11 @@ export interface CommandSession {
   getConfigPath(): string | null
   /** Effective window for the active provider/model; estimated flags the fallback guess. */
   getContextWindow(): { value: number; estimated: boolean }
+  /**
+   * Forced compaction of the active conversation history. Runs the summary
+   * call immediately (no turn needed) and persists the result.
+   */
+  compactActiveConversation(): Promise<string>
   setApiKey(key: string): void
   getWorkspaceRoot(): string
   getApprovalMode(): ApprovalModeOption
@@ -92,6 +97,13 @@ export async function executeCommand(
     case 'clear':
       await session.clearHistory()
       return continued(['history cleared.'])
+    case 'compact': {
+      try {
+        return continued([await session.compactActiveConversation()])
+      } catch (error) {
+        return continued([], [error instanceof Error ? error.message : String(error)])
+      }
+    }
     case 'new': {
       const summary = await session.createConversation(args.join(' ') || undefined)
       const index = session.listConversations().findIndex((item) => item.id === summary.id)

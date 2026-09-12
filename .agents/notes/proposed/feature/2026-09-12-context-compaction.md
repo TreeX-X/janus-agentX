@@ -44,3 +44,5 @@ digest 轨与摘要轨并存，职责切开。现有 `toolDigest` 与 `droppedTu
 - 摘要被提示注入污染 — 摘要只作 user-role handoff、不给写权限提升承担，敏感路径仍走 `policy-gate`。
 - 压缩本身烧 token — 阈值、工具输出上限、任务边界手动压三层承担，长任务分段而非单会话到底。
 - 内置表 stale（provider 单方面改窗口、新模型缺条目） — 只许保守偏小、提前 `buffer` 触发、overflow 重试兜底承担，发版脚本定期重拉，不做运行时探测。
+
+See also: [LLM 压缩循环（已落地的自动与手动切片）](../../implemented/feature/2026-09-12-llm-compaction-loop.md).

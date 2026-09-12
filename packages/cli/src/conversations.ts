@@ -29,6 +29,10 @@ export interface PersistedConversation {
   toolTraces: ChatToolTraceEntry[]
   /** Live todo snapshot for the sticky bar above the composer (empty = hidden). */
   todos: ChatTodoItem[]
+  /** Latest compaction summary; rehydrated into ChatSessionRuntime on load. */
+  compactionSummary?: string
+  /** Head key the summary absorbed; skips redundant re-summarization. */
+  compactionKey?: string
 }
 
 export interface ConversationSummary {
@@ -54,6 +58,11 @@ function sanitizeMessages(value: unknown): PersistedMessage[] {
     .map((message) => ({ role: message.role as PersistedMessage['role'], content: message.content as string }))
 }
 
+function sanitizeSummary(value: unknown, maxChars: number): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  return value.slice(0, maxChars)
+}
+
 function sanitizeConversation(value: unknown): PersistedConversation | null {
   const record = value as Record<string, unknown> | null
   if (!record || typeof record.id !== 'string' || !record.id) return null
@@ -65,6 +74,8 @@ function sanitizeConversation(value: unknown): PersistedConversation | null {
     messages: sanitizeMessages(record.messages),
     toolTraces: Array.isArray(record.toolTraces) ? record.toolTraces as ChatToolTraceEntry[] : [],
     todos: sanitizeTodos(record.todos),
+    compactionSummary: sanitizeSummary(record.compactionSummary, 16_000),
+    compactionKey: sanitizeSummary(record.compactionKey, 512),
   }
 }
 
@@ -179,7 +190,9 @@ export class ConversationRegistry {
     const persisted = await store.list()
     const registry = new ConversationRegistry(store, '')
     for (const conversation of persisted) {
-      registry.records.set(conversation.id, { data: conversation, chatSession: new ChatSessionRuntime() })
+      const chatSession = new ChatSessionRuntime()
+      chatSession.setCompactionState(conversation.compactionSummary ?? null, conversation.compactionKey ?? null)
+      registry.records.set(conversation.id, { data: conversation, chatSession })
       registry.lastTick = Math.max(registry.lastTick, conversation.updatedAt, conversation.createdAt)
     }
     if (preferredId && registry.records.has(preferredId)) {
@@ -321,6 +334,8 @@ export class ConversationRegistry {
     record.data.messages = []
     record.data.toolTraces = []
     record.data.todos = []
+    delete record.data.compactionSummary
+    delete record.data.compactionKey
     record.chatSession = new ChatSessionRuntime()
     await this.persist(record.data.id)
   }

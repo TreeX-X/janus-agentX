@@ -16,6 +16,7 @@ export type BuiltinCommandName =
   | 'status'
   | 'workspace'
   | 'clear'
+  | 'compact'
   | 'exit'
   | 'new'
   | 'list'
@@ -45,6 +46,7 @@ const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
   'status',
   'workspace',
   'clear',
+  'compact',
   'exit',
   'new',
   'list',
@@ -90,6 +92,7 @@ export function commandHelpText(): string {
     '  /status               Show the effective provider/model/baseURL/key/config.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
     '  /clear                Clear this conversation history.',
+    '  /compact              Compact conversation context into a summary.',
     '  /new [title]          Start a conversation (and switch to it).',
     '  /list                 List conversations (* = active).',
     '  /switch <n|id>        Switch conversation.',

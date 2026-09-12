@@ -2,7 +2,13 @@
  * @file Public barrel for @janus-agent/chat-core
  */
 export { ChatSessionRuntime, LoadedContextIndex } from './main/llm/chat-session-runtime'
-export type { ChatContextBuildOptions } from './main/llm/chat-session-runtime'
+export type { ChatContextBuildOptions, CompactionOptions, CompactionSummarizer } from './main/llm/chat-session-runtime'
+export {
+  REQUIRED_SUMMARY_HEADINGS,
+  buildCompactionPrompt,
+  isValidCompactionSummary,
+  serializeConversationUnits,
+} from './main/llm/chat-session-runtime'
 export {
   TODOWRITE_TOOL_DESCRIPTION,
   TODOWRITE_TOOL_NAME,

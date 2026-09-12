@@ -55,6 +55,7 @@ import {
   type ChatTodoItem,
   type ChatToolTraceEntry,
   type ChatWorkspaceResource,
+  type CompactionSummarizer,
   type KnowledgeRecallTrace,
 } from '@janus-agent/chat-core'
 import { createTodoLoopTool, createTodoVercelTool, TODOWRITE_TOOL_NAME } from './todo-tool.js'
@@ -76,6 +77,11 @@ export interface ChatTurnRequest {
   /** Stable per conversationId; preserves the loaded-file cache across turns. */
   chatSession?: ChatSessionRuntime
   steeringPort?: AgentSteeringPort
+  /**
+   * One-shot LLM summarizer for compaction. Absent = deterministic digest
+   * pruning only (no extra model call). Failures fall back silently.
+   */
+  compactionSummarizer?: CompactionSummarizer
 }
 
 export interface ChatTurnResult {
@@ -289,9 +295,23 @@ export async function runChatTurn(
   await runJanusAgentLoop(modelMessages, {
     tools: loopTools,
     stream: createVercelStream({ model: endpoint.model, tools: modelTools, streamTextFn: ports.streamTextFn, ...(endpoint.effort ? { effort: endpoint.effort } : {}) }),
-    transformContext: async (context) => chatSession.buildContext(context, {
-      model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
-    }),
+    transformContext: async (context, signal) => {
+      // Single-summary compaction absorbs newly evicted turns; the head
+      // fingerprint inside skips already-covered content, so repeat calls
+      // stay cheap. Never throws: failure keeps deterministic pruning.
+      if (request.compactionSummarizer) {
+        try {
+          await chatSession.maybeCompact(context, {
+            model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+          }, request.compactionSummarizer, signal)
+        } catch {
+          // Fall through to the deterministic view below.
+        }
+      }
+      return chatSession.buildContext(context, {
+        model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+      })
+    },
     maxTurns,
     steeringPort: request.steeringPort,
     beforeToolCall: async ({ call }) => {
