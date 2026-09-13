@@ -618,8 +618,9 @@ export class CliSession {
    * Prose-only by design: persisted history keeps user/assistant text while
    * tool results live in toolTraces, so the head here never carries tool
    * pairs (in-loop tool glue only applies to the auto path).
+   * An optional focus biases the summary without dropping other sections.
    */
-  async compactActiveConversation(signal?: AbortSignal): Promise<string> {
+  async compactActiveConversation(focus?: string, signal?: AbortSignal): Promise<string> {
     const summarizer = this.buildCompactionSummarizer()
     if (!summarizer) {
       throw new Error('janus: compaction needs a model and an API key. Set them with /model and /connect.')
@@ -643,6 +644,7 @@ export class CliSession {
     await record.chatSession.maybeCompact(messages, {
       model: { contextWindow: limits.limits.contextWindow, maxOutputTokens: limits.limits.maxOutputTokens },
       force: true,
+      focus: focus?.trim() ? focus.trim().slice(0, 500) : undefined,
     }, capturing, signal ?? new AbortController().signal)
     const state = record.chatSession.getCompactionState()
     if (state && state.key !== before) {

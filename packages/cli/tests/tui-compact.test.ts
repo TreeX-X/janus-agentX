@@ -99,4 +99,29 @@ describe('/compact', () => {
     expect(out.stderr.join('')).toContain('invalid summary')
     await junk.close()
   })
+
+  it('passes /compact focus words into the summary prompt', async () => {
+    const seen: string[] = []
+    const session = await CliSession.create({
+      workspace: mkdtempSync(join(tmpdir(), 'janus-compact-focus-')),
+      model: 'm',
+      apiKey: 'k',
+      store: memoryConversationStore(),
+      catalog: parseCatalog({ providers: [{ id: 'a', models: ['m'] }] }),
+      streamTextFn: (async (opts: { messages?: Array<{ content?: unknown }> }) => {
+        for (const message of opts.messages ?? []) {
+          if (typeof message.content === 'string') seen.push(message.content)
+        }
+        return { textStream: (async function* () { yield VALID_SUMMARY })() }
+      }) as StreamFn,
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    await session.sendTurn(`first exploration ${'x'.repeat(1200)}`)
+    const out = await executeCommand(session, 'compact', ['auth', 'refactor'])
+    expect(out.stderr).toEqual([])
+    expect(out.stdout.join('')).toContain('Compacted context into a')
+    expect(seen.join('\n')).toContain('auth refactor')
+    await session.close()
+  })
 })

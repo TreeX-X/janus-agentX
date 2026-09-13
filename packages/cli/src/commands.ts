@@ -84,7 +84,7 @@ export function commandHelpText(): string {
     '                          Provider setup wizard (key lands in auth.json).',
     '  /status               Show the effective provider/model/baseURL/key/config.',
     '  /workspace <dir>      Switch workspace (history is cleared).',
-    '  /compact              Compact conversation context into a summary.',
+    '  /compact [focus]      Compact conversation context into a summary (focus biases emphasis).',
     '  /new [title]          Start a conversation (and switch to it).',
     '  /switch [n|id]        List conversations (bare) or switch conversation.',
     '  /rename <title>       Rename the active conversation.',

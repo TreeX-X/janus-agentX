@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ChatSessionRuntime,
   buildCompactionPrompt,
+  isContextOverflowError,
   isValidCompactionSummary,
   serializeConversationUnits,
 } from '../src/main/llm/chat-session-runtime'
@@ -176,5 +177,73 @@ describe('ChatSessionRuntime.maybeCompact', () => {
     expect(await resumed.maybeCompact(messages, { model: MODEL }, summarize, new AbortController().signal)).toBe(false)
     expect(calls).toBe(1)
     expect(resumed.buildContext(messages, { model: MODEL })[0].content).toContain('## Goal')
+  })
+})
+
+describe('lightweight hardening: ceiling, oversized survival, file ledger', () => {
+  it('caps the trigger at 90% of the window so late tuning cannot overflow', () => {
+    // Window 10k, maxOutput 100: uncapped budget would be 9388 tokens, but the
+    // hard ceiling holds it at 9000. A 9200-token history fits the former and
+    // exceeds the latter, so the old turn must drop.
+    const model = { contextWindow: 10_000, maxOutputTokens: 100 }
+    const messages = [
+      user(`old ${'a'.repeat(19_997)}`),
+      user(`now ${'b'.repeat(16_797)}`),
+    ] as JanusAgentMessage[]
+    const runtime = new ChatSessionRuntime()
+    const context = runtime.buildContext(messages, { model, bufferTokens: 0 })
+    expect(context.some((m) => m.content.includes('a'.repeat(50)))).toBe(false)
+    expect(context.at(-1)?.content).toContain('now')
+    // An absurd buffer clamps to 10% (earlier trigger) instead of breaking:
+    // the view still builds and still favors the newest turn.
+    const clamped = new ChatSessionRuntime()
+    const early = clamped.buildContext(messages, { model, bufferTokens: 999_999_999 })
+    expect(early.at(-1)?.content).toContain('now')
+  })
+
+  it('survives an oversized single turn through the digest instead of throwing', () => {
+    const runtime = new ChatSessionRuntime()
+    const huge = toolUnit('big', `dump ${'z'.repeat(8_000)}`)
+    const context = runtime.buildContext(
+      [{ role: 'system', content: 'policy' }, ...huge] as JanusAgentMessage[],
+      { model: MODEL },
+    )
+    expect(context.map((m) => m.role)).toContain('system')
+    // The evicted tool pair is still represented exactly, never paraphrased.
+    expect(context.some((m) => m.content.includes('workspace_read'))).toBe(true)
+  })
+
+  it('force-summarizes an oversized single turn and appends exact file refs', async () => {
+    const runtime = new ChatSessionRuntime()
+    const messages = [
+      user('fix login'),
+      { role: 'assistant', content: '', toolCalls: [{ id: 'r1', name: 'workspace_read', arguments: { path: 'src/auth.ts' } }] },
+      { role: 'tool', toolCallId: 'r1', toolName: 'workspace_read', content: `body ${'q'.repeat(5_000)}` },
+      user('now'),
+    ] as JanusAgentMessage[]
+    const summarize = async () => VALID_SUMMARY
+    expect(await runtime.maybeCompact(
+      messages, { model: MODEL, force: true }, summarize, new AbortController().signal,
+    )).toBe(true)
+    const summary = runtime.getSummary() ?? ''
+    expect(summary).toContain('## Goal')
+    expect(summary).toContain('src/auth.ts')
+    const info = runtime.getLastCompactionInfo()
+    expect(info).not.toBeNull()
+    expect(info!.tokensBefore).toBeGreaterThan(0)
+    expect(info!.summaryChars).toBeGreaterThan(0)
+  })
+
+  it('renders manual focus into the summary prompt without dropping sections', () => {
+    const { prompt } = buildCompactionPrompt(undefined, '[User]: hi', 'auth refactor and three failing tests')
+    expect(prompt).toContain('auth refactor and three failing tests')
+    expect(prompt).toContain('## Relevant Files')
+  })
+
+  it('recognizes provider overflow signals and nothing else', () => {
+    expect(isContextOverflowError(new Error('context window exceeded'))).toBe(true)
+    expect(isContextOverflowError(new Error('413 Request Entity Too Large'))).toBe(true)
+    expect(isContextOverflowError(new Error('connection reset by peer'))).toBe(false)
+    expect(isContextOverflowError('all good')).toBe(false)
   })
 })

@@ -38,9 +38,10 @@ export interface CommandSession {
   getContextWindow(): { value: number; estimated: boolean }
   /**
    * Forced compaction of the active conversation history. Runs the summary
-   * call immediately (no turn needed) and persists the result.
+   * call immediately (no turn needed) and persists the result. An optional
+   * focus biases the summary without dropping other sections.
    */
-  compactActiveConversation(): Promise<string>
+  compactActiveConversation(focus?: string): Promise<string>
   getWorkspaceRoot(): string
   getApprovalMode(): ApprovalModeOption
   setApprovalMode(mode: ApprovalModeOption): void
@@ -83,7 +84,7 @@ export async function executeCommand(
       return { stdout: [], stderr: [], exit: true }
     case 'compact': {
       try {
-        return continued([await session.compactActiveConversation()])
+        return continued([await session.compactActiveConversation(args.join(' ') || undefined)])
       } catch (error) {
         return continued([], [error instanceof Error ? error.message : String(error)])
       }

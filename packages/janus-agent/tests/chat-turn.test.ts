@@ -175,4 +175,74 @@ describe('runChatTurn', () => {
     expect(second.compacted).toBe(false)
     expect(calls).toBe(1)
   })
+
+  it('recovers from a provider overflow with one forced compact plus a single retry', async () => {
+    let streams = 0
+    const ports = stubPorts({
+      model: {
+        resolve: async () => ({ model: { id: 'm' }, modelId: 'm', contextWindow: 2000, maxOutputTokens: 100 }),
+        getMaxTurns: () => 3,
+      },
+      streamTextFn: (async () => {
+        streams += 1
+        if (streams === 1) throw new Error('context window exceeded (provider overflow)')
+        return { textStream: (async function* () { yield 'recovered' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+    })
+    const summarize = async () => [
+      '## Goal', 'Recover',
+      '## Constraints & Preferences', '(none)',
+      '## Progress', '### Done', '- [x] hit overflow', '### In Progress', '- [ ] retry', '### Blocked', '(none)',
+      '## Key Decisions', '(none)',
+      '## Next Steps', '1. retry',
+      '## Critical Context', '(none)',
+      '## Relevant Files', '(none)',
+    ].join('\n')
+    const result = await runChatTurn(
+      {
+        requestId: 'r7',
+        messages: [
+          { role: 'user' as const, content: `old exploration ${'x'.repeat(3000)}` },
+          { role: 'user' as const, content: 'keep going' },
+        ],
+        providerId: 'p',
+        chatSession: new ChatSessionRuntime(),
+        compactionSummarizer: summarize,
+      },
+      ports,
+    )
+    expect(result.text).toBe('recovered')
+    expect(result.compacted).toBe(true)
+    expect(streams).toBe(2)
+  })
+
+  it('surfaces a second consecutive overflow instead of looping forever', async () => {
+    let streams = 0
+    const ports = stubPorts({
+      streamTextFn: (async () => {
+        streams += 1
+        throw new Error('413 Request Entity Too Large')
+      }) as ChatTurnPorts['streamTextFn'],
+    })
+    const summarize = async () => [
+      '## Goal', 'Overflow',
+      '## Constraints & Preferences', '(none)',
+      '## Progress', '### Done', '(none)', '### In Progress', '- [ ] x', '### Blocked', '(none)',
+      '## Key Decisions', '(none)',
+      '## Next Steps', '1. x',
+      '## Critical Context', '(none)',
+      '## Relevant Files', '(none)',
+    ].join('\n')
+    await expect(runChatTurn(
+      {
+        requestId: 'r8',
+        messages: [{ role: 'user' as const, content: 'hi' }],
+        providerId: 'p',
+        chatSession: new ChatSessionRuntime(),
+        compactionSummarizer: summarize,
+      },
+      ports,
+    )).rejects.toThrow('413')
+    expect(streams).toBe(2)
+  })
 })

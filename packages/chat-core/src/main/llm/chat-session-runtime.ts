@@ -7,6 +7,8 @@ import type { JanusAgentMessage } from '@janus-agent/agent-core'
 const DEFAULT_CONTEXT_WINDOW = 16_384
 const DEFAULT_RESERVED_OUTPUT_TOKENS = 2_048
 const SAFETY_MARGIN_TOKENS = 512
+/** User tuning may only move the trigger earlier, never past this share of the window. */
+const MAX_COMPACTION_THRESHOLD_RATIO = 0.9
 const MAX_LOADED_FILES = 3
 const MAX_LOADED_FILE_CHARS = 6_000
 const MAX_TOOL_CONTENT_CHARS = 6_000
@@ -20,6 +22,15 @@ const COMPACTION_MAX_SUMMARY_CHARS = 8_000
 const DEFAULT_COMPACTION_KEEP_UNITS = 1
 const MIN_COMPACTION_KEEP_UNITS = 1
 const MAX_COMPACTION_KEEP_UNITS = 50
+
+/** Provider overflow signals that survive transport normalization. */
+const CONTEXT_OVERFLOW_PATTERN = /context|overflow|too large|too_long|token.*limit|limit.*token|413|431/i
+
+/** True for provider-side context exhaustion (retryable once after a forced compact). */
+export function isContextOverflowError(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.name} ${error.message}` : String(error)
+  return CONTEXT_OVERFLOW_PATTERN.test(text)
+}
 
 /** One-shot LLM call behind compaction; hosts inject the real transport. */
 export type CompactionSummarizer = (
@@ -334,6 +345,7 @@ export function isValidCompactionSummary(text: string): boolean {
 export function buildCompactionPrompt(
   previousSummary: string | undefined,
   conversationText: string,
+  focus?: string,
 ): { system: string; prompt: string } {
   const parts = [`<conversation>\n${conversationText}\n</conversation>`]
   if (previousSummary) {
@@ -341,6 +353,9 @@ export function buildCompactionPrompt(
       `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`
       + 'The <previous-summary> is discarded after this call: carry every still-relevant fact into the new summary.',
     )
+  }
+  if (focus?.trim()) {
+    parts.push(`Additional focus from the user (emphasize, do not drop other sections):\n${focus.trim().slice(0, 500)}`)
   }
   parts.push(
     previousSummary
@@ -352,10 +367,73 @@ export function buildCompactionPrompt(
   return { system: COMPACTION_SYSTEM_PROMPT, prompt: parts.join('\n\n') }
 }
 
-function budgetFor(model: Pick<ModelInfo, 'contextWindow' | 'maxOutputTokens'> | undefined): number {
+/** Code-side file ledger: exact paths the LLM must not paraphrase. */
+export interface CompactionFileRefs {
+  readFiles: string[]
+  modifiedFiles: string[]
+}
+
+const MAX_FILE_REFS_PER_KIND = 20
+
+function collectFileRefs(head: JanusAgentMessage[][]): CompactionFileRefs {
+  const read = new Set<string>()
+  const modified = new Set<string>()
+  const take = (value: unknown, into: Set<string>) => {
+    if (typeof value !== 'string') return
+    const path = value.trim().slice(0, 200)
+    if (path) into.add(path)
+  }
+  for (const unit of head) {
+    for (const message of unit) {
+      for (const call of message.toolCalls ?? []) {
+        const args = asRecord(call.arguments)
+        const name = call.name.toLowerCase()
+        if (name.includes('read')) take(args?.path, read)
+        if (name.includes('edit') || name.includes('write') || name.includes('delete')) take(args?.path, modified)
+      }
+      if (message.role !== 'tool') continue
+      try {
+        const parsed = asRecord(JSON.parse(message.content))
+        take(parsed?.path, read)
+        for (const changed of Array.isArray(parsed?.changedPaths) ? parsed?.changedPaths as unknown[] : []) {
+          take(changed, modified)
+        }
+      } catch {
+        // Non-JSON tool output carries no file refs.
+      }
+    }
+  }
+  return {
+    readFiles: [...read].slice(0, MAX_FILE_REFS_PER_KIND),
+    modifiedFiles: [...modified].slice(0, MAX_FILE_REFS_PER_KIND),
+  }
+}
+
+function formatFileRefs(refs: CompactionFileRefs): string {
+  const lines: string[] = []
+  if (refs.readFiles.length > 0) {
+    lines.push('', 'Read files (exact paths, re-read before editing):')
+    for (const path of refs.readFiles) lines.push(`- ${path}`)
+  }
+  if (refs.modifiedFiles.length > 0) {
+    lines.push('', 'Modified files (exact paths):')
+    for (const path of refs.modifiedFiles) lines.push(`- ${path}`)
+  }
+  return lines.join('\n')
+}
+
+function budgetFor(
+  model: Pick<ModelInfo, 'contextWindow' | 'maxOutputTokens'> | undefined,
+  bufferOverride?: number,
+): number {
   const contextWindow = model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
   const reservedOutput = Math.min(model?.maxOutputTokens ?? DEFAULT_RESERVED_OUTPUT_TOKENS, DEFAULT_RESERVED_OUTPUT_TOKENS)
-  return contextWindow - reservedOutput - SAFETY_MARGIN_TOKENS
+  const buffer = Number.isSafeInteger(bufferOverride)
+    ? Math.min(Math.max(bufferOverride as number, 0), Math.floor(contextWindow * (1 - MAX_COMPACTION_THRESHOLD_RATIO)))
+    : SAFETY_MARGIN_TOKENS
+  // Hard ceiling: callers may move the trigger earlier via buffer, never past
+  // 90% of the window, so a late threshold cannot overflow the provider.
+  return Math.min(contextWindow - reservedOutput - buffer, Math.floor(contextWindow * MAX_COMPACTION_THRESHOLD_RATIO))
 }
 
 interface ContextLayout {
@@ -377,7 +455,7 @@ function layoutContext(
   options: ChatContextBuildOptions,
   reservedTokens = 0,
 ): ContextLayout {
-  const window = budgetFor(options.model)
+  const window = budgetFor(options.model, options.bufferTokens)
   const systems = messages.filter((message) => message.role === 'system')
   const systemTokens = systems.reduce((total, message) => total + estimateTokens(message.content), 0)
   if (systemTokens >= window) throw new Error('SYSTEM_CONTEXT_EXCEEDS_BUDGET')
@@ -392,23 +470,26 @@ function layoutContext(
 
   const units = agentTurnUnits(messages.filter((message) => message.role !== 'system'))
   const dropped: JanusAgentMessage[][] = []
-  let keptCount = 0
   for (const unit of units) {
     const compacted = unit.map(compactToolMessage)
     const unitTokens = compacted.reduce((total, message) => total + estimateTokens(message.content), 0)
     if (usedTokens + unitTokens > budget) {
-      if (keptCount === 0) throw new Error('CURRENT_TURN_EXCEEDS_CONTEXT_BUDGET')
+      // An oversized single turn joins the dropped head instead of throwing:
+      // the digest path (or a forced summary) still represents it, so one
+      // huge tool dump never kills the session. Only unrepresentable system
+      // content throws above.
       dropped.push(unit)
       continue
     }
     usedTokens += unitTokens
-    keptCount += 1
   }
   return { systems, evidence, units, dropped, usedTokens, budget, window }
 }
 
 export interface ChatContextBuildOptions {
   model?: Pick<ModelInfo, 'contextWindow' | 'maxOutputTokens'>
+  /** Safety reserve below the window; clamped to 0..10% so callers tune early only. */
+  bufferTokens?: number
 }
 
 export interface CompactionOptions extends ChatContextBuildOptions {
@@ -416,6 +497,8 @@ export interface CompactionOptions extends ChatContextBuildOptions {
   force?: boolean
   /** Newest units kept verbatim in force mode, clamped to 1..50. */
   keepRecentUnits?: number
+  /** Optional manual-compact emphasis; rendered into the summary prompt. */
+  focus?: string
 }
 
 // Note: single-summary LLM compaction absorbs evicted turns — see ../../../../../.agents/notes/implemented/feature/2026-09-12-llm-compaction-loop.md
@@ -426,6 +509,7 @@ export class ChatSessionRuntime {
   private todos: ChatTodoItem[] = []
   private summary: string | null = null
   private summaryKey: string | null = null
+  private lastCompaction: { tokensBefore: number; summaryChars: number } | null = null
 
   /** Live todo list for the sticky bar above the composer (model is sole writer). */
   getTodos(): ChatTodoItem[] {
@@ -446,6 +530,11 @@ export class ChatSessionRuntime {
 
   getSummary(): string | null {
     return this.summary
+  }
+
+  /** Observability for /status and logs: pre-compact tokens plus stored summary size. */
+  getLastCompactionInfo(): { tokensBefore: number; summaryChars: number } | null {
+    return this.lastCompaction ? { ...this.lastCompaction } : null
   }
 
   /** Persisted state round-trip: summary text plus the head key it absorbed. */
@@ -519,7 +608,8 @@ export class ChatSessionRuntime {
         const key = fingerprint(headText)
         if (key === this.summaryKey) return compacted
 
-        const { system, prompt } = buildCompactionPrompt(this.summary ?? undefined, boundedHead)
+        const tokensBefore = layout.usedTokens + this.summaryCost()
+        const { system, prompt } = buildCompactionPrompt(this.summary ?? undefined, boundedHead, options.focus)
         let text: string
         try {
           text = await summarize({ system, prompt }, signal)
@@ -533,11 +623,17 @@ export class ChatSessionRuntime {
         } catch {
           return compacted
         }
-        const bounded = text.length > COMPACTION_MAX_SUMMARY_CHARS
-          ? `${text.slice(0, COMPACTION_MAX_SUMMARY_CHARS)}\n[truncated]`
+        // File ledger stays code-side so the model never paraphrases paths:
+        // exact refs ride below the prose summary on every compact. The prose
+        // share yields to the ledger so the stored total stays bounded.
+        const ledger = formatFileRefs(collectFileRefs(head))
+        const proseBudget = Math.max(1024, COMPACTION_MAX_SUMMARY_CHARS - ledger.length)
+        const bounded = text.length > proseBudget
+          ? `${text.slice(0, proseBudget)}\n[truncated]`
           : text
-        this.summary = bounded
+        this.summary = `${bounded}${ledger}`
         this.summaryKey = key
+        this.lastCompaction = { tokensBefore, summaryChars: this.summary.length }
         compacted = true
       }
       return compacted

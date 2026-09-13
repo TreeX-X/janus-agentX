@@ -44,7 +44,7 @@ export const COMMAND_COMPLETIONS: readonly CompletionItem[] = [
   { name: 'connect', hint: 'Provider setup wizard.' },
   { name: 'status', hint: 'Show provider/model/key/config.' },
   { name: 'workspace', hint: 'Switch workspace (history is cleared).' },
-  { name: 'compact', hint: 'Compact conversation context into a summary.' },
+  { name: 'compact', hint: 'Compact conversation context into a summary (optional focus).' },
   { name: 'new', hint: 'Start a conversation (and switch to it).' },
   { name: 'switch', hint: 'List conversations or switch conversation.' },
   { name: 'rename', hint: 'Rename the active conversation.' },

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Janus 上下文压缩：原理与轻量方案</title>
+<style>
+  :root {
+    --paper: #faf7f1;
+    --ink: #23211c;
+    --muted: #6f6a5e;
+    --accent: #b5491f;
+    --accent-soft: #f3e2d6;
+    --line: #e2dccf;
+    --card: #ffffff;
+    --digest: #1f5fa8;
+    --digest-soft: #e0ecf9;
+    --tail: #2e7d4f;
+    --tail-soft: #e0f1e6;
+    --warn: #9a6a00;
+    --warn-soft: #f8ecd0;
+    --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Noto Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.75;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 56px 28px 120px; }
+  header.hero { border-bottom: 3px solid var(--ink); padding-bottom: 28px; margin-bottom: 40px; }
+  .kicker { color: var(--accent); font-weight: 700; letter-spacing: .12em; font-size: 13px; }
+  h1 { font-size: 40px; line-height: 1.25; margin: 10px 0 12px; text-wrap: pretty; }
+  .lede { font-size: 18px; color: var(--muted); max-width: 62ch; text-wrap: pretty; }
+  h2 { font-size: 26px; margin: 64px 0 8px; padding-top: 8px; }
+  h2 .no { color: var(--accent); font-family: var(--mono); font-size: 18px; margin-right: 10px; }
+  h3 { font-size: 19px; margin: 28px 0 6px; }
+  p { max-width: 70ch; text-wrap: pretty; }
+  .rule { color: var(--muted); font-size: 15px; border-left: 3px solid var(--accent); padding-left: 14px; max-width: 70ch; }
+  code, .mono { font-family: var(--mono); font-size: .88em; background: #efe9db; padding: 1px 6px; border-radius: 4px; }
+  pre {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
+    background: var(--ink); color: #f0ead9; padding: 20px 22px; border-radius: 10px;
+    overflow-x: auto; max-width: 100%;
+  }
+  pre .c { color: #9a917f; }
+  pre .k { color: #f0b429; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px 24px; margin: 18px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } h1 { font-size: 30px; } }
+  .tag { display: inline-block; font-size: 12.5px; font-weight: 700; border-radius: 20px; padding: 2px 12px; margin-bottom: 8px; }
+  .tag.digest { background: var(--digest-soft); color: var(--digest); }
+  .tag.summary { background: var(--accent-soft); color: var(--accent); }
+  .tag.tail { background: var(--tail-soft); color: var(--tail); }
+  .tag.warn { background: var(--warn-soft); color: var(--warn); }
+  /* budget bar */
+  .bar { margin: 20px 0 6px; }
+  .bar-track { position: relative; height: 44px; background: #e9e2d2; border-radius: 8px; overflow: hidden; }
+  .bar-seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; }
+  .bar-keep { background: var(--tail-soft); color: var(--tail); }
+  .bar-sum { background: var(--accent-soft); color: var(--accent); }
+  .bar-out { background: #d8d0bd; color: var(--muted); }
+  .bar-cap { position: absolute; top: -2px; bottom: -2px; width: 3px; background: var(--accent); }
+  .bar-cap span { position: absolute; top: -24px; left: -34px; font-size: 12px; color: var(--accent); font-weight: 700; }
+  .bar-scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  /* flow */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 18px 0; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
+  .step b { display: block; font-size: 16px; }
+  .step small { color: var(--muted); }
+  .arrow { text-align: center; color: var(--accent); font-weight: 700; line-height: 1.4; padding: 2px 0; }
+  .arrow small { display: block; color: var(--muted); font-weight: 400; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 16px 0; background: var(--card); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #f0e9d8; font-size: 13px; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: none; }
+  .foot { margin-top: 72px; border-top: 2px solid var(--ink); padding-top: 18px; color: var(--muted); font-size: 14px; }
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 24px; }
+  .toc ol { margin: 8px 0 4px 20px; padding: 0; }
+  .toc li { margin: 4px 0; }
+  .toc a { color: var(--ink); text-decoration-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="kicker">JANUS-AGENTX · CONTEXT COMPACTION</div>
+    <h1>上下文压缩：用一次摘要调用，让长会话活下去</h1>
+    <p class="lede">确定性裁剪保住了文件 sha，却丢掉了需求、决策与失败尝试。本页讲清轻量方案的五件事：什么触发、压什么、怎么 abs 证不丢、溢出怎么办、哪些刻意不做。全部对应 <span class="mono">chat-session-runtime.ts</span> 里的真实机制。</p>
+  </header>
+
+  <nav class="toc">
+    <b>本页导航</b>
+    <ol>
+      <li><a href="#s1">一句话原理：三件套视图</a></li>
+      <li><a href="#s2">触发线：预算公式与 90% 硬顶</a></li>
+      <li><a href="#s3">压什么：切分规则与三层封顶</a></li>
+      <li><a href="#s4">双轨：精确 digest 与 LLM 摘要的分工</a></li>
+      <li><a href="#s5">兜底链：失败、超大单轮、provider 溢出</a></li>
+      <li><a href="#s6">手动挡：/compact 与聚焦语</a></li>
+      <li><a href="#s7">旋钮表：只留两个，其余写死</a></li>
+      <li><a href="#s8">刻意不做的三件事</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="s1"><span class="no">01</span>一句话原理：三件套视图</h2>
+  <p>每次发给模型前，<code>buildContext</code> 把持久历史重建成一个能塞进窗口的视图。压完之后模型只看到三样东西，按固定顺序排列：</p>
+  <div class="flow">
+    <div class="step"><span class="tag summary">① 摘要 summary</span><b>一条 user 口吻的交接语</b><small>单版、8000 字符封顶。七节模板：目标 / 约束 / 进展 / 决策 / 下一步 / 关键上下文 / 相关文件。口吻是 notes-to-self：resume，不重做已完成工作。</small></div>
+    <div class="arrow">↓<small>拼在 evidence 之后</small></div>
+    <div class="step"><span class="tag digest">② 精确 digest</span><b>一段代码拼的 handoff，不经 LLM 改写</b><small>path、sha256 前缀、搜索 query、条数，最近 24 行。sha 失真即 edit 冲突，所以这段永远由代码原样拼接。</small></div>
+    <div class="arrow">↓<small>对 window 校验（summary 只扣一次，避免重复扣费）</small></div>
+    <div class="step"><span class="tag tail">③ 最近 tail 原文</span><b>最新 turn 原样保留</b><small>tool 调用与其结果永不拆开，系统消息永不进压缩 head。持久历史本身从不删除，视图只是视图。</small></div>
+  </div>
+  <p class="rule">为什么摘要是 user 身份而不是 system？系统区是每 turn 重读的安全规则位，摘要只配做 handoff，不配进安全区。</p>
+
+  <h2 id="s2"><span class="no">02</span>触发线：预算公式与 90% 硬顶</h2>
+  <p>触发预算 = 窗口减去输出预留，再减去安全垫，最后套一层 90% 天花板。调用方只能把线提前，不能推迟：</p>
+  <pre><span class="c">// budgetFor：缺省行为与过去完全一致，大窗口才被天花板接管</span>
+budget = <span class="k">min</span>(window − reserved − buffer, <span class="k">floor</span>(window × 0.9))
+reserved = <span class="k">min</span>(maxOutputTokens, 2048)   <span class="c">// 输出预留</span>
+buffer   = 缺省 512，可配，钳制在 0～10% 窗口  <span class="c">// 只许调早</span></pre>
+  <div class="bar">
+    <div class="bar-track">
+      <div class="bar-seg bar-keep" style="left:0;width:72%">tail + evidence：能用</div>
+      <div class="bar-seg bar-sum" style="left:72%;width:8%">摘要预留</div>
+      <div class="bar-seg bar-out" style="left:80%;width:20%">输出预留 + 垫子</div>
+      <div class="bar-cap" style="left:90%"><span>90% 硬顶</span></div>
+    </div>
+    <div class="bar-scale"><span>0</span><span>context window</span></div>
+  </div>
+  <p>小窗口（16k 一档）下 <code>min</code> 左边更小，行为与过去逐字一致，旧单测零改动；大窗口（200k / 1M）下右边接管，任何偏晚的配置都撞顶。窗口来源是随仓内置表（未知模型回落 16384 并在 <code>/status</code> 明示 estimated），运行时零网络。</p>
+
+  <h2 id="s3"><span class="no">03</span>压什么：切分规则与三层封顶</h2>
+  <p>切分永远按 turn 边界从新到旧累加 token（<code>len/4</code> 口径），直到预算塞满。 tool 结果中间永不断开；单个 turn 超预算，允许整块滑入被丢弃 head，而不是抛错杀死会话。</p>
+  <div class="grid2">
+    <div class="card"><b>进摘要前逐条截断</b><p>tool 输出每条压到 <code>2000</code> 字符，head 全文封顶 <code>24000</code> 字符：摘要调用自己先不能溢出。</p></div>
+    <div class="card"><b>存下来只留一版</b><p>摘要 <code>8000</code> 字符封顶，旧版丢弃。头指纹对全文寻址：同一 head 永不重复烧调用。</p></div>
+    <div class="card"><b>模板缺节纠正一次</b><p>缺 <code>Goal / Progress / Next Steps</code> 就追问一次，再缺判失败，走 digest 老路。</p></div>
+    <div class="card"><b>迭代最多 3 轮</b><p>新摘要占位可能又挤掉旧 unit，下一轮继续吸收，直到所有被裁内容都有归宿。</p></div>
+  </div>
+
+  <h2 id="s4"><span class="no">04</span>双轨：精确 digest 与 LLM 摘要的分工</h2>
+  <div class="grid2">
+    <div class="card"><span class="tag digest">digest 轨 · 保真</span><p><code>toolDigest</code> + <code>droppedTurnsHandoffMessage</code> + <code>LoadedContextIndex</code>（最近 3 个已读文件 × 6000 字符）。path / sha / range / 条数一个字符都不许 LLM 碰，<code>workspace.edit</code> 的 <code>expectedHash</code> 靠它活着。</p></div>
+    <div class="card"><span class="tag summary">摘要轨 · 保义</span><p>只讲正文：要做什么、做到哪、卡在哪、下一步。文件清单由<b>代码侧</b>拼在摘要尾部（读写各最多 20 条），模型负责讲故事，不负责记路径。</p></div>
+  </div>
+  <p class="rule">LLM 改写 sha 是 edit 冲突的第一来源。分工铁律：事实走代码，叙事走模型，两者拼在一起呈现，永不混写。</p>
+
+  <h2 id="s5"><span class="no">05</span>兜底链：失败、超大单轮、provider 溢出</h2>
+  <div class="flow">
+    <div class="step"><span class="tag tail">自动 · 每轮发送前试压</span><b>transformContext：maybeCompact → buildContext</b><small>指纹去重让重复调用零成本；无 summarizer 时退化为纯 digest，与从前一致。压缩永不抛错打断 turn。</small></div>
+    <div class="arrow">↓<small>单个 turn 比整个预算还大时</small></div>
+    <div class="step"><span class="tag warn">超大单轮 · 滑入 head，不抛错</span><b>digest 照样给出一行精确记录，force 下可被摘要吸收</b><small>过去这里抛 CURRENT_TURN_EXCEEDS 停轮；现在只有系统消息超限才抛 SYSTEM_CONTEXT_EXCEEDS_BUDGET。</small></div>
+    <div class="arrow">↓<small>provider 说窗口爆了（context / overflow / 413…）</small></div>
+    <div class="step"><span class="tag summary">溢出 · 同 turn 强制压 + 重试一次</span><b>第二次溢出直接返回错误，不循环</b><small>重试复用初始消息（loop 从不改输入数组），已执行 tool 痕迹保留。估算偏差由保守提前压 + 这一次重试共同兜住。</small></div>
+  </div>
+
+  <h2 id="s6"><span class="no">06</span>手动挡：/compact 与聚焦语</h2>
+  <p><code>/compact [focus]</code> 在任务边界主动压，不依赖 turn，<code>auto=false</code> 照样可用。focus（500 字符内）只做强调语写进提示词，不删减其它章节——手动压的是时机，不是偷工减料。短历史、已是最新、传输缺失、摘要非法各有明确回执，落盘后重启与切换会话自动回填。</p>
+
+  <h2 id="s7"><span class="no">07</span>旋钮表：只留两个，其余写死</h2>
+  <table>
+    <tr><th>项</th><th>值</th><th>为什么这样定</th></tr>
+    <tr><td><code>bufferTokens</code></td><td>缺省 512，钳 0～10%</td><td>唯一的触发旋钮，只能提前。调晚的自由就是溢出的自由，不给。</td></tr>
+    <tr><td><code>keepRecentUnits</code></td><td>缺省 1，钳 1～50，仅 force</td><td>手动压时留几个最新 unit 原文，仅此而已。</td></tr>
+    <tr><td>tool 截断 / head 封顶 / 摘要封顶</td><td>2000 / 24000 / 8000</td><td>硬编码。不值得配，配了也不会调，抄 opencode / pi 的实测数。</td></tr>
+    <tr><td>digest 行数 / evidence</td><td>24 行 / 3 文件 × 6000 字符</td><td>硬编码。精确轨的预算，动它不如动 buffer。</td></tr>
+    <tr><td>可观测</td><td><code>getLastCompactionInfo</code></td><td>最近一次 tokensBefore + 摘要长度，给 /status 与日志用，压缩不再是黑箱。</td></tr>
+  </table>
+
+  <h2 id="s8"><span class="no">08</span>刻意不做的三件事</h2>
+  <div class="card"><b>用量回路（max 本地估算 / 上轮用量）</b><p>要打通 stream 适配器与压缩之间的用量 plumbing，多一堆状态，少一次误判。保守估算 + overflow 单次重试已覆盖，延后。</p></div>
+  <div class="card"><b>loop 边界中途压 + pending 重放</b><p>要动 agent loop 主干、重建请求。preflight + overflow 重试覆盖了常见长链，重放语义等真痛再做。</p></div>
+  <div class="card"><b>split-turn 双摘要 / provider 原生压缩 / 自动重读文件</b><p>双摘要是质量上限不是存活下限；原生压缩无统一 endpoint；压后自动重读会引发压缩雪崩。evidence 按预算重建即可。</p></div>
+
+  <div class="foot">
+    落点：<span class="mono">packages/chat-core/src/main/llm/chat-session-runtime.ts</span>（预算、切分、双轨、兜底）·
+    <span class="mono">packages/janus-agent/src/orchestrator/chat-turn.ts</span>（预检 + 溢出重试）·
+    <span class="mono">packages/cli/src/session.ts + tui/exec.ts</span>（/compact 聚焦）<br>
+    守卫：chat-core 34 · janus-agent 14 · cli tui-compact 4，全绿。决策资产见
+    <span class="mono">.agents/notes/implemented/feature/2026-09-12-llm-compaction-loop.md</span>。
+  </div>
+
+</div>
+</body>
+</html>

@@ -39,6 +39,7 @@ import {
   formatAskSummary,
   formatTodoStateMessage,
   hasExplicitWorkspaceMutationIntent,
+  isContextOverflowError,
   latestUserQuery,
   prepareJanusChatRecall,
   toChatAgentEvent,
@@ -295,7 +296,7 @@ export async function runChatTurn(
     if (tool.name === ASKUSER_TOOL_NAME) tool.runLast = true
   }
 
-  await runJanusAgentLoop(modelMessages, {
+  const loopConfig: Parameters<typeof runJanusAgentLoop>[1] = {
     tools: loopTools,
     stream: createVercelStream({ model: endpoint.model, tools: modelTools, streamTextFn: ports.streamTextFn, ...(endpoint.effort ? { effort: endpoint.effort } : {}) }),
     transformContext: async (context, signal) => {
@@ -377,7 +378,30 @@ export async function runChatTurn(
         streamedText += loopEvent.delta
       }
     },
-  }, signal ?? new AbortController().signal)
+  }
+
+  // Provider overflow recovery: one forced compact plus a single retry of the
+  // same turn. A second overflow surfaces as the turn error. The retry reuses
+  // the initial messages because the loop never mutates its input array.
+  try {
+    await runJanusAgentLoop(modelMessages, loopConfig, signal ?? new AbortController().signal)
+  } catch (error) {
+    if (signal?.aborted || !isContextOverflowError(error) || !request.compactionSummarizer) throw error
+    try {
+      if (await chatSession.maybeCompact(
+        modelMessages,
+        {
+          model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+          force: true,
+        },
+        request.compactionSummarizer,
+        signal ?? new AbortController().signal,
+      )) compacted = true
+    } catch {
+      // Fall through to the single retry below.
+    }
+    await runJanusAgentLoop(modelMessages, loopConfig, signal ?? new AbortController().signal)
+  }
 
   if (signal?.aborted) {
     onEvent({ type: 'stream_end', requestId, cancelled: true })
