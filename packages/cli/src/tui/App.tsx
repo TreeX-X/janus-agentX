@@ -429,6 +429,11 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       mountedRef.current = false
       pendingRef.current = []
       controllerRef.current?.abort()
+      if (streamBatchTimerRef.current !== null) {
+        clearTimeout(streamBatchTimerRef.current)
+        streamBatchTimerRef.current = null
+      }
+      streamBatchRef.current = []
     }
   }, [])
 
@@ -445,6 +450,32 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   // through `useSyncedCaret()` (real native cursor while focused, hidden
   // while disabled); when the approval gate unmounts it, Ink clears
   // that intent itself, so no stale cursor can leak.
+  // Note: stream deltas are coalesced into one render per window — see .agents/notes/implemented/bug-fix/2026-09-13-tui-stream-batch-cursor.md
+  const STREAM_BATCH_MS = 50
+  const streamBatchRef = useRef<ChatAgentEvent[]>([])
+  const streamBatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushStreamBatch = useCallback((): void => {
+    const timer = streamBatchTimerRef.current
+    if (timer !== null) {
+      clearTimeout(timer)
+      streamBatchTimerRef.current = null
+    }
+    const queued = streamBatchRef.current
+    if (queued.length === 0) return
+    streamBatchRef.current = []
+    for (const event of queued) dispatch({ type: 'agent-event', event })
+  }, [])
+  const dispatchStreamEvent = useCallback((event: ChatAgentEvent): void => {
+    if (event.type === 'text_delta' || event.type === 'reasoning_delta') {
+      streamBatchRef.current.push(event)
+      if (streamBatchTimerRef.current === null) {
+        streamBatchTimerRef.current = setTimeout(flushStreamBatch, STREAM_BATCH_MS)
+      }
+      return
+    }
+    flushStreamBatch()
+    dispatch({ type: 'agent-event', event })
+  }, [flushStreamBatch])
   const runTurn = useCallback(async (prompt: string): Promise<void> => {
     const current = sessionRef.current
     dispatch({ type: 'user-message', text: prompt })
@@ -458,14 +489,16 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       const result = await current.sendTurn(
         prompt,
         {
-          onEvent: ({ event }) => dispatch({ type: 'agent-event', event: event as ChatAgentEvent }),
+          onEvent: ({ event }) => dispatchStreamEvent(event as ChatAgentEvent),
           onDisplayEvent: (event) => dispatch(event),
         },
         controller.signal,
       )
+      flushStreamBatch()
       dispatch({ type: 'turn-done', cancelled: result.cancelled, assistantText: result.text })
       completed = !result.cancelled && !controller.signal.aborted
     } catch (error) {
+      flushStreamBatch()
       dispatch({ type: 'turn-done', cancelled: true, assistantText: '' })
       const raw = error instanceof Error ? error.message : String(error)
       // Missing model/key are configuration reminders, not turn failures:
@@ -496,7 +529,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
         }
       }
     }
-  }, [refreshContext])
+  }, [refreshContext, dispatchStreamEvent, flushStreamBatch])
 
   const runCommand = useCallback(async (command: string, args: string[]): Promise<void> => {
     // /connect always opens the visual setup panel (the roster + wizard);

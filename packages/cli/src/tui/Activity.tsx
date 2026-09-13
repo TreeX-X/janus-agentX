@@ -10,9 +10,11 @@ export function duration(ms: number): string {
 export function Activity({ text, startedAt }: { text: string; startedAt?: number }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 120)
+    // Coarse tick: every repaint moves the native caret, so the spinner must
+    // not repaint faster than needed (cursor-stability over smooth animation).
+    const timer = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(timer)
   }, [])
-  const glyph = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 120) % 10]
+  const glyph = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][Math.floor(now / 250) % 10]
   return <Text color={LOGO_TONE.dim}>{glyph} {text}{startedAt !== undefined ? ` · ${duration(now - startedAt)}` : ''}</Text>
 }
