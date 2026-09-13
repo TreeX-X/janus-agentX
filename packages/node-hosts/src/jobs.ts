@@ -14,6 +14,9 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, open, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FileHandle } from 'node:fs/promises'
+import { commandExecutionMode, WINDOWS_SHELL_META } from './windows-shell.js'
+
+// Note: background spawn shares the Windows shell shim with sync command.run — see .agents/notes/implemented/bug-fix/2026-09-13-background-jobs-windows-shell-shim.md
 
 const LOG_DIR = '.janusX/logs'
 /** P4-tail mirror: keep the last N exited snapshots queryable. */
@@ -21,6 +24,11 @@ const MAX_JOBS = 20
 const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024
 const KILL_ESCALATION_MS = 5_000
 const STOP_WAIT_MS = 10_000
+
+function spawnHint(program: string): string {
+  return `hint: the program '${program}' failed to start (ENOENT reads as a negative exit such as -4058 on Windows).`
+    + ` Launch the host from a shell with Node on PATH; package-manager shims resolve through cmd.exe on win32.`
+}
 
 export interface JobStartInput {
   /** Absolute workspace root (log dir + jail anchor). */
@@ -112,6 +120,11 @@ export class JobManager {
   async start(input: JobStartInput): Promise<JobStarted> {
     const projectId = `bg-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
     const name = input.label.slice(0, 120) || input.program
+    const executionMode = commandExecutionMode(input.program)
+    const useShell = executionMode === 'windows-shell-shim'
+    if (useShell && input.args.some((arg) => WINDOWS_SHELL_META.test(arg))) {
+      throw new Error('command.run shell-backed arguments contain unsupported metacharacters')
+    }
     await mkdir(join(input.workspaceRoot, LOG_DIR), { recursive: true })
     const logName = `${projectId}.log`
     const logAbsPath = join(input.workspaceRoot, LOG_DIR, logName)
@@ -121,17 +134,27 @@ export class JobManager {
       `# program: ${input.program} ${input.args.join(' ')}`.trimEnd(),
       `# cwd: ${input.cwdDisplay || '.'}`,
       `# started: ${new Date().toISOString()}`,
+      `# executionMode: ${executionMode}`,
       ...(input.timeoutMs === undefined ? [] : [`# timeoutMs: ${input.timeoutMs}`]),
       '--- output ---',
     ].join('\n')
     const handle = await open(logAbsPath, 'w')
 
-    const child = spawn(input.program, input.args, {
-      cwd: input.cwd,
-      env: { ...process.env, ...input.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
+    let child
+    try {
+      child = spawn(input.program, input.args, {
+        cwd: input.cwd,
+        env: { ...process.env, ...input.env },
+        shell: useShell,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await handle.write(`${header}\nspawn error: ${detail}\n${spawnHint(input.program)}\n`)
+      await handle.close()
+      throw error instanceof Error ? error : new Error(detail)
+    }
     // A CLI must be able to exit while jobs run; the disk log keeps them readable.
     child.unref()
 
@@ -175,6 +198,7 @@ export class JobManager {
     }
     child.stdout.on('data', (chunk: Buffer) => append(chunk))
     child.stderr.on('data', (chunk: Buffer) => append(chunk))
+    let spawnError: Error | null = null
     const settle = async (exitCode: number | null, signal: string | null) => {
       if (record.exited) return
       record.exited = true
@@ -185,9 +209,16 @@ export class JobManager {
         clearTimeout(record.timeoutTimer)
         record.timeoutTimer = null
       }
+      // A spawn failure (e.g. ENOENT for an unresolvable program) otherwise
+      // settles as a bare negative exit with an empty log. Keep the error text
+      // plus the remediation hint in the log so polling surfaces the cause.
+      const spawnReport = spawnError
+        ? `spawn error: ${spawnError.message}\n${spawnHint(input.program)}\n`
+        : (typeof exitCode === 'number' && exitCode < 0 ? `${spawnHint(input.program)}\n` : '')
       const footer = `\n--- exit: code=${String(exitCode)} signal=${String(signal)} timedOut=${String(record.timedOut)} wallTimeMs=${record.endedAt - record.startedAt} ---\n`
       try {
         await record.queue
+        if (spawnReport) await record.handle?.write(spawnReport)
         await record.handle?.write(footer)
         await record.handle?.close()
       } catch {
@@ -195,8 +226,9 @@ export class JobManager {
       }
       record.handle = null
     }
-    child.once('error', () => {
+    child.once('error', (error: Error) => {
       // 'close' always follows 'error' in Node; settle there for one code path.
+      spawnError = error
     })
     child.once('close', (exitCode, signal) => {
       void settle(exitCode, signal)

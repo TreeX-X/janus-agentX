@@ -57,8 +57,8 @@ describe('JobManager', () => {
       expect(first.totalLines).toBeGreaterThanOrEqual(10)
       expect(first.output.length).toBe(4)
       expect(first.truncated).toBe(true)
-      // Log layout: 4 header lines + '--- output ---' separator, then output.
-      const second = await manager.poll(started.projectId, 4, 9)
+      // Log layout: 5 header lines + '--- output ---' separator, then output.
+      const second = await manager.poll(started.projectId, 4, 10)
       expect(second.output[0]).toContain('line-4')
       await expect(manager.poll(started.projectId, 0)).rejects.toThrow()
     } finally {
@@ -108,5 +108,22 @@ describe('JobManager', () => {
       await manager.dispose()
     }
     await expect(manager.poll(started.projectId)).rejects.toThrow(/Unknown background job/)
+  }, 30_000)
+
+  it('surfaces an unresolvable program in the log instead of an empty failure', async () => {
+    const manager = new JobManager()
+    try {
+      const root = workspaceRoot()
+      const started = await manager.start({
+        workspaceRoot: root, cwd: root, cwdDisplay: '', program: 'janus-ghost-prog-4058',
+        args: [], env: {}, label: 'missing program',
+      })
+      await waitFor(manager, started.projectId, (page) => page.exited)
+      const page = await manager.poll(started.projectId, 50)
+      expect(page.exited).toBe(true)
+      expect(page.output.join('\n')).toMatch(/spawn error|failed to start/)
+    } finally {
+      await manager.dispose()
+    }
   }, 30_000)
 })

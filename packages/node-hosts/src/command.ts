@@ -15,7 +15,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { extname, isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import {
   resolveWorkspaceTarget,
   type RegisteredTool,
@@ -23,6 +23,14 @@ import {
 } from '@janus-agent/agent-core'
 import type { JobManager } from './jobs.js'
 import { evaluateDestructiveCommand } from './destructive-commands.js'
+import {
+  commandExecutionMode,
+  WINDOWS_SHELL_META,
+  type NodeCommandExecutionMode,
+} from './windows-shell.js'
+
+export { commandExecutionMode, WINDOWS_SHELL_COMMANDS, WINDOWS_SHELL_META } from './windows-shell.js'
+export type { NodeCommandExecutionMode } from './windows-shell.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 600_000
@@ -33,8 +41,6 @@ const PREVIEW_BYTES = 8 * 1024
 /** Bound the persisted log file so a spammy process cannot grow it without bound. */
 const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024
 const LOG_DIR = '.janusX/logs'
-const WINDOWS_SHELL_COMMANDS = new Set(['npm', 'yarn', 'pnpm', 'bun'])
-const WINDOWS_SHELL_META = /[&|<>^\r\n]/
 
 /**
  * R4 mirror: env allowlist (operational, non-credential keys, case-insensitive).
@@ -79,17 +85,6 @@ export function filterCommandEnv(value: unknown): Record<string, string> {
     env[key] = item
   }
   return env
-}
-
-export type NodeCommandExecutionMode = 'direct' | 'windows-shell-shim'
-
-/** Windows package-manager shims and .cmd/.bat files need cmd.exe compatibility. */
-export function commandExecutionMode(program: string, platform: NodeJS.Platform = process.platform): NodeCommandExecutionMode {
-  if (platform !== 'win32') return 'direct'
-  return WINDOWS_SHELL_COMMANDS.has(program.toLowerCase())
-    || ['.bat', '.cmd'].includes(extname(program).toLowerCase())
-    ? 'windows-shell-shim'
-    : 'direct'
 }
 
 interface StreamCapture {
