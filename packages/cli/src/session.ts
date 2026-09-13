@@ -30,6 +30,7 @@ import { FALLBACK_MODEL_LIMITS, resolveModelLimits } from './model-limits.js'
 import { saveAuthFile } from './auth.js'
 import { JobManager, registerNodeHostTools } from '@janus-agent/node-hosts'
 import type { ApprovalModeOption } from './args.js'
+import { postJanusxHook } from './janusx-hook.js'
 import { DEFAULT_EFFORT, normalizeEffort, type EffortLevel } from './effort.js'
 import {
   ConversationRegistry,
@@ -525,6 +526,17 @@ export class CliSession {
         let approved = false
         try {
           const preview = snapshot.preview
+          // JanusX hook: signal approval-wait before the host UI resolves it.
+          void postJanusxHook({
+            event: 'PermissionRequest',
+            sessionId: this.registry.getActiveId(),
+            cwd: this.workspaceRoot,
+            message: typeof preview?.summary === 'string' && preview.summary
+              ? preview.summary
+              : `${snapshot.toolName} needs approval`,
+            raw: { hook: 'approval-requested', toolName: snapshot.toolName },
+            env: this.env,
+          })
           approved = await (this.onApproval?.({
             toolName: snapshot.toolName,
             workspaceId: snapshot.workspaceId,
@@ -686,6 +698,16 @@ export class CliSession {
     const handler = this.onQuestion
     this.ports.question = {
       askUser: async (request, signal) => {
+        // JanusX hook: mid-turn question reads as waiting-for-input.
+        const first = request.questions[0]
+        void postJanusxHook({
+          event: 'Notification',
+          sessionId: this.registry.getActiveId(),
+          cwd: this.workspaceRoot,
+          message: first ? `${first.header}: ${first.question}` : 'janus needs input',
+          raw: { hook: 'ask-user', matcher: 'idle_prompt' },
+          env: this.env,
+        })
         try {
           return await handler(request, signal)
         } catch {
@@ -934,8 +956,18 @@ export class CliSession {
       record.data.title = titleFromPrompt(prompt)
     }
     this.approvalSignal = signal ?? new AbortController().signal
+    const hookBase = {
+      sessionId: record.data.id,
+      cwd: this.workspaceRoot,
+      env: this.env,
+    }
+    // JanusX hook: turn boundaries are awaited (localhost) so Stop can never
+    // overtake Start in the bridge; a late Start would strand a phantom turn.
+    await postJanusxHook({ ...hookBase, event: 'UserPromptSubmit', message: prompt, raw: { hook: 'send-turn' } })
     try {
-      const result = await runChatTurn(
+      let result: ChatTurnResult
+      try {
+        result = await runChatTurn(
         {
           requestId,
           messages: requestMessages,
@@ -965,14 +997,31 @@ export class CliSession {
           },
         },
         this.approvalSignal,
-      )
-      if (!result.cancelled) {
-        record.data.messages = [...requestMessages, { role: 'assistant' as const, content: result.text }]
-        record.data.toolTraces = [...record.data.toolTraces, ...result.toolTraces].slice(-TOOL_TRACE_MAX_ENTRIES)
-      } else {
+        )
+      } catch (error) {
+        // JanusX hook: model/turn failure ends the turn as degraded, never silent.
+        await postJanusxHook({
+          ...hookBase,
+          event: 'StopFailure',
+          message: error instanceof Error ? error.message : String(error),
+          raw: { hook: 'send-turn' },
+        })
+        throw error
+      }
+      if (result.cancelled) {
+        await postJanusxHook({ ...hookBase, event: 'janusx.turn.interrupted', raw: { hook: 'send-turn' } })
         // Aborted turn: keep the user prompt so the user can retry or move on,
         // but do not record a partial assistant message.
         record.data.messages = requestMessages
+      } else {
+        await postJanusxHook({
+          ...hookBase,
+          event: 'Stop',
+          message: result.text,
+          raw: { hook: 'send-turn' },
+        })
+        record.data.messages = [...requestMessages, { role: 'assistant' as const, content: result.text }]
+        record.data.toolTraces = [...record.data.toolTraces, ...result.toolTraces].slice(-TOOL_TRACE_MAX_ENTRIES)
       }
       // Todo snapshot is authoritative from the turn (live-written into the
       // per-conversation ChatSessionRuntime during the loop). Persist it so
@@ -1001,6 +1050,14 @@ export class CliSession {
     } catch {
       // Best effort: session teardown must not fail.
     }
+    // JanusX hook: closes a still-open turn when the pty dies or the user
+    // exits mid-turn. Without an active turn the bridge ignores it.
+    await postJanusxHook({
+      event: 'SessionEnd',
+      sessionId: this.registry.getActiveId(),
+      cwd: this.workspaceRoot,
+      env: this.env,
+    })
     await this.hosts.dispose()
     await this.runtime.cancelSession(this.sessionId).catch(() => undefined)
   }
