@@ -69,7 +69,24 @@ describe('tool traces', () => {
     expect(entry.summary).toContain('old.md')
     expect(entry.summary).toContain('kind=file')
     expect(entry.summary).toContain('checkpoint=cp-1')
+    expect(entry.checkpointId).toBe('cp-1')
     expect(workspaceRecoveryPrompt(true)).toContain('workspace_delete')
+  })
+
+  it('carries the per-call diff preview to cards without touching the replay summary', () => {
+    const entry = toolTraceEntryFromResult({
+      toolName: 'workspace.edit', workspaceId: 'w', status: 'completed',
+      summary: 'ok',
+      output: {
+        path: 'a.ts', sha256: 'abc', checkpointId: 'cp-9',
+        diffPreview: '--- a/a.ts\n+++ b/a.ts\n@@ replacement 1/1 @@\n-x\n+y',
+        diffTruncated: false,
+      },
+    } as never, 't2')
+    expect(entry.diffPreview).toContain('-x')
+    expect(entry.checkpointId).toBe('cp-9')
+    expect(entry.summary).toContain('a.ts')
+    expect(entry.summary).not.toContain('-x')
   })
 })
 

@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from 'node:util'
 import { redactPolicyValue, type AgentStreamEvent, type ToolResult } from '@janus-agent/agent-core'
 import { toolTraceEntryFromResult } from '@janus-agent/chat-core'
+import { formatDiff, summarizeCallDiff } from './trace-preview.js'
 
 export type ToolCategory = 'read' | 'search' | 'edit' | 'command' | 'git' | 'project' | 'tool'
 export interface ToolDisplay {
@@ -153,7 +154,17 @@ export function toDisplayEvent(event: AgentStreamEvent): CliDisplayEvent | undef
     // Show this call's applied changes, independent of pre-existing working-tree edits.
     if (category === 'edit' && !display.failed) {
       const normalizedName = event.call.name.replace(/[._-]/g, '').toLowerCase()
-      if (normalizedName === 'workspacedelete') {
+      const callDiff = typeof output.diffPreview === 'string' && output.diffPreview ? output.diffPreview : undefined
+      const checkpointId = typeof output.checkpointId === 'string' && output.checkpointId ? output.checkpointId : undefined
+      const callPath = typeof output.path === 'string' && output.path
+        ? output.path
+        : typeof args.path === 'string' ? args.path : undefined
+      if (callDiff && callPath) {
+        // Per-call verified diff first; the args branches below stay as fallback.
+        const lines = formatDiff(callDiff)
+        display.output = lines
+        display.summary = summarizeCallDiff(callPath, lines, checkpointId)
+      } else if (normalizedName === 'workspacedelete') {
         const deleted = record(details.output)
         const kind = typeof deleted.kind === 'string' ? deleted.kind : 'target'
         const size = typeof deleted.bytes === 'number' && deleted.bytes > 0

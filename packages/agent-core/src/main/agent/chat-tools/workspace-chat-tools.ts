@@ -284,13 +284,15 @@ function createEditPreview(path: string, value: unknown) {
     const item = replacement && typeof replacement === 'object'
       ? replacement as { oldText?: unknown; newText?: unknown }
       : {}
+    const oldText = typeof item.oldText === 'string' ? item.oldText : ''
+    const newText = typeof item.newText === 'string' ? item.newText : ''
     return [
-      `Replacement ${index + 1}`,
-      `- ${typeof item.oldText === 'string' ? item.oldText : ''}`,
-      `+ ${typeof item.newText === 'string' ? item.newText : ''}`,
+      `@@ replacement ${index + 1}/${replacements.length} @@`,
+      ...oldText.split('\n').map((line) => `-${line}`),
+      ...newText.split('\n').map((line) => `+${line}`),
     ].join('\n')
   })
-  const fullDetail = parts.join('\n\n')
+  const fullDetail = [`--- a/${path}`, `+++ b/${path}`, ...parts].join('\n')
   return {
     summary: `Edit ${path} with ${replacements.length} exact replacement${replacements.length === 1 ? '' : 's'}`,
     paths: [path],
@@ -310,11 +312,14 @@ function createUnifiedDiffPreview(path: string, value: unknown) {
 }
 
 function createCreatePreview(path: string, content: string) {
+  const lines = content.split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  const fullDetail = [`--- /dev/null`, `+++ b/${path}`, `@@`, ...lines.map((line) => `+${line}`)].join('\n')
   return {
     summary: `Create ${path} (${Buffer.byteLength(content, 'utf-8')} bytes)`,
     paths: [path],
-    detail: content.slice(0, 4_000),
-    truncated: content.length > 4_000,
+    detail: fullDetail.slice(0, 4_000),
+    truncated: fullDetail.length > 4_000,
   }
 }
 

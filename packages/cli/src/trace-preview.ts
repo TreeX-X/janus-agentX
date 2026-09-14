@@ -2,10 +2,13 @@
  * @file Post-turn file-change previews for tool cards (no React/Ink).
  * @description After a turn resolves, `ChatTurnResult.toolTraces` carries a
  * compact `summary` per executed tool (path + sha, match counts, edit notes).
- * For file mutations (`workspace.edit/create/delete`) this module additionally reads
- * a bounded `git diff` (or new-file content) so cards render a real preview
- * under the outcome line — pi/opencode style. Deleted tracked files render
- * their deletion diff; deleted untracked files degrade to the summary line. Everything is best-effort and
+ * For file mutations (`workspace.edit/create/delete`) this module prefers the
+ * per-call verified diff carried on the trace (`diffPreview` plus
+ * `checkpointId`), so each card attributes its own call even for same-file
+ * rewrites in one turn and outside any repo. The bounded `git diff`
+ * (or new-file content) remains as the fallback for external edits; deleted
+ * tracked files render their deletion diff; deleted untracked files degrade
+ * to the summary line. Everything is best-effort and
  * synchronous: any failure degrades to the summary line. Reads stay inside
  * the workspace root; output is already-bounded display text.
  */
@@ -19,6 +22,8 @@ export interface TracePreview {
   summary: string
   /** Compact diff/content lines (may be empty → summary-only card). */
   diff: string[]
+  /** Checkpoint holding the pre-call snapshot, when the call reported one. */
+  checkpointId?: string
 }
 
 const MUTATION_TOOLS = new Set(['workspaceedit', 'workspacecreate', 'workspacedelete'])
@@ -48,8 +53,24 @@ function truncateLine(line: string): string {
   return line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}…` : line
 }
 
+function shortCheckpoint(checkpointId: string): string {
+  return checkpointId.slice(0, 8)
+}
+
+/**
+ * One home for the change-card header: `path · (+a -d) · checkpoint <short>`.
+ * The stat comes from the formatted tail; without a stat line the header
+ * degrades to the path plus the checkpoint segment when one is known.
+ */
+export function summarizeCallDiff(path: string, formatted: string[], checkpointId?: string): string {
+  const tail = formatted.length > 0 ? formatted[formatted.length - 1] : undefined
+  const stat = tail && /^\(\+.*\)$/.test(tail) ? ` · ${tail}` : ''
+  const checkpoint = checkpointId ? ` · checkpoint ${shortCheckpoint(checkpointId)}` : ''
+  return `${path}${stat}${checkpoint}`
+}
+
 /** Drop diff headers, bound lines, append a (+a -d) stat line when computable. */
-function formatDiff(raw: string): string[] {
+export function formatDiff(raw: string): string[] {
   const content: string[] = []
   let added = 0
   let deleted = 0
@@ -106,9 +127,19 @@ export function buildTracePreviews(workspaceRoot: string, traces: ChatToolTraceE
       const summary = trace.summary?.trim() || trace.toolName
       const path = typeof trace.argsDigest === 'string' && trace.argsDigest ? trace.argsDigest : undefined
       const normalized = normalizeToolName(trace.toolName)
-      const diff = path && MUTATION_TOOLS.has(normalized)
-        ? previewFileChange(workspaceRoot, path, { isNew: normalized === 'workspacecreate' })
-        : []
-      return { toolName: trace.toolName, summary, diff }
+      const checkpointId = typeof trace.checkpointId === 'string' && trace.checkpointId ? trace.checkpointId : undefined
+      if (!path || !MUTATION_TOOLS.has(normalized)) return { toolName: trace.toolName, summary, diff: [], checkpointId }
+      // Per-call verified diff first (exact attribution, works outside repos),
+      // then the cumulative git fallback for external edits, else summary-only.
+      if (typeof trace.diffPreview === 'string' && trace.diffPreview) {
+        const diff = formatDiff(trace.diffPreview)
+        const lines = checkpointId ? [...diff, `checkpoint ${shortCheckpoint(checkpointId)} · 可撤销`] : diff
+        return { toolName: trace.toolName, summary: summarizeCallDiff(path, diff, checkpointId), diff: lines, checkpointId }
+      }
+      const diff = previewFileChange(workspaceRoot, path, { isNew: normalized === 'workspacecreate' })
+      if (diff.length > 0) {
+        return { toolName: trace.toolName, summary: summarizeCallDiff(path, diff), diff }
+      }
+      return { toolName: trace.toolName, summary, diff: [], checkpointId }
     })
 }

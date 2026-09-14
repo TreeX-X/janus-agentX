@@ -110,6 +110,12 @@ export interface ChatToolTraceEntry {
   resultDigest?: string
   /** Error detail shown when the card is expanded; already redacted. */
   errorDetail?: string
+  /** Per-call verified diff preview (bounded unified diff) for change cards. */
+  diffPreview?: string
+  /** True when diffPreview was truncated at the source cap. */
+  diffTruncated?: boolean
+  /** Checkpoint holding the pre-call snapshot; the card links here for restore. */
+  checkpointId?: string
   startedAt?: number
   completedAt?: number
 }

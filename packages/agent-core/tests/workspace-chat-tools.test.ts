@@ -167,7 +167,7 @@ describe('workspace chat tools', () => {
         preview: {
           summary: 'Create notes/test.md (5 bytes)',
           paths: ['notes/test.md'],
-          detail: 'hello',
+          detail: '--- /dev/null\n+++ b/notes/test.md\n@@\n+hello',
           truncated: false,
         },
       }),
@@ -200,7 +200,7 @@ describe('workspace chat tools', () => {
         preview: {
           summary: 'Edit README.md with 1 exact replacement',
           paths: ['README.md'],
-          detail: 'Replacement 1\n- before\n+ after',
+          detail: '--- a/README.md\n+++ b/README.md\n@@ replacement 1/1 @@\n-before\n+after',
           truncated: false,
         },
       }),

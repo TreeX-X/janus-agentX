@@ -87,6 +87,13 @@ export function toolResultToModelValue(result: ToolResult): unknown {
     const output = asRecord(result.output)
     if (output && result.toolName === 'command.run') return commandRunModelValue(output)
     if (output && result.toolName === 'project.process-output') return processOutputModelValue(output)
+    // Display-only change-card assets ride the full ToolResult to traces/UI;
+    // the model already holds the bytes it sent, so they never enter context.
+    if (output && (result.toolName === 'workspace.edit' || result.toolName === 'workspace.create' || result.toolName === 'workspace.delete')
+      && ('diffPreview' in output || 'diffTruncated' in output)) {
+      const { diffPreview: _droppedPreview, diffTruncated: _droppedTruncated, ...modelOutput } = output
+      return modelOutput
+    }
     return result.output
   }
   if (result.reasonCode === 'APPROVAL_DENIED') {

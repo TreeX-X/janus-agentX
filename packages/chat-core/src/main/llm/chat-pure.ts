@@ -97,6 +97,15 @@ export function toolTraceEntryFromResult(result: ToolResult, turnId?: string): C
   if (result.status !== 'completed') {
     parts.push(result.reasonCode === 'APPROVAL_DENIED' ? 'user denied' : result.error || result.status)
   }
+  // Per-call display assets for change cards: the bounded diff this call
+  // applied plus the checkpoint holding its pre-call snapshot. Model history
+  // keeps only the summary line; the diff rides to the UI, never the model.
+  const diffPreview = typeof output?.diffPreview === 'string' && output.diffPreview
+    ? output.diffPreview.slice(0, 4_000)
+    : undefined
+  const checkpointId = typeof output?.checkpointId === 'string' && output.checkpointId
+    ? output.checkpointId
+    : undefined
   return {
     toolName: result.toolName,
     workspaceId: result.workspaceId,
@@ -106,6 +115,9 @@ export function toolTraceEntryFromResult(result: ToolResult, turnId?: string): C
     argsDigest: argsDigest ? boundedText(argsDigest, 200) : undefined,
     resultDigest: resultDigest ? boundedText(resultDigest, 200) : undefined,
     errorDetail: result.status !== 'completed' ? sanitizeTraceError(result) : undefined,
+    diffPreview,
+    diffTruncated: output?.diffTruncated === true ? true : undefined,
+    checkpointId,
     startedAt: result.startedAt ? Date.parse(result.startedAt) : undefined,
     completedAt: result.completedAt ? Date.parse(result.completedAt) : undefined,
   }

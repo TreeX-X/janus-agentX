@@ -1,4 +1,5 @@
 import { readdir, readFile, stat } from 'fs/promises'
+import { isUtf8 } from 'node:buffer'
 import { dirname, join, resolve } from 'path'
 import { resolveWorkspaceTarget } from '../path-guard'
 import { evaluateWorkspaceReadPolicy, isSensitivePath, redactHighConfidenceSecrets } from '../policy-gate'
@@ -23,6 +24,64 @@ const MAX_DEPTH = 4
 const DEFAULT_MAX_ENTRIES = 200
 const MAX_MAX_ENTRIES = 1000
 const registeredRegistries = new WeakSet<ToolRegistry>()
+
+// Note: per-call verified diffs feed the change cards — see .agents/notes/implemented/feature/2026-09-13-checkpoint-diff-cards.md
+/** Source side over this size skips the preview; the card falls back to summary. */
+const MAX_DIFF_PREVIEW_SOURCE_BYTES = 256 * 1024
+/** Bounded unified preview carried on the tool output for display only. */
+const MAX_DIFF_PREVIEW_CHARS = 4_000
+
+export interface CallDiffPreview {
+  diffPreview: string
+  diffTruncated: boolean
+}
+
+function boundPreview(raw: string): CallDiffPreview {
+  return raw.length > MAX_DIFF_PREVIEW_CHARS
+    ? { diffPreview: raw.slice(0, MAX_DIFF_PREVIEW_CHARS), diffTruncated: true }
+    : { diffPreview: raw, diffTruncated: false }
+}
+
+function prefixLines(content: string, prefix: '+' | '-'): string {
+  const lines = content.split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines.map((line) => `${prefix}${line}`).join('\n')
+}
+
+/** Exact byte blocks this call applies, rendered as one hunk per replacement. */
+function replacementsDiffPreview(path: string, value: unknown): CallDiffPreview | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const hunks: string[] = []
+  for (const [index, item] of value.entries()) {
+    const replacement = item && typeof item === 'object'
+      ? item as { oldText?: unknown; newText?: unknown }
+      : {}
+    if (typeof replacement.oldText !== 'string' || typeof replacement.newText !== 'string') return undefined
+    if (Buffer.byteLength(replacement.oldText, 'utf-8') + Buffer.byteLength(replacement.newText, 'utf-8') > MAX_DIFF_PREVIEW_SOURCE_BYTES) return undefined
+    hunks.push([
+      `@@ replacement ${index + 1}/${value.length} @@`,
+      prefixLines(replacement.oldText, '-'),
+      prefixLines(replacement.newText, '+'),
+    ].join('\n'))
+  }
+  return boundPreview([`--- a/${path}`, `+++ b/${path}`, ...hunks].join('\n'))
+}
+
+function unifiedInputDiffPreview(value: unknown): CallDiffPreview | undefined {
+  if (typeof value !== 'string' || !value) return undefined
+  if (Buffer.byteLength(value, 'utf-8') > MAX_DIFF_PREVIEW_SOURCE_BYTES) return undefined
+  return boundPreview(value)
+}
+
+function createDiffPreview(path: string, content: string): CallDiffPreview | undefined {
+  if (Buffer.byteLength(content, 'utf-8') > MAX_DIFF_PREVIEW_SOURCE_BYTES) return undefined
+  return boundPreview([`--- /dev/null`, `+++ b/${path}`, `@@`, prefixLines(content, '+')].join('\n'))
+}
+
+function deleteDiffPreview(path: string, content: Buffer): CallDiffPreview | undefined {
+  if (content.byteLength > MAX_DIFF_PREVIEW_SOURCE_BYTES || !isUtf8(content)) return undefined
+  return boundPreview([`--- a/${path}`, `+++ /dev/null`, `@@`, prefixLines(content.toString('utf-8'), '-')].join('\n'))
+}
 
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
@@ -133,6 +192,9 @@ export const workspaceEditTool: RegisteredTool = {
     if (context.signal.aborted) throw new Error('workspace.edit cancelled')
     prepared = await prepare()
     await atomicReplaceWorkspaceFile(context.workspaceRoot, prepared)
+    const callDiff = hasUnifiedDiff
+      ? unifiedInputDiffPreview(input.unifiedDiff)
+      : replacementsDiffPreview(prepared.path, input.replacements)
     return {
       workspaceId: context.workspaceId,
       path: prepared.path,
@@ -143,6 +205,7 @@ export const workspaceEditTool: RegisteredTool = {
       replacements: prepared.replacements,
       bytes: Buffer.byteLength(prepared.nextContent),
       checkpointId: checkpoint.id,
+      ...(callDiff ?? {}),
     }
   },
 }
@@ -188,6 +251,7 @@ export const workspaceCreateTool: RegisteredTool = {
       sha256: created.sha256,
       bytes: created.bytes,
       checkpointId: checkpoint.id,
+      ...(createDiffPreview(created.path, input.content) ?? {}),
     }
   },
 }
@@ -237,6 +301,16 @@ export const workspaceDeleteTool: RegisteredTool = {
     })
     if (context.signal.aborted) throw new Error('workspace.delete cancelled')
     prepared = await prepareWorkspaceDelete(context.workspaceRoot, input.path, recursive)
+    // Capture file bytes before the commit so the card shows this call's own
+    // deletion diff; anything unreadable falls back to the kind/size summary.
+    let deletedContent: Buffer | undefined
+    if (prepared.kind === 'file' && prepared.sha256 !== undefined && prepared.bytes <= MAX_DIFF_PREVIEW_SOURCE_BYTES) {
+      try {
+        deletedContent = await readFile(prepared.targetPath)
+      } catch {
+        deletedContent = undefined
+      }
+    }
     const committed = await commitWorkspaceDelete(context.workspaceRoot, prepared)
     return {
       workspaceId: context.workspaceId,
@@ -247,6 +321,7 @@ export const workspaceDeleteTool: RegisteredTool = {
       ...(prepared.sha256 ? { sha256: prepared.sha256 } : {}),
       changedPaths: [committed.path],
       checkpointId: checkpoint.id,
+      ...(deletedContent ? (deleteDiffPreview(committed.path, deletedContent) ?? {}) : {}),
     }
   },
 }

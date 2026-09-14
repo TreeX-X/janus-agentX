@@ -33,6 +33,8 @@ export interface TimelineBlock {
   toolSummary?: string
   /** Post-turn file preview: compact diff/stat lines for edits and creates. */
   toolPreview?: string[]
+  /** Checkpoint holding this call's pre-call snapshot, when reported. */
+  toolCheckpointId?: string
   display?: ToolDisplay
   startedAt?: number
   endedAt?: number
@@ -305,7 +307,12 @@ function applyTracePreviews(blocks: TimelineBlock[], traces: TracePreview[]): Ti
     if (index < 0) index = 0
     const [preview] = remaining.splice(index, 1)
     if (!preview) return block
-    return { ...block, toolSummary: preview.summary, toolPreview: preview.diff }
+    return {
+      ...block,
+      toolSummary: preview.summary,
+      toolPreview: preview.diff,
+      toolCheckpointId: preview.checkpointId ?? block.toolCheckpointId,
+    }
   })
 }
 

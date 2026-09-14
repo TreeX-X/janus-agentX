@@ -577,6 +577,92 @@ describe('workspace.create tool', () => {
   })
 })
 
+describe('per-call change diffs', () => {
+  async function executeCall(root: string, toolName: string, input: Record<string, unknown>) {
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    autoApprove(runtime, true)
+    return runtime.executeTool({
+      sessionId: session.id,
+      call: {
+        toolName,
+        input: { workspaceId: 'workspace-1', ...input },
+        preview: { summary: `${toolName} preview`, paths: [String(input.path)], truncated: false },
+      },
+    })
+  }
+
+  it('attaches the applied replacement bytes to workspace.edit output', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'notes.txt'), 'hello workspace', 'utf-8')
+    const expectedHash = createHash('sha256').update('hello workspace').digest('hex')
+
+    const result = await executeCall(root, 'workspace.edit', {
+      path: 'notes.txt',
+      expectedHash,
+      replacements: [{ oldText: 'hello', newText: 'updated' }],
+    })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: { checkpointId: expect.any(String), diffTruncated: false },
+    })
+    const diff = String((result.output as Record<string, unknown>).diffPreview)
+    expect(diff).toContain('--- a/notes.txt')
+    expect(diff).toContain('@@ replacement 1/1 @@')
+    expect(diff).toContain('-hello')
+    expect(diff).toContain('+updated')
+  })
+
+  it('echoes the applied unified diff on workspace.edit output', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'notes.txt'), 'first\nbefore\nlast\n', 'utf-8')
+    const expectedHash = createHash('sha256').update('first\nbefore\nlast\n').digest('hex')
+    const unifiedDiff = ['--- a/notes.txt', '+++ b/notes.txt', '@@ -1,3 +1,3 @@', ' first', '-before', '+after', ' last', ''].join('\n')
+
+    const result = await executeCall(root, 'workspace.edit', { path: 'notes.txt', expectedHash, unifiedDiff })
+
+    expect(result).toMatchObject({ status: 'completed', output: { diffPreview: unifiedDiff, diffTruncated: false } })
+  })
+
+  it('attaches new-file lines to workspace.create output', async () => {
+    const root = await temporaryDirectory()
+    await mkdir(join(root, 'notes'))
+
+    const result = await executeCall(root, 'workspace.create', { path: 'notes/test.md', content: '# hello\n' })
+
+    expect(result).toMatchObject({ status: 'completed', output: { diffTruncated: false } })
+    const diff = String((result.output as Record<string, unknown>).diffPreview)
+    expect(diff).toContain('--- /dev/null')
+    expect(diff).toContain('+# hello')
+  })
+
+  it('attaches removed lines to workspace.delete output', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'old.md'), 'gone\n', 'utf-8')
+
+    const result = await executeCall(root, 'workspace.delete', { path: 'old.md' })
+
+    expect(result).toMatchObject({ status: 'completed', output: { diffTruncated: false } })
+    const diff = String((result.output as Record<string, unknown>).diffPreview)
+    expect(diff).toContain('--- a/old.md')
+    expect(diff).toContain('+++ /dev/null')
+    expect(diff).toContain('-gone')
+  })
+
+  it('omits the preview for oversized sources so cards fall back to summary', async () => {
+    const root = await temporaryDirectory()
+    const big = 'x'.repeat(300 * 1024)
+    await writeFile(join(root, 'big.txt'), big, 'utf-8')
+    await mkdir(join(root, 'notes'))
+
+    const created = await executeCall(root, 'workspace.create', { path: 'notes/big.md', content: big })
+    expect(created).toMatchObject({ status: 'completed' })
+    expect((created.output as Record<string, unknown>).diffPreview).toBeUndefined()
+  })
+})
+
 describe('workspace.search tool', () => {
   async function executeSearch(root: string, input: Record<string, unknown>) {
     const runtime = new WorkspaceAgentRuntime(async () => root)

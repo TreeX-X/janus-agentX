@@ -136,4 +136,16 @@ describe('toolResultToModelValue P4 preview-only', () => {
     expect(toolResultToModelValue(completed('workspace.read', { content: 'hello' })))
       .toEqual({ content: 'hello' })
   })
+
+  it('keeps display-only change diffs out of the model payload', () => {
+    const value = toolResultToModelValue(completed('workspace.edit', {
+      path: 'a.ts',
+      sha256: 'abc',
+      checkpointId: 'cp-1',
+      diffPreview: '--- a/a.ts\n+++ b/a.ts\n@@ replacement 1/1 @@\n-x\n+y',
+      diffTruncated: false,
+    })) as Record<string, unknown>
+    expect(value).toEqual({ path: 'a.ts', sha256: 'abc', checkpointId: 'cp-1' })
+    expect('diffPreview' in value).toBe(false)
+  })
 })

@@ -17,6 +17,20 @@ describe('tool display projection', () => {
       .toMatchObject({ display: { failed: true, output: ['denied'] } })
   })
 
+  it('prefers the per-call verified diff over the args intent', () => {
+    const call = { id: 'c', name: 'workspace_edit', arguments: { path: 'a.ts', replacements: [{ oldText: 'before', newText: 'after' }] } }
+    const diffPreview = '--- a/a.ts\n+++ b/a.ts\n@@ replacement 1/1 @@\n-before\n+after'
+    const event = toDisplayEvent({ type: 'tool_execution_end', requestId: 'r', call, result: { content: 'ok', details: {
+      toolName: 'workspace.edit', status: 'completed', workspaceId: 'cli',
+      output: { path: 'a.ts', checkpointId: 'checkpoint-abcdef123456', diffPreview, diffTruncated: false },
+    } }, isError: false })
+    expect(event).toMatchObject({
+      display: {
+        output: ['@@ replacement 1/1 @@', '-before', '+after', '(+1 -1)'],
+        summary: 'a.ts · (+1 -1) · checkpoint checkpoi',
+      },
+    })
+  })
   it('shows targets without exposing arbitrary arguments or terminal control sequences', () => {
     const event = toDisplayEvent({ type: 'tool_call_ready', requestId: 'r', call: {
       id: 'c', name: 'workspace_search', arguments: { path: 'src', query: '\x1b[2Jquery', apiKey: 'private', content: 'hidden argument body' },
