@@ -30,5 +30,5 @@ win32 的后台 kill 走 `taskkill` 整树强制终结，退出码 128 视为已
 ## Consequences
 
 - **Gains**: 四类裸错当轮按文案自纠，无需猜测正确调用；行尾差异退出失配原因之列；win32 超时与停止即时生效且无子树残留，`stop` 回归实测从 11s 降至 0.5s；长命令有明确的 60s 后台阈值与续跑句柄。
-- **Costs and limits**: shim 名单为静态集合，归 `windows-shell` Note 所有；行尾恢复取主导风格，混合行尾文件的插入行随主导风格；整树强制杀只在后台 `JobManager`，同步 `command.run` 超时路径仍为单句柄杀；JanusX 壳 `command-tools.ts` 的 shim 对齐尚未落地，为明确的跨仓后续。混合行尾或模糊缩进的高频重试一旦出现，重访模糊策略。
+- **Costs and limits**: shim 名单为静态集合，归 `windows-shell` Note 所有；行尾恢复取主导风格，混合行尾文件的插入行随主导风格；整树强制杀只在后台 `JobManager`，同步 `command.run` 超时路径仍为单句柄杀；JanusX 壳侧已对齐（`runAdhoc` 元字符守卫、启动失败落盘、`stop` 整树强杀，见 JanusX 仓 `2026-09-14-adhoc-shell-parity`）。混合行尾或模糊缩进的高频重试一旦出现，重访模糊策略。
 - **Verification**: `npm run typecheck` 全仓 5 包通过；`npm run test --workspace=@janus-agent/agent-core` 260 通过、1 跳过；`npm run test --workspace=@janus-agent/node-hosts` 32 通过。
