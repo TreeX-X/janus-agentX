@@ -451,7 +451,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   // while disabled); when the approval gate unmounts it, Ink clears
   // that intent itself, so no stale cursor can leak.
   // Note: stream deltas are coalesced into one render per window — see .agents/notes/implemented/bug-fix/2026-09-13-tui-stream-batch-cursor.md
-  const STREAM_BATCH_MS = 50
+  // Note: 100ms window keeps stream repaints at 10fps so typed keys stop competing with full-frame repaints for the caret — see .agents/notes/implemented/bug-fix/2026-09-14-tui-incremental-render-cursor.md
+  const STREAM_BATCH_MS = 100
   const streamBatchRef = useRef<ChatAgentEvent[]>([])
   const streamBatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const flushStreamBatch = useCallback((): void => {

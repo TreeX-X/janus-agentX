@@ -17,6 +17,8 @@ import type { TestConnectionFn } from '../connect.js'
 import { App } from './App.js'
 import { CARET_BLOCK, CARET_DEFAULT, restoreNativeCaret, setCaretShape } from './terminal-size.js'
 
+// Note: incrementalRendering swaps full-frame erase+rewrite for per-line diff, stopping caret drift between output bottom and composer while typing mid-stream — see .agents/notes/implemented/bug-fix/2026-09-14-tui-incremental-render-cursor.md
+
 export interface FullscreenIO {
   env?: NodeJS.ProcessEnv
   /** Auth (key) file path. Undefined = default file unless --no-config, null = no file. */
@@ -128,7 +130,7 @@ export async function runFullscreen(options: TuiOptions, io: FullscreenIO = {}):
           onExit={resolve}
           initialNotices={notices}
         />,
-        { exitOnCtrlC: false },
+        { exitOnCtrlC: false, incrementalRendering: true, maxFps: 24 },
       )
       // Steady block caret for the whole run (see `terminal-size.ts`):
       // TTY-gated, so pipes/tests never see it.
