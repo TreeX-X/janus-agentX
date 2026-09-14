@@ -90,9 +90,18 @@ export function validateTodoList(input: unknown): TodoValidationResult {
 export function formatTodoStateMessage(todos: readonly ChatTodoItem[]): string | null {
   if (todos.length === 0) return null
   const lines = todos.slice(0, TODO_MAX_ITEMS).map((todo) => `- [${todo.status}] ${todo.content}`)
+  const openCount = todos.filter((todo) => todo.status === 'pending' || todo.status === 'in_progress').length
+  // Resume pressure: the plan alone does not re-drive work — name the open
+  // count and forbid confirmation-seeking stalls (2026-09-14 todo resume gap).
+  const guidance = openCount > 0
+    ? [
+        `Continue from it now: ${openCount} item(s) still pending or in_progress — resume the in_progress item (or promote the first pending one) with a real tool call; keep exactly one in_progress and update it in real time.`,
+        'Do not stop to ask for confirmation unless a blocking decision is genuinely required.',
+      ]
+    : ['Continue from it; keep exactly one in_progress and update it in real time.']
   return [
     'Current task list (via todo_write, most recent last as ordered).',
-    'Continue from it; keep exactly one in_progress and update it in real time.',
+    ...guidance,
     ...lines,
   ].join('\n')
 }

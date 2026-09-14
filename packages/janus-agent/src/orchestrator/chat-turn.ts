@@ -45,6 +45,7 @@ import {
   toChatAgentEvent,
   toolTraceEntryFromResult,
   toolTraceHistoryMessage,
+  todoResumePrompt,
   workspaceRecoveryPrompt,
   CHAT_MAX_STEPS,
   TOOL_TRACE_MAX_ENTRIES,
@@ -236,6 +237,9 @@ export async function runChatTurn(
 
   const userRequestedMutation = hasExplicitWorkspaceMutationIntent(latestUserQuery(promptMessages))
   let recoveryIssued = false
+  // One-shot resume nudge: fires once per turn when the loop ends a round
+  // without tool calls while the todo plan still has open items.
+  let todoResumeIssued = false
   const modelMessages: JanusAgentMessage[] = promptMessages.map((message) => ({
     role: message.role,
     content: message.content,
@@ -345,16 +349,29 @@ export async function runChatTurn(
       return result
     },
     getFollowUpMessages: async () => {
+      const followUps: ChatMessage[] = []
       const mutationAttempted = executedToolTraces.some((entry) => WORKSPACE_MUTATION_TOOLS.has(entry.toolName))
       const needsRecovery = !!workspaceTools
         && !recoveryIssued
         && (!streamedText.trim() || (userRequestedMutation && !mutationAttempted))
-      if (!needsRecovery) return []
-      recoveryIssued = true
-      return [{
-        role: 'system',
-        content: workspaceRecoveryPrompt(userRequestedMutation && !mutationAttempted),
-      }]
+      if (needsRecovery) {
+        recoveryIssued = true
+        followUps.push({
+          role: 'system',
+          content: workspaceRecoveryPrompt(userRequestedMutation && !mutationAttempted),
+        })
+      }
+      // Todo resume nudge: same one-shot guard pattern as the recovery prompt.
+      // The loop only consults follow-ups on no-tool-call rounds, so this costs
+      // at most one extra model round per turn.
+      const openTodos = chatSession.getTodos().filter(
+        (todo) => todo.status === 'pending' || todo.status === 'in_progress',
+      )
+      if (!todoResumeIssued && openTodos.length > 0) {
+        todoResumeIssued = true
+        followUps.push({ role: 'system', content: todoResumePrompt(openTodos.length) })
+      }
+      return followUps
     },
     shouldStopAfterTurn: async ({ messages }) => {
       if (!workspaceTools) return false

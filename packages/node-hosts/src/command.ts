@@ -22,7 +22,7 @@ import {
   type ToolRegistry,
 } from '@janus-agent/agent-core'
 import type { JobManager } from './jobs.js'
-import { tryTreeKill } from './jobs.js'
+import { spawnHint, tryTreeKill } from './jobs.js'
 import { evaluateDestructiveCommand } from './destructive-commands.js'
 import {
   commandExecutionMode,
@@ -78,7 +78,11 @@ export function filterCommandEnv(value: unknown): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, item] of entries) {
     if (!ENV_NAME_PATTERN.test(key) || !SAFE_COMMAND_ENV_KEYS.has(key.toUpperCase())) {
-      throw new Error(`command.run env key is not allowlisted: ${key}`)
+      throw new Error(
+        `command.run env key is not allowlisted: ${key}.`
+        + ` Allowlisted keys (case-insensitive, max ${MAX_COMMAND_ENV_ENTRIES} entries): ${[...SAFE_COMMAND_ENV_KEYS].join(', ')}.`
+        + ` Env injection is not supported; if the program supports it, pass the setting as an argument instead (e.g. git -c http.proxy=... clone ...).`,
+      )
     }
     if (typeof item !== 'string' || item.length > MAX_COMMAND_ENV_VALUE_CHARS || item.includes('\0')) {
       throw new Error(`command.run env value for ${key} must be a bounded string`)
@@ -190,7 +194,9 @@ function executeCommand(
       settled = true
       clearTimeout(timer)
       signal.removeEventListener('abort', abort)
-      reject(error)
+      // Sync path mirrors the background path: surface the start failure with
+      // the same fix hint instead of a bare ENOENT (see 2026-09-13-tool-failure-recovery).
+      reject(new Error(`${error instanceof Error ? error.message : String(error)}\n${spawnHint(program)}`))
     })
     child.once('close', (exitCode) => {
       if (settled) return

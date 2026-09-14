@@ -62,6 +62,7 @@ export {
   toolTraceEntryFromResult,
   toolTraceHistoryMessage,
   traceFromResult,
+  todoResumePrompt,
   workspaceRecoveryPrompt,
   CHAT_MAX_STEPS,
   TOOL_TRACE_MAX_ENTRIES,

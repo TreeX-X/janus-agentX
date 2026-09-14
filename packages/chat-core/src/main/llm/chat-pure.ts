@@ -160,6 +160,15 @@ export function workspaceRecoveryPrompt(userRequestedMutation: boolean): string 
     : 'The previous workspace tool sequence ended without a user-facing answer. Continue from its tool calls and results, then provide a concise answer or explain the concrete blocker.'
 }
 
+/** One-shot turn-end nudge: the plan still has open items but no tool ran this round. */
+export function todoResumePrompt(openCount: number): string {
+  return [
+    `The task list still has ${openCount} item(s) pending or in_progress, and the previous round ended without a tool call.`,
+    'Either continue the work now with a tool call (keep exactly one in_progress and update todo_write in real time),',
+    'or briefly state the concrete blocker or the decision you need. Do not simply restate the plan.',
+  ].join('\n')
+}
+
 export function emptyResponseFeedback(toolTraces: ChatToolTraceEntry[], userRequestedMutation: boolean): string {
   const mutation = toolTraces.find((entry) => WORKSPACE_MUTATION_TOOLS.has(entry.toolName))
   if (mutation?.status === 'completed') {

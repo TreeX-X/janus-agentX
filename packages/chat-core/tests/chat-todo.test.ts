@@ -56,6 +56,18 @@ describe('sticky helpers', () => {
     expect(message).toContain('[in_progress] B')
   })
 
+  it('adds resume pressure when open items remain', () => {
+    const message = formatTodoStateMessage(todos)
+    expect(message).toContain('2 item(s) still pending or in_progress')
+    expect(message).toContain('Do not stop to ask for confirmation')
+  })
+
+  it('drops resume pressure when nothing is open', () => {
+    const message = formatTodoStateMessage([{ content: 'A', status: 'completed' }])
+    expect(message).not.toContain('pending or in_progress')
+    expect(message).toContain('Continue from it')
+  })
+
   it('summarizes n/m plus the current item', () => {
     expect(summarizeTodos(todos)).toMatchObject({ total: 3, done: 1, open: 2, current: 'B' })
   })

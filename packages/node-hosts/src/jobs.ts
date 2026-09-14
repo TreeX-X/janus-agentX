@@ -25,7 +25,7 @@ const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024
 const KILL_ESCALATION_MS = 5_000
 const STOP_WAIT_MS = 10_000
 
-function spawnHint(program: string): string {
+export function spawnHint(program: string): string {
   return `hint: the program '${program}' failed to start (ENOENT reads as a negative exit such as -4058 on Windows).`
     + ` Launch the host from a shell with Node on PATH; package-manager shims resolve through cmd.exe on win32.`
 }

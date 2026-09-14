@@ -192,6 +192,11 @@ export class ConversationRegistry {
     for (const conversation of persisted) {
       const chatSession = new ChatSessionRuntime()
       chatSession.setCompactionState(conversation.compactionSummary ?? null, conversation.compactionKey ?? null)
+      // Rehydrate the todo snapshot so the model-facing injection resumes the
+      // plan after an app restart (the sticky bar already reads the persisted
+      // copy; without this the model never sees it again). Hand-rolled store
+      // seeds may omit the field — treat missing as empty.
+      if (conversation.todos?.length) chatSession.setTodos(conversation.todos)
       registry.records.set(conversation.id, { data: conversation, chatSession })
       registry.lastTick = Math.max(registry.lastTick, conversation.updatedAt, conversation.createdAt)
     }

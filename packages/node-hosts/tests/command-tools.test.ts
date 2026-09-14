@@ -53,11 +53,23 @@ describe('node-hosts command.run validation', () => {
     expect((await call('command.run', { workspaceId: 'cli', program: 'node', timeoutMs: 999_999 })).status).toBe('failed')
   })
 
-  it('rejects non-allowlisted env keys fail-closed', async () => {
+  it('rejects non-allowlisted env keys fail-closed with an actionable error', async () => {
     const { call } = await createHarness()
     const result = await call('command.run', { workspaceId: 'cli', program: 'node', env: { PATH: '/x' } })
     expect(result.status).toBe('failed')
     expect(result.error).toMatch(/allowlisted/)
+    expect(result.error).toContain('NODE_ENV')
+    expect(result.error).toContain('git -c http.proxy=')
+  })
+
+  it('surfaces a start-failure hint when the program cannot spawn', async () => {
+    const { call } = await createHarness()
+    const result = await call('command.run', {
+      workspaceId: 'cli', program: 'definitely-not-a-real-cmd-xyz', timeoutMs: 10_000,
+    })
+    expect(result.status).toBe('failed')
+    expect(result.error).toContain('hint:')
+    expect(result.error).toContain('definitely-not-a-real-cmd-xyz')
   })
 })
 

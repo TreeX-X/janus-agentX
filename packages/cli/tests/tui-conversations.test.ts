@@ -81,6 +81,19 @@ describe('ConversationRegistry', () => {
     expect(await registry.rename('ab-2', '   ')).toBeNull()
   })
 
+  it('rehydrates the todo snapshot into the runtime on load', async () => {
+    const store = memoryConversationStore([
+      {
+        id: 'todo-re', title: 't', createdAt: 1, updatedAt: 1, messages: [], toolTraces: [],
+        todos: [{ content: 'Resumable', status: 'in_progress' }],
+      },
+    ])
+    const registry = await ConversationRegistry.load(store)
+    expect(registry.getActive().chatSession.getTodos()).toEqual([
+      { content: 'Resumable', status: 'in_progress' },
+    ])
+  })
+
   it('delete falls back and never empties the registry', async () => {
     const registry = await ConversationRegistry.load(memoryConversationStore())
     const only = registry.getActiveId()
