@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'path'
 
+// Note: TARGET_EXISTS carries the overwrite path instead of growing an overwrite flag — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+
 export type WorkspacePathReasonCode =
   | 'WORKSPACE_UNAVAILABLE'
   | 'ABSOLUTE_PATH'
@@ -122,7 +124,7 @@ export async function resolveWorkspaceCreationTarget(
   const targetPath = resolve(parentTarget.targetPath, leaf)
   try {
     await stat(targetPath)
-    throw new WorkspacePathGuardError('TARGET_EXISTS', 'Workspace target already exists')
+    throw new WorkspacePathGuardError('TARGET_EXISTS', 'Workspace target already exists; use workspace.edit to overwrite it, or workspace.delete then workspace.create')
   } catch (error) {
     if (error instanceof WorkspacePathGuardError) throw error
   }

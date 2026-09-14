@@ -10,7 +10,7 @@ Status: implemented
 
 推理增量经 loop 的 reasoning_update 事件透出，经 event-mapper 与 IPC 转为 reasoning_delta 到达各端，进入独立于正文的缓冲。展示收纳在 assistant 气泡的加载区内：流式中默认收起，只显示进度字数，点击展开限定高度滚动区；结束收起为一行并可展开回看。缓冲有界，超限截断并标识。思考永不计入正文，永不进入模型上下文；无 reasoning 的模型无新增行，静默兼容。
 
-command.run 声明超时界与 background 开关：同步默认 120s、上限 600s，background 无截止，除非显式传入 timeoutMs（上限 600s）。background 调用走 Runner 托管，立即返回 job 标识与 logPath，本轮不阻塞；project.process-output 翻页轮询运行中与已退出任务，stop 对已退出幂等成功。同步输出只给 8KB 尾预览，全量落 .janusX/logs；模型上下文承载预览、分页引用与翻页指引，引用排在 blob 之前以扛住压缩裁剪；全量日志凭 logPath 翻页定位。env 按 allowlist 透传运维键并设条数与长度封顶，提权键永不放行。组合命令拆多个 turn 串行完成，单程序语义保持。
+command.run 声明超时界与 background 开关：同步默认 120s、上限 600s，background 无截止，除非显式传入 timeoutMs（上限 600s）。预期超 60s 的命令必须走 background。background 调用走 Runner 托管，立即返回 job 标识与 logPath，本轮不阻塞；project.process-output 翻页轮询运行中与已退出任务，stop 对已退出幂等成功。win32 的后台 kill 为整树强制终结，打包类子进程无残留。同步输出只给 8KB 尾预览，全量落 .janusX/logs；模型上下文承载预览、分页引用与翻页指引，引用排在 blob 之前以扛住压缩裁剪；全量日志凭 logPath 翻页定位。env 按 allowlist 透传运维键并设条数与长度封顶，提权键永不放行。组合命令拆多个 turn 串行完成，单程序语义保持。
 
 安全编译命令在可信工作区自动放行并记 AUTO_RUN_ALLOWED 审计，名单为包管理器、固定脚本与 check 脚本模式的代码级常量，fail-closed；含 shell 元字符、越界路径与超长参数维持拒绝或审批。步数经 agentMaxSteps 配置，默认 40。建流与消费期共用 3 次尝试预算，退避 250ms 起、1000ms 封顶；仅零可见进度轮次可重试，有进度失败与非法工具调用走原终态通道。长命令的 toolTrace 只记退出码、logPath 与 job 摘要。
 

@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { join, resolve } from 'path'
+import { dirname, join, resolve } from 'path'
 import { resolveWorkspaceTarget } from '../path-guard'
 import { evaluateWorkspaceReadPolicy, isSensitivePath, redactHighConfidenceSecrets } from '../policy-gate'
 import type { RegisteredTool, ToolRegistry } from '../registry'
@@ -149,7 +149,7 @@ export const workspaceEditTool: RegisteredTool = {
 
 export const workspaceCreateTool: RegisteredTool = {
   name: 'workspace.create',
-  description: 'Create a new UTF-8 text file inside the current workspace after approval',
+  description: 'Create a new UTF-8 text file inside the current workspace after approval. Fails when the target exists; use workspace.edit to overwrite it',
   actionRisk: 'create',
   inputSchema: {
     type: 'object',
@@ -354,7 +354,7 @@ type WorkspaceSearchMatch = {
 
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Search UTF-8 text files in the workspace for a literal substring and return matching lines',
+  description: 'Search UTF-8 text files in the workspace for a literal substring and return matching lines. The path must be a directory; a file path scopes the search to that file and the result carries a note',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -384,8 +384,14 @@ export const workspaceSearchTool: RegisteredTool = {
     }
     if (context.signal.aborted) throw new Error('workspace.search cancelled')
 
-    const target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
-    if (target.kind !== 'directory') throw new Error('workspace.search path must be a directory')
+    // Note: a file path scopes the search to that file instead of failing — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+    let target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
+    let scopedFile: string | undefined
+    if (target.kind === 'file') {
+      scopedFile = target.relativePath
+      const parent = dirname(scopedFile)
+      target = await resolveWorkspaceTarget(context.workspaceRoot, parent === '.' ? '' : parent)
+    }
     const rootPath = resolve(context.workspaceRoot, target.relativePath || '.')
     const needle = query.toLowerCase()
     const matches: WorkspaceSearchMatch[] = []
@@ -403,6 +409,7 @@ export const workspaceSearchTool: RegisteredTool = {
         if (child.isSymbolicLink()) continue
         const childRelative = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name
         if (isSensitivePath(childRelative)) continue
+        if (scopedFile !== undefined && childRelative !== scopedFile && !scopedFile.startsWith(`${childRelative}/`)) continue
         if (child.isDirectory()) {
           if (SEARCH_SKIPPED_DIRECTORIES.has(child.name)) continue
           await walk(join(directoryPath, child.name), childRelative, depth + 1)
@@ -440,6 +447,10 @@ export const workspaceSearchTool: RegisteredTool = {
       matches,
       scannedFiles,
       truncated,
+      ...(scopedFile === undefined ? {} : {
+        scopedFile,
+        note: `path pointed to a file; the search was scoped to ${scopedFile}`,
+      }),
     }
   },
 }

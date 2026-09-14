@@ -55,23 +55,61 @@ function applyExactReplacements(content: string, replacements: WorkspaceExactRep
   if (replacements.length < 1 || replacements.length > MAX_WORKSPACE_REPLACEMENTS) {
     throw new Error(`workspace.edit requires between 1 and ${MAX_WORKSPACE_REPLACEMENTS} replacements`)
   }
-  let next = content
+  // Note: matching is line-ending insensitive and files keep their dominant style — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+  const fileEol = content.includes('\r\n') ? '\r\n' : '\n'
+  let next = normalizeEditText(content)
   for (const [index, replacement] of replacements.entries()) {
     if (!replacement || typeof replacement.oldText !== 'string' || typeof replacement.newText !== 'string') {
       throw new Error(`workspace.edit replacement ${index + 1} is invalid`)
     }
     if (!replacement.oldText) throw new Error(`workspace.edit replacement ${index + 1} oldText must not be empty`)
-    const first = next.indexOf(replacement.oldText)
-    if (first < 0) throw new WorkspaceEditConflictError(`workspace.edit replacement ${index + 1} no longer matches the file`)
-    if (next.indexOf(replacement.oldText, first + replacement.oldText.length) >= 0) {
+    const oldText = normalizeEditText(replacement.oldText)
+    const first = next.indexOf(oldText)
+    if (first < 0) {
+      throw new WorkspaceEditConflictError(
+        `workspace.edit replacement ${index + 1} no longer matches the file; ${mismatchContext(next, oldText)}`,
+      )
+    }
+    if (next.indexOf(oldText, first + oldText.length) >= 0) {
       throw new WorkspaceEditConflictError(`workspace.edit replacement ${index + 1} is ambiguous`)
     }
-    next = `${next.slice(0, first)}${replacement.newText}${next.slice(first + replacement.oldText.length)}`
+    next = `${next.slice(0, first)}${normalizeEditText(replacement.newText)}${next.slice(first + oldText.length)}`
     if (Buffer.byteLength(next) > MAX_WORKSPACE_EDIT_BYTES) {
       throw new Error(`workspace.edit output exceeds ${MAX_WORKSPACE_EDIT_BYTES} bytes`)
     }
   }
-  return next
+  const restored = fileEol === '\n' ? next : next.replace(/\n/g, '\r\n')
+  if (Buffer.byteLength(restored) > MAX_WORKSPACE_EDIT_BYTES) {
+    throw new Error(`workspace.edit output exceeds ${MAX_WORKSPACE_EDIT_BYTES} bytes`)
+  }
+  return restored
+}
+
+function normalizeEditText(value: string): string {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+function editLineNumberAt(text: string, index: number): number {
+  let line = 1
+  for (let i = 0; i < index; i++) {
+    if (text[i] === '\n') line++
+  }
+  return line
+}
+
+function mismatchContext(content: string, oldText: string): string {
+  const parts = content.split('\n')
+  if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop()
+  const lines = content === '' ? 0 : parts.length
+  const bytes = Buffer.byteLength(content)
+  const firstLine = oldText.split('\n')[0]?.slice(0, 80) ?? ''
+  if (firstLine) {
+    const at = content.indexOf(firstLine)
+    if (at >= 0) {
+      return `file has ${lines} lines (${bytes} bytes); the first line of oldText occurs at line ${editLineNumberAt(content, at)}, so the mismatch starts on a later line`
+    }
+  }
+  return `file has ${lines} lines (${bytes} bytes); the first line of oldText was not found, re-read the file for current content and sha256`
 }
 
 interface UnifiedDiffLine {
@@ -243,7 +281,9 @@ async function prepareWorkspaceEditWithTransform(
   )
   const previousHash = sha256(content)
   if (previousHash !== expectedHash.toLowerCase()) {
-    throw new WorkspaceEditConflictError('workspace.edit expectedHash does not match the current file')
+    throw new WorkspaceEditConflictError(
+      `workspace.edit expectedHash does not match the current file (current sha256: ${previousHash}); re-read the file and retry with the fresh hash`,
+    )
   }
   const previousContent = assertText(content)
   const result = transform(previousContent, target.relativePath)

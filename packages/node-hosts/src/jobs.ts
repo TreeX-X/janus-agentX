@@ -10,7 +10,7 @@
  * model-readable error.
  */
 import { randomUUID } from 'node:crypto'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { mkdir, open, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { FileHandle } from 'node:fs/promises'
@@ -262,8 +262,23 @@ export class JobManager {
 
   private kill(record: JobRecord, force: boolean): void {
     if (record.exited) return
+    // Note: win32 kills the whole process tree so packaging children cannot leak — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+    if (process.platform === 'win32' && record.pid !== undefined) {
+      // Console processes ignore a graceful taskkill and the previous
+      // child.kill() was TerminateProcess anyway, so always tree-force.
+      const systemRoot = process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows'
+      try {
+        const result = spawnSync(`${systemRoot}\\System32\\taskkill.exe`,
+          ['/PID', String(record.pid), '/T', '/F'],
+          { windowsHide: true, timeout: 10_000 })
+        // 0 = terminated, 128 = already exited (stop/timeout race); anything else falls back below.
+        if (result.status === 0 || result.status === 128) return
+      } catch {
+        // Fall through to the process-handle kill.
+      }
+    }
     try {
-      record.child.kill(force ? 'SIGKILL' : undefined)
+      record.child.kill((force || process.platform === 'win32') ? 'SIGKILL' : undefined)
     } catch {
       // Already gone; 'close' will settle the record.
     }

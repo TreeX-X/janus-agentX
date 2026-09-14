@@ -473,6 +473,43 @@ describe('workspace.edit tool', () => {
     expect(ambiguous).toMatchObject({ status: 'failed', reasonCode: 'TARGET_CHANGED' })
     expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('hello hello')
   })
+
+  it('matches LF oldText against a CRLF file and keeps the CRLF style', async () => {
+    const root = await temporaryDirectory()
+    const source = 'first\r\nsecond\r\n'
+    await writeFile(join(root, 'notes.txt'), source, 'utf-8')
+    const expectedHash = createHash('sha256').update(source).digest('hex')
+
+    const result = await executeEdit(root, expectedHash, true, 'second')
+
+    expect(result).toMatchObject({ status: 'completed' })
+    expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('first\r\nupdated\r\n')
+  })
+
+  it('returns the current sha256 when the expected hash is stale', async () => {
+    const root = await temporaryDirectory()
+    const source = 'hello workspace'
+    await writeFile(join(root, 'notes.txt'), source, 'utf-8')
+    const currentHash = createHash('sha256').update(source).digest('hex')
+
+    const result = await executeEdit(root, '0'.repeat(64), true)
+
+    expect(result).toMatchObject({ status: 'failed', reasonCode: 'TARGET_CHANGED' })
+    expect(result.error).toContain(currentHash)
+  })
+
+  it('reports file size and the anchor line when a replacement misses', async () => {
+    const root = await temporaryDirectory()
+    const source = 'alpha\nbeta\ngamma\n'
+    await writeFile(join(root, 'notes.txt'), source, 'utf-8')
+    const expectedHash = createHash('sha256').update(source).digest('hex')
+
+    const result = await executeEdit(root, expectedHash, true, 'beta\nWRONG')
+
+    expect(result).toMatchObject({ status: 'failed', reasonCode: 'TARGET_CHANGED' })
+    expect(result.error).toContain('3 lines')
+    expect(result.error).toContain('line 2')
+  })
 })
 
 describe('workspace.create tool', () => {
@@ -528,6 +565,16 @@ describe('workspace.create tool', () => {
     const result = await executeCreate(root, path, 'content')
     expect(result.status).toBe('failed')
   })
+
+  it('points an existing target at workspace.edit', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'exists.txt'), 'x')
+
+    const result = await executeCreate(root, 'exists.txt', 'content')
+
+    expect(result.status).toBe('failed')
+    expect(result.error).toContain('workspace.edit')
+  })
 })
 
 describe('workspace.search tool', () => {
@@ -576,6 +623,23 @@ describe('workspace.search tool', () => {
     const root = await temporaryDirectory()
     expect((await executeSearch(root, { query: '   ' })).status).toBe('failed')
     expect((await executeSearch(root, { query: 'x'.repeat(300) })).status).toBe('failed')
+  })
+
+  it('scopes to the file when path points to a file instead of failing', async () => {
+    const root = await temporaryDirectory()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'src', 'main.ts'), 'needle here\n')
+    await writeFile(join(root, 'other.ts'), 'needle there\n')
+
+    const result = await executeSearch(root, { query: 'needle', path: 'src/main.ts' })
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toMatchObject({
+      path: 'src',
+      scopedFile: 'src/main.ts',
+      matches: [{ path: 'src/main.ts', line: 1, text: 'needle here' }],
+      note: expect.stringContaining('scoped'),
+    })
   })
 })
 
