@@ -13,7 +13,7 @@ import type { TuiOptions } from './args.js'
 import { CliSession, isSessionValidationError, type ApprovalPrompt } from './session.js'
 import { defaultHistoryDir, fileConversationStore, type ConversationStorePort } from './conversations.js'
 import { defaultAuthPath, loadAuthFile } from './auth.js'
-import { loadEffectiveCatalog } from './providers.js'
+import { isProviderEnabled, loadEffectiveCatalog, listProviderModels } from './providers.js'
 import { buildTracePreviews } from './trace-preview.js'
 import { displayText } from './tool-display.js'
 import { runConnectWizard, type ConnectAsk, type TestConnectionFn } from './connect.js'
@@ -353,10 +353,107 @@ async function runEffortPicker(state: ReplState): Promise<'continue' | 'exit'> {
   return 'continue'
 }
 
+/**
+ * Plain-loop interactive picker for bare `/provider` (numbered list +
+ * follow-up prompt). Mirrors the Ink `ProviderPanel`: numbers, ids,
+ * Enter/EOF keeps the current provider. Add/remove stays in `/connect`.
+ */
+async function runProviderPicker(state: ReplState): Promise<'continue' | 'exit'> {
+  // Disabled entries stay invisible (mirrors the Ink ProviderPanel and
+  // ConnectPanel): `setProvider` cannot resolve them.
+  const { entries: all, activeId } = state.session.listProviders()
+  const entries = all.filter(isProviderEnabled)
+  if (entries.length === 0) {
+    state.stdout('providers: (none — add one with /connect <id>)\n')
+    return 'continue'
+  }
+  state.stdout(`provider: ${activeId}\n`)
+  entries.forEach((entry, index) => {
+    const mark = entry.id === activeId ? '*' : ' '
+    const name = entry.name ? ` (${entry.name})` : ''
+    const key = state.session.keySourceFor(entry.id) ? 'key ✓' : 'key ✗'
+    state.stdout(`${mark} ${index + 1} ${entry.id}${name} — ${listProviderModels(entry).length} model(s) ${key}\n`)
+  })
+  state.stdout(`select provider [1-${entries.length}|id] (Enter keeps ${activeId}): `)
+  const answer = await state.lines.next('')
+  if (answer === null || !answer.trim()) {
+    state.stdout(`provider unchanged: ${activeId}\n`)
+    return 'continue'
+  }
+  const trimmed = answer.trim()
+  const asNumber = Number(trimmed)
+  const ref = Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= entries.length
+    ? (entries[asNumber - 1]?.id ?? trimmed)
+    : trimmed
+  try {
+    state.session.setProvider(ref)
+    state.stdout(`provider switched: ${state.session.getProviderId()} · model ${state.session.getModelId() ?? '(no model)'} · effort ${state.session.getEffort()}\n`)
+  } catch (error) {
+    state.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
+  }
+  return 'continue'
+}
+
+/**
+ * Plain-loop interactive picker for bare `/model` (numbered list +
+ * follow-up prompt). Mirrors the Ink `ModelPanel`: numbers, ids,
+ * Enter/EOF keeps the current model. Open-world providers (empty catalog)
+ * fall back to free input; closed-world validation stays in `setModel`.
+ */
+async function runModelPicker(state: ReplState): Promise<'continue' | 'exit'> {
+  const providerId = state.session.getProviderId()
+  const models = state.session.listModels()
+  const active = state.session.getModelId()
+  if (models.length === 0) {
+    state.stdout(`model: ${active ?? '(no model)'} · provider ${providerId} (open list — type an id)\n`)
+    state.stdout(`model id (Enter keeps ${active ?? 'none'}): `)
+    const answer = await state.lines.next('')
+    if (answer === null || !answer.trim()) {
+      state.stdout(`model unchanged: ${active ?? '(no model)'}\n`)
+      return 'continue'
+    }
+    try {
+      state.session.setModel(answer.trim())
+      state.stdout(`model switched: ${answer.trim()} · effort: ${state.session.getEffort()}\n`)
+    } catch (error) {
+      state.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
+    }
+    return 'continue'
+  }
+  state.stdout(`model: ${active ?? '(no model)'} · provider ${providerId}\n`)
+  models.forEach((model, index) => {
+    state.stdout(`${model === active ? '*' : ' '} ${index + 1} ${model}\n`)
+  })
+  state.stdout(`select model [1-${models.length}|id] (Enter keeps ${active ?? 'none'}): `)
+  const answer = await state.lines.next('')
+  if (answer === null || !answer.trim()) {
+    state.stdout(`model unchanged: ${active ?? '(no model)'}\n`)
+    return 'continue'
+  }
+  const trimmed = answer.trim()
+  const asNumber = Number(trimmed)
+  const id = Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= models.length
+    ? (models[asNumber - 1] ?? trimmed)
+    : trimmed
+  try {
+    state.session.setModel(id)
+    state.stdout(`model switched: ${id} · effort: ${state.session.getEffort()}\n`)
+  } catch (error) {
+    state.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
+  }
+  return 'continue'
+}
+
 async function handleCommand(state: ReplState, command: string, args: string[]): Promise<'continue' | 'exit' | 'recreated'> {
   // Bare /effort is interactive in the plain loop (Ink uses EffortPanel);
   // `/effort <level|number>` still switches directly via executeCommand.
   if (command === 'effort' && args.length === 0) return runEffortPicker(state)
+  // Bare /provider opens the numbered switcher (Ink uses ProviderPanel);
+  // `/provider <id>` and `/provider rm <id>` still run directly via executeCommand.
+  if (command === 'provider' && args.length === 0) return runProviderPicker(state)
+  // Bare /model opens the numbered switcher (Ink uses ModelPanel);
+  // `/model <id>` still switches directly via executeCommand.
+  if (command === 'model' && args.length === 0) return runModelPicker(state)
   const outcome = await executeCommand(state.session, command, args, {
     recreateWorkspace: async (dir) => {
       const next = await CliSession.create({

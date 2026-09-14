@@ -38,9 +38,9 @@ export interface CompletionItem {
 /** Mirrors the known `/` commands in `commands.ts` (kept in sync by test). Order follows `commandHelpText()`. */
 export const COMMAND_COMPLETIONS: readonly CompletionItem[] = [
   { name: 'help', hint: 'Show this help.' },
-  { name: 'model', hint: 'List models or switch the model.' },
+  { name: 'model', hint: 'Pick model or switch directly.' },
   { name: 'effort', hint: 'Show or switch reasoning effort.' },
-  { name: 'provider', hint: 'List providers or switch provider.' },
+  { name: 'provider', hint: 'Pick provider or switch directly.' },
   { name: 'connect', hint: 'Provider setup wizard.' },
   { name: 'status', hint: 'Show provider/model/key/config.' },
   { name: 'workspace', hint: 'Switch workspace (history is cleared).' },

@@ -26,7 +26,8 @@ import {
 } from './store.js'
 import { executeCommand } from './exec.js'
 import type { TestConnectionFn } from '../connect.js'
-import { CommandPalette, ApprovalPanel, EffortPanel, PanelFrame, type PaletteItem } from './palette.js'
+import { listProviderModels, isProviderEnabled } from '../providers.js'
+import { CommandPalette, ApprovalPanel, EffortPanel, ModelPanel, ProviderPanel, PanelFrame, type PaletteItem } from './palette.js'
 import { effortMeta } from '../effort.js'
 import { ConnectPanel } from './connect-panel.js'
 import { parseInputLine } from '../commands.js'
@@ -334,6 +335,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     | { kind: 'connect'; initial?: { ref?: string; key?: string; baseURL?: string } }
     | { kind: 'approval' }
     | { kind: 'effort' }
+    | { kind: 'provider' }
+    | { kind: 'model' }
     | null
   >(null)
   const exitRef = useRef(onExit)
@@ -548,6 +551,17 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     // Bare /effort opens the interactive picker; with an arg it switches directly.
     if (command === 'effort' && args.length === 0) {
       setOverlay({ kind: 'effort' })
+      return
+    }
+    // Note: bare /provider and /model open switcher panels — see .agents/notes/implemented/feature/2026-09-14-provider-model-picker.md
+    // Bare /provider opens the provider switcher; with an arg (or rm) it switches directly.
+    if (command === 'provider' && args.length === 0) {
+      setOverlay({ kind: 'provider' })
+      return
+    }
+    // Bare /model opens the model switcher; with an arg it switches directly.
+    if (command === 'model' && args.length === 0) {
+      setOverlay({ kind: 'model' })
       return
     }
     const outcome = await executeCommand(sessionRef.current, command, args, {
@@ -1073,6 +1087,46 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
                 sessionRef.current.setEffort(level)
                 const meta = effortMeta(level)
                 dispatch({ type: 'info', text: `effort switched: ${level} — ${meta.hint} (${meta.detail})` })
+              } catch (error) {
+                dispatch({ type: 'error', text: error instanceof Error ? error.message : String(error) })
+              }
+              setOverlay(null)
+              refreshContext()
+            }}
+            onClose={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay?.kind === 'provider' ? (
+          <ProviderPanel
+            items={sessionRef.current.listProviders().entries.filter(isProviderEnabled).map((entry) => ({
+              id: entry.id,
+              name: entry.name,
+              modelCount: listProviderModels(entry).length,
+              keySource: sessionRef.current.keySourceFor(entry.id),
+            }))}
+            activeId={sessionRef.current.getProviderId()}
+            onPick={(id) => {
+              try {
+                sessionRef.current.setProvider(id)
+                dispatch({ type: 'info', text: `provider switched: ${sessionRef.current.getProviderId()} · model ${sessionRef.current.getModelId() ?? '(no model)'} · effort ${sessionRef.current.getEffort()}` })
+              } catch (error) {
+                dispatch({ type: 'error', text: error instanceof Error ? error.message : String(error) })
+              }
+              setOverlay(null)
+              refreshContext()
+            }}
+            onClose={() => setOverlay(null)}
+          />
+        ) : null}
+        {overlay?.kind === 'model' ? (
+          <ModelPanel
+            providerId={sessionRef.current.getProviderId()}
+            models={sessionRef.current.listModels()}
+            active={sessionRef.current.getModelId()}
+            onPick={(modelId) => {
+              try {
+                sessionRef.current.setModel(modelId)
+                dispatch({ type: 'info', text: `model switched: ${modelId} · effort: ${sessionRef.current.getEffort()}` })
               } catch (error) {
                 dispatch({ type: 'error', text: error instanceof Error ? error.message : String(error) })
               }

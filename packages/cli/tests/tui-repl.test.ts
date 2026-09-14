@@ -39,7 +39,7 @@ describe('runRepl', () => {
     const c = collect()
     const code = await runRepl(
       { workspace: tmpdir() },
-      { ...c.io, env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv, lines: arrayLineSource(['hi', '/model', '/exit']) },
+      { ...c.io, env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv, lines: arrayLineSource(['hi', '/model', '', '/exit']) },
     )
     expect(code).toBe(0)
     expect(c.err.join('')).toContain('no model')
@@ -80,7 +80,9 @@ describe('runRepl', () => {
       { workspace: dir, model: 'm', apiKey: 'k', plain: true },
       {
         ...c.io,
-        lines: arrayLineSource(['/model', '/model m2', '/switch', '/nope', '/switch x', '/provider', '/help', null]),
+        // Bare /model and /provider open numbered pickers (next line answers);
+        // `/model m2` still switches directly.
+        lines: arrayLineSource(['/model', 'm2', '/switch', '/nope', '/switch x', '/provider', '', '/help', null]),
         streamTextFn: textStub('hi'),
       },
     )
@@ -88,7 +90,7 @@ describe('runRepl', () => {
     expect(c.out.join('')).toContain('model: m')
     expect(c.out.join('')).toContain('model switched: m2')
     expect(c.out.join('')).toContain('New conversation')
-    expect(c.out.join('')).toContain('* openai-compatible')
+    expect(c.out.join('')).toContain('* 1 openai-compatible')
     expect(c.out.join('')).toContain('Commands:')
     expect(c.err.join('')).toContain('unknown command: /nope')
     expect(c.err.join('')).toContain('no conversation matches: x')

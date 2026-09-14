@@ -454,6 +454,44 @@ describe('App', () => {
     }
   })
 
+  it('opens the provider switcher for bare /provider', async () => {
+    const session = await openSession()
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, '/provider')
+      await waitForFrame(() => (lastFrame() ?? '').includes('◇ provider'))
+      expect(lastFrame() ?? '').toContain('openai-compatible')
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
+  it('opens the model switcher for bare /model', async () => {
+    const session = await openSession()
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, '/model')
+      await waitForFrame(() => (lastFrame() ?? '').includes('◇ model'))
+      expect(lastFrame() ?? '').toContain('openai-compatible')
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
   it('interleaves thinking, tool cards, and text in stream order', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-app-timeline-'))
     writeFileSync(join(dir, 'hello.txt'), 'tool-content-here')

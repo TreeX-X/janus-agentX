@@ -118,6 +118,9 @@ export async function executeCommand(
     }
     case 'model': {
       if (args.length === 0) {
+        // Ink (`App.tsx`) and plain (`repl.ts`) intercept the bare form with
+        // an interactive picker; this rich list is the fallback for tests
+        // and non-interactive hosts.
         const models = session.listModels()
         const active = session.getModelId()
         const head = `model: ${active ?? '(no model — set one with /model <id>)'} · effort: ${session.getEffort()}`
@@ -160,6 +163,9 @@ export async function executeCommand(
     case 'provider': {
       const { entries, activeId } = session.listProviders()
       if (args.length === 0) {
+        // Ink (`App.tsx`) and plain (`repl.ts`) intercept the bare form with
+        // an interactive picker; this rich list is the fallback for tests
+        // and non-interactive hosts.
         return continued([entries.length === 0
           ? 'providers: (none)'
           : entries.map((entry) => `${entry.id === activeId ? '*' : ' '} ${entry.id}${entry.name ? ` (${entry.name})` : ''} — ${listProviderModels(entry).length} model(s)`).join('\n')])

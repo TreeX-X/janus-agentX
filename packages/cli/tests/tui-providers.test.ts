@@ -252,16 +252,16 @@ describe('runRepl providers', () => {
         store: memoryConversationStore(),
         configPath,
         authPath: null,
-        lines: arrayLineSource(['/provider', '/model', '/provider b', '/model', '/model m-b2', '/exit']),
+        lines: arrayLineSource(['/provider', '', '/model', '', '/provider b', '/model', '2', '/exit']),
         streamTextFn: textStub(),
       },
     )
     expect(code).toBe(0)
     const all = out.join('')
-    expect(all).toContain('* a (A)')
-    expect(all).toContain('* m-a2')
+    expect(all).toContain('a (A)')
+    expect(all).toContain('* 2 m-a2')
     expect(all).toContain('provider switched: b · model m-b1')
-    expect(all).toContain('* m-b1')
+    expect(all).toContain('* 1 m-b1')
     expect(all).toContain('model switched: m-b2')
     expect(err.join('')).toBe('')
     const saved = loadCatalogFile(configPath)

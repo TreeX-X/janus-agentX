@@ -203,6 +203,203 @@ export function EffortPanel({ current, onPick, onClose }: {
   )
 }
 
+/** One row of the provider switcher (bare /provider): display fields only. */
+export interface ProviderPanelEntry {
+  id: string
+  name?: string
+  modelCount: number
+  keySource: string | null
+}
+
+/** Interactive provider switcher (bare /provider): arrows + filter + Enter, Esc closes. */
+export function ProviderPanel({ items, activeId, onPick, onClose }: {
+  items: ProviderPanelEntry[]
+  activeId: string
+  onPick: (id: string) => void
+  onClose: () => void
+}): React.JSX.Element {
+  const [filter, setFilter] = useState('')
+  const [index, setIndex] = useState(() => Math.max(0, items.findIndex((item) => item.id === activeId)))
+  const visible = useMemo(() => {
+    const needle = filter.trim().toLowerCase()
+    const rows = needle
+      ? items.filter((item) => `${item.id} ${item.name ?? ''}`.toLowerCase().includes(needle))
+      : items
+    return rows
+  }, [items, filter])
+  const selected = Math.min(index, Math.max(0, visible.length - 1))
+
+  useInput((input, key) => {
+    if (key.escape) {
+      onClose()
+      return
+    }
+    if (visible.length === 0) {
+      if (key.backspace || key.delete) {
+        setFilter((current) => current.slice(0, -1))
+        setIndex(0)
+      } else if (input && !key.ctrl && !key.meta && !key.tab && !input.includes('\n') && !input.includes('\r')) {
+        setFilter((current) => current + input)
+        setIndex(0)
+      }
+      return
+    }
+    if (key.upArrow) {
+      setIndex((current) => (current - 1 + visible.length) % Math.max(1, visible.length))
+      return
+    }
+    if (key.downArrow) {
+      setIndex((current) => (current + 1) % Math.max(1, visible.length))
+      return
+    }
+    if (key.return) {
+      const picked = visible[selected]
+      if (picked) onPick(picked.id)
+      return
+    }
+    // 1..N quick-jump (mirrors the plain-loop numbered picker).
+    const digit = Number(input)
+    if (input && !key.ctrl && !key.meta && !key.tab && !key.return && Number.isInteger(digit) && digit >= 1 && digit <= visible.length) {
+      const picked = visible[digit - 1]
+      if (picked) onPick(picked.id)
+      return
+    }
+    if (key.backspace || key.delete) {
+      setFilter((current) => current.slice(0, -1))
+      setIndex(0)
+      return
+    }
+    if (key.ctrl || key.meta || key.tab) return
+    if (!input || input.includes('\n') || input.includes('\r')) return
+    setFilter((current) => current + input)
+    setIndex(0)
+  }, { isActive: true })
+
+  return (
+    <PanelFrame title="◇ provider" hint="↑↓ move · type filter · 1-N jump · Enter switch · Esc close">
+      <Text>
+        <Text color={MUTED}>› </Text>
+        <Text color={BODY}>{filter}</Text>
+        <Text backgroundColor={MUTED} color="black"> </Text>
+      </Text>
+      {visible.length === 0 ? <Text color={MUTED}>(no match — add one with /connect)</Text> : null}
+      {visible.map((item, row) => {
+        const label = `${item.id === activeId ? '*' : ' '} ${item.id}${item.name ? ` (${item.name})` : ''}  ${item.modelCount} model(s)  ${item.keySource ? 'key ✓' : 'key ✗'}`
+        return row === selected
+          ? <SelectedRow key={item.id} text={label} width={60} />
+          : <Text key={item.id} color={BODY}>{label}</Text>
+      })}
+    </PanelFrame>
+  )
+}
+
+/** Interactive model switcher (bare /model): arrows + filter + Enter, Esc closes. */
+export function ModelPanel({ providerId, models, active, onPick, onClose }: {
+  providerId: string
+  models: string[]
+  active: string | undefined
+  onPick: (modelId: string) => void
+  onClose: () => void
+}): React.JSX.Element {
+  const [filter, setFilter] = useState('')
+  const [index, setIndex] = useState(() => Math.max(0, models.findIndex((model) => model === active)))
+  const visible = useMemo(() => {
+    const needle = filter.trim().toLowerCase()
+    return needle ? models.filter((model) => model.toLowerCase().includes(needle)) : models
+  }, [models, filter])
+  const selected = Math.min(index, Math.max(0, visible.length - 1))
+  const [custom, setCustom] = useState('')
+
+  useInput((input, key) => {
+    if (key.escape) {
+      onClose()
+      return
+    }
+    // Open-world providers expose no catalog: free input lands via onPick
+    // so closed-world validation still runs in one place (the caller).
+    if (models.length === 0) return
+    if (visible.length === 0) {
+      if (key.return && filter.trim()) {
+        onPick(filter.trim())
+        return
+      }
+      if (key.backspace || key.delete) {
+        setFilter((current) => current.slice(0, -1))
+        setIndex(0)
+      } else if (input && !key.ctrl && !key.meta && !key.tab && !input.includes('\n') && !input.includes('\r')) {
+        setFilter((current) => current + input)
+        setIndex(0)
+      }
+      return
+    }
+    if (key.upArrow) {
+      setIndex((current) => (current - 1 + visible.length) % Math.max(1, visible.length))
+      return
+    }
+    if (key.downArrow) {
+      setIndex((current) => (current + 1) % Math.max(1, visible.length))
+      return
+    }
+    if (key.return) {
+      const picked = visible[selected]
+      if (picked) onPick(picked)
+      return
+    }
+    // 1..N quick-jump (mirrors the plain-loop numbered picker).
+    const digit = Number(input)
+    if (input && !key.ctrl && !key.meta && !key.tab && !key.return && Number.isInteger(digit) && digit >= 1 && digit <= visible.length) {
+      const picked = visible[digit - 1]
+      if (picked) onPick(picked)
+      return
+    }
+    if (key.backspace || key.delete) {
+      setFilter((current) => current.slice(0, -1))
+      setIndex(0)
+      return
+    }
+    if (key.ctrl || key.meta || key.tab) return
+    if (!input || input.includes('\n') || input.includes('\r')) return
+    setFilter((current) => current + input)
+    setIndex(0)
+  }, { isActive: true })
+
+  if (models.length === 0) {
+    return (
+      <PanelFrame title={`◇ model — ${providerId}`} hint="type model id · Enter switch · Esc keep current">
+        <LineInput
+          value={custom}
+          onChange={setCustom}
+          onSubmit={(value) => {
+            if (!value.trim()) {
+              onClose()
+              return
+            }
+            onPick(value.trim())
+          }}
+          onCancel={onClose}
+        />
+      </PanelFrame>
+    )
+  }
+
+  return (
+    <PanelFrame title={`◇ model — ${providerId}`} hint="↑↓ move · type filter · 1-N jump · Enter switch · Esc close">
+      <Text>
+        <Text color={MUTED}>› </Text>
+        <Text color={BODY}>{filter}</Text>
+        <Text backgroundColor={MUTED} color="black"> </Text>
+      </Text>
+      {visible.length === 0 ? <Text color={MUTED}>(no match — Enter uses the filter text)</Text> : null}
+      {visible.map((model, row) => {
+        const label = `${model === active ? '*' : ' '} ${model}`
+        return row === selected
+          ? <SelectedRow key={model} text={label} width={60} />
+          : <Text key={model} color={BODY}>{label}</Text>
+      })}
+    </PanelFrame>
+  )
+}
+
 /** Single-line field with caret (used for ids, URLs; secret masks as •). */
 export function LineInput({ value, onChange, onSubmit, onCancel, secret = false }: {
   value: string

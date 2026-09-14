@@ -76,9 +76,9 @@ export function commandHelpText(): string {
   return [
     'Commands:',
     '  /help                 Show this help.',
-    '  /model [id]           List models or switch the model.',
+    '  /model [id]           Pick model (bare opens picker) or switch directly.',
     '  /effort [level|num]   Pick reasoning effort (bare opens picker) or switch directly.',
-    '  /provider [id]        List providers or switch provider.',
+    '  /provider [id]        Pick provider (bare opens picker) or switch directly.',
     '  /provider rm <id>     Remove a provider (and its auth.json key).',
     '  /connect [id] [key] [base-url]',
     '                          Provider setup wizard (key lands in auth.json).',
