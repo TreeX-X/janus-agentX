@@ -16,7 +16,7 @@ import { defaultAuthPath, loadAuthFile } from './auth.js'
 import { isProviderEnabled, loadEffectiveCatalog, listProviderModels } from './providers.js'
 import { buildTracePreviews } from './trace-preview.js'
 import { displayText } from './tool-display.js'
-import { runConnectWizard, type ConnectAsk, type TestConnectionFn } from './connect.js'
+import { runConnectWizard, testConnection, type ConnectAsk, type TestConnectionFn } from './connect.js'
 import { EFFORT_META, effortMeta, effortPickerRows, parseEffortPickerInput } from './effort.js'
 import { executeCommand } from './tui/exec.js'
 import { parseInputLine } from './commands.js'
@@ -397,13 +397,31 @@ async function runProviderPicker(state: ReplState): Promise<'continue' | 'exit'>
 /**
  * Plain-loop interactive picker for bare `/model` (numbered list +
  * follow-up prompt). Mirrors the Ink `ModelPanel`: numbers, ids,
- * Enter/EOF keeps the current model. Open-world providers (empty catalog)
- * fall back to free input; closed-world validation stays in `setModel`.
+ * Enter/EOF keeps the current model. Catalog-empty (open-world) providers
+ * list live models from the endpoint first (same probe as `/connect`);
+ * free input is the fallback when the probe is unavailable or fails.
+ * Closed-world validation stays in `setModel`.
  */
 async function runModelPicker(state: ReplState): Promise<'continue' | 'exit'> {
   const providerId = state.session.getProviderId()
-  const models = state.session.listModels()
+  let models = state.session.listModels()
   const active = state.session.getModelId()
+  if (models.length === 0) {
+    const key = state.session.getApiKey()
+    if (key) {
+      state.stdout(`loading models from ${state.session.getEffectiveBaseUrl()}/models …\n`)
+      try {
+        const result = await (state.testConnection ?? testConnection)(state.session.getEffectiveBaseUrl(), key)
+        if (result.ok && result.models.length > 0) {
+          models = result.models
+        } else if (!result.ok) {
+          state.stderr(`model list unavailable: ${result.error ?? 'unknown error'} (type an id instead)\n`)
+        }
+      } catch {
+        // Probe failures never block the picker; free input below covers it.
+      }
+    }
+  }
   if (models.length === 0) {
     state.stdout(`model: ${active ?? '(no model)'} · provider ${providerId} (open list — type an id)\n`)
     state.stdout(`model id (Enter keeps ${active ?? 'none'}): `)

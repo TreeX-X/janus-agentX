@@ -26,6 +26,7 @@ import {
 } from './store.js'
 import { executeCommand } from './exec.js'
 import type { TestConnectionFn } from '../connect.js'
+import { testConnection } from '../connect.js'
 import { listProviderModels, isProviderEnabled } from '../providers.js'
 import { CommandPalette, ApprovalPanel, EffortPanel, ModelPanel, ProviderPanel, PanelFrame, type PaletteItem } from './palette.js'
 import { effortMeta } from '../effort.js'
@@ -1123,6 +1124,19 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
             providerId={sessionRef.current.getProviderId()}
             models={sessionRef.current.listModels()}
             active={sessionRef.current.getModelId()}
+            loadModels={async () => {
+              // Catalog-empty providers list live models from the endpoint
+              // (same probe as /connect); null keeps the free-input fallback.
+              const current = sessionRef.current
+              const key = current.getApiKey()
+              if (!key) return null
+              try {
+                const result = await (host.testConnection ?? testConnection)(current.getEffectiveBaseUrl(), key)
+                return result.ok && result.models.length > 0 ? result.models : null
+              } catch {
+                return null
+              }
+            }}
             onPick={(modelId) => {
               try {
                 sessionRef.current.setModel(modelId)

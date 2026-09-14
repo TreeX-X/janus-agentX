@@ -291,4 +291,57 @@ describe('runRepl providers', () => {
     expect(out.join('')).toContain('model switched: nope')
     expect(err.join('')).toContain('unknown provider "nope"')
   })
+
+  it('lists live models in the /model picker for catalog-empty providers', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-modellive-'))
+    const configPath = join(mkdtempSync(join(tmpdir(), 'janus-repl-modellivecfg-')), 'config.json')
+    saveCatalogFile(configPath, { version: 1, providers: [{ id: 'open' }], defaultProvider: 'open' })
+    const out: string[] = []
+    const err: string[] = []
+    const code = await runRepl(
+      { workspace: dir, plain: true },
+      {
+        stdout: (text) => { out.push(text) },
+        stderr: (text) => { err.push(text) },
+        env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv,
+        store: memoryConversationStore(),
+        configPath,
+        authPath: null,
+        testConnection: async () => ({ ok: true, models: ['m-x', 'm-y'] }),
+        lines: arrayLineSource(['/model', '1', '/exit']),
+        streamTextFn: textStub(),
+      },
+    )
+    expect(code).toBe(0)
+    const all = out.join('')
+    expect(all).toContain('loading models')
+    expect(all).toContain(' 1 m-x')
+    expect(all).toContain('model switched: m-x')
+    expect(err.join('')).not.toContain('model list unavailable')
+  })
+
+  it('falls back to free input when the live model probe fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-repl-modelfail-'))
+    const configPath = join(mkdtempSync(join(tmpdir(), 'janus-repl-modelfailcfg-')), 'config.json')
+    saveCatalogFile(configPath, { version: 1, providers: [{ id: 'open' }], defaultProvider: 'open' })
+    const out: string[] = []
+    const err: string[] = []
+    const code = await runRepl(
+      { workspace: dir, plain: true },
+      {
+        stdout: (text) => { out.push(text) },
+        stderr: (text) => { err.push(text) },
+        env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv,
+        store: memoryConversationStore(),
+        configPath,
+        authPath: null,
+        testConnection: async () => ({ ok: false, models: [], error: 'HTTP 401' }),
+        lines: arrayLineSource(['/model', '', '/exit']),
+        streamTextFn: textStub(),
+      },
+    )
+    expect(code).toBe(0)
+    expect(out.join('')).toContain('model unchanged: (no model)')
+    expect(err.join('')).toContain('model list unavailable: HTTP 401')
+  })
 })

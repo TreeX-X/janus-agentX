@@ -39,7 +39,7 @@ describe('runRepl', () => {
     const c = collect()
     const code = await runRepl(
       { workspace: tmpdir() },
-      { ...c.io, env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv, lines: arrayLineSource(['hi', '/model', '', '/exit']) },
+      { ...c.io, env: { JANUS_API_KEY: 'k' } as NodeJS.ProcessEnv, lines: arrayLineSource(['hi', '/model', '', '/exit']), testConnection: async () => ({ ok: false, models: [], error: 'stubbed offline' }) },
     )
     expect(code).toBe(0)
     expect(c.err.join('')).toContain('no model')

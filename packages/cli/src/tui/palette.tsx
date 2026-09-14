@@ -4,7 +4,7 @@
  * `useInput` (mounted = active), so the App shell only needs to disable the
  * composer and ignore global keys while an overlay is open.
  */
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 import { EFFORT_META, type EffortLevel } from '../effort.js'
@@ -294,19 +294,43 @@ export function ProviderPanel({ items, activeId, onPick, onClose }: {
 }
 
 /** Interactive model switcher (bare /model): arrows + filter + Enter, Esc closes. */
-export function ModelPanel({ providerId, models, active, onPick, onClose }: {
+export function ModelPanel({ providerId, models, active, loadModels, onPick, onClose }: {
   providerId: string
   models: string[]
   active: string | undefined
+  /**
+   * Live fallback for catalog-empty (open-world) providers: resolves the
+   * `/models` listing, or null when unavailable (no key / probe failed).
+   * Null and empty both fall back to free input; never blocks the panel.
+   */
+  loadModels?: () => Promise<string[] | null>
   onPick: (modelId: string) => void
   onClose: () => void
 }): React.JSX.Element {
   const [filter, setFilter] = useState('')
-  const [index, setIndex] = useState(() => Math.max(0, models.findIndex((model) => model === active)))
+  const [remote, setRemote] = useState<string[] | null>(null)
+  const [loading, setLoading] = useState(models.length === 0 && loadModels !== undefined)
+  // Catalog wins; the probe runs once per panel mount for catalog-empty
+  // providers (the loader closure is fresh every host render by design).
+  useEffect(() => {
+    if (models.length > 0 || loadModels === undefined) return
+    let cancelled = false
+    setLoading(true)
+    loadModels().then(
+      (listed) => { if (!cancelled) { setRemote(listed); setLoading(false) } },
+      () => { if (!cancelled) { setRemote(null); setLoading(false) } },
+    )
+    return () => { cancelled = true }
+    // Runs once per mount; re-probing on every host render would spin forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const list = models.length > 0 ? models : (remote ?? [])
+  const showCustom = !loading && list.length === 0
+  const [index, setIndex] = useState(() => Math.max(0, list.findIndex((model) => model === active)))
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase()
-    return needle ? models.filter((model) => model.toLowerCase().includes(needle)) : models
-  }, [models, filter])
+    return needle ? list.filter((model) => model.toLowerCase().includes(needle)) : list
+  }, [list, filter])
   const selected = Math.min(index, Math.max(0, visible.length - 1))
   const [custom, setCustom] = useState('')
 
@@ -315,9 +339,7 @@ export function ModelPanel({ providerId, models, active, onPick, onClose }: {
       onClose()
       return
     }
-    // Open-world providers expose no catalog: free input lands via onPick
-    // so closed-world validation still runs in one place (the caller).
-    if (models.length === 0) return
+    if (loading || showCustom) return
     if (visible.length === 0) {
       if (key.return && filter.trim()) {
         onPick(filter.trim())
@@ -363,7 +385,15 @@ export function ModelPanel({ providerId, models, active, onPick, onClose }: {
     setIndex(0)
   }, { isActive: true })
 
-  if (models.length === 0) {
+  if (loading) {
+    return (
+      <PanelFrame title={`◇ model — ${providerId}`} hint="Esc keep current">
+        <Text color={MUTED}>loading models …</Text>
+      </PanelFrame>
+    )
+  }
+
+  if (showCustom) {
     return (
       <PanelFrame title={`◇ model — ${providerId}`} hint="type model id · Enter switch · Esc keep current">
         <LineInput

@@ -492,6 +492,37 @@ describe('App', () => {
     }
   })
 
+  it('lists live models in the model switcher when the catalog is empty', async () => {
+    const session = await CliSession.create({
+      workspace: mkdtempSync(join(tmpdir(), 'janus-app-modellive-')),
+      apiKey: 'k',
+      store: memoryConversationStore(),
+      streamTextFn: (async () => ({
+        textStream: (async function* () { yield 'stub-answer' })(),
+      })) as ChatTurnPorts['streamTextFn'],
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{
+          createSession: async () => ({ error: 'unavailable in tests' }),
+          testConnection: async () => ({ ok: true, models: ['live-a', 'live-b'] }),
+        }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, '/model')
+      await waitForFrame(() => (lastFrame() ?? '').includes('live-a'))
+      expect(lastFrame() ?? '').toContain('live-b')
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
   it('interleaves thinking, tool cards, and text in stream order', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-app-timeline-'))
     writeFileSync(join(dir, 'hello.txt'), 'tool-content-here')
