@@ -22,6 +22,7 @@ import {
   type ToolRegistry,
 } from '@janus-agent/agent-core'
 import type { JobManager } from './jobs.js'
+import { tryTreeKill } from './jobs.js'
 import { evaluateDestructiveCommand } from './destructive-commands.js'
 import {
   commandExecutionMode,
@@ -178,7 +179,8 @@ function executeCommand(
 
     child.stdout.on('data', (chunk: Buffer) => captureChunk(stdout, chunk))
     child.stderr.on('data', (chunk: Buffer) => captureChunk(stderr, chunk))
-    const stop = () => { try { child.kill() } catch { /* already gone */ } }
+    // Timeout and user abort tree-kill on win32 first so build subtrees cannot leak.
+    const stop = () => { tryTreeKill(child.pid); try { child.kill() } catch { /* already gone */ } }
     const abort = () => { aborted = true; stop() }
     if (signal.aborted) { abort() } else { signal.addEventListener('abort', abort, { once: true }) }
     const timer = setTimeout(() => { timedOut = true; stop() }, timeoutMs)

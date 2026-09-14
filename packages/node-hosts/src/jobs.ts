@@ -30,6 +30,24 @@ function spawnHint(program: string): string {
     + ` Launch the host from a shell with Node on PATH; package-manager shims resolve through cmd.exe on win32.`
 }
 
+/**
+ * Best-effort win32 process-tree pre-kill. Console processes ignore a graceful
+ * terminate and the previous handle kill was TerminateProcess anyway, so the
+ * tree is always forced; failures fall through to the caller's handle kill.
+ * Shared by background jobs and the sync command.run timeout/abort path.
+ */
+export function tryTreeKill(pid: unknown): void {
+  if (process.platform !== 'win32' || !Number.isSafeInteger(pid)) return
+  try {
+    const systemRoot = process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows'
+    spawnSync(`${systemRoot}\\System32\\taskkill.exe`,
+      ['/PID', String(pid), '/T', '/F'],
+      { windowsHide: true, timeout: 10_000 })
+  } catch {
+    // Best effort: the handle-kill flow covers the miss.
+  }
+}
+
 export interface JobStartInput {
   /** Absolute workspace root (log dir + jail anchor). */
   workspaceRoot: string
@@ -263,20 +281,7 @@ export class JobManager {
   private kill(record: JobRecord, force: boolean): void {
     if (record.exited) return
     // Note: win32 kills the whole process tree so packaging children cannot leak — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
-    if (process.platform === 'win32' && record.pid !== undefined) {
-      // Console processes ignore a graceful taskkill and the previous
-      // child.kill() was TerminateProcess anyway, so always tree-force.
-      const systemRoot = process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows'
-      try {
-        const result = spawnSync(`${systemRoot}\\System32\\taskkill.exe`,
-          ['/PID', String(record.pid), '/T', '/F'],
-          { windowsHide: true, timeout: 10_000 })
-        // 0 = terminated, 128 = already exited (stop/timeout race); anything else falls back below.
-        if (result.status === 0 || result.status === 128) return
-      } catch {
-        // Fall through to the process-handle kill.
-      }
-    }
+    tryTreeKill(record.pid)
     try {
       record.child.kill((force || process.platform === 'win32') ? 'SIGKILL' : undefined)
     } catch {
