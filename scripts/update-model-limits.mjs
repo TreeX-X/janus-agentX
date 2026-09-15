@@ -4,6 +4,9 @@
  * @description Compares `packages/cli/src/model-limits.table.ts` against a
  * documented catalog (models.dev api.json by default) and reports drift.
  * No runtime fetch by design: this runs on dev machines and CI only.
+ * Only authoritative owner providers with text-only output count;
+ * router truncations, image/audio/video variants, and embeddings are
+ * skipped, and <=5% rounding gaps never fail the check.
  *
  * Usage:
  *   node scripts/update-model-limits.mjs [--api <url|path>] [--table <path>]
@@ -51,17 +54,44 @@ function normalizeApi(api) {
       const limit = model && typeof model === 'object' ? model.limit ?? {} : {}
       const context = limit.context ?? limit.input
       if (!Number.isSafeInteger(context) || context <= 0) continue
-      rows.push({ id: `${provider}/${id}`, model: id, context })
+      const output = model && typeof model === 'object' ? model.modalities?.output : undefined
+      rows.push({
+        id: `${provider}/${id}`,
+        provider,
+        model: id,
+        context,
+        ...(Array.isArray(output) ? { output } : {}),
+      })
     }
   }
   return rows
 }
 
+async function fetchWithRetry(source, attempts = 3) {
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 30_000)
+    try {
+      const response = await fetch(source, {
+        headers: { 'user-agent': 'janus-agentx-table-refresh' },
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`models.dev fetch failed: HTTP ${response.status}`)
+      return response.json()
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  throw lastError
+}
+
 async function loadApi(source) {
   if (!/^https?:\/\//.test(source)) return readJson(resolve(ROOT, source))
-  const response = await fetch(source, { headers: { 'user-agent': 'janus-agentx-table-refresh' } })
-  if (!response.ok) throw new Error(`models.dev fetch failed: HTTP ${response.status}`)
-  return response.json()
+  return fetchWithRetry(source)
 }
 
 function printGroup(title, items, format) {
@@ -87,6 +117,7 @@ async function main() {
     (hit) => `${hit.id} documented ${hit.documented} > prefix '${hit.prefix}' ${hit.resolved}`)
   printGroup('UNCOVERED — no prefix matches', diff.uncovered,
     (hit) => `${hit.id} documented ${hit.documented}`)
+  if (typeof diff.skipped === 'number') console.log(`SKIPPED — non-authoritative or non-chat (${diff.skipped})`)
 
   if (process.argv.includes('--apply-safe')) {
     const { changes } = applySafeLower(rows, diff)

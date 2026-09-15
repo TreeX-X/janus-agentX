@@ -23,16 +23,38 @@ describe('diffTable', () => {
     expect(diff.low).toEqual([])
   })
 
+  it('skips router truncations, non-text variants, and embeddings instead of failing', () => {
+    const diff = diffTable(PREFIXES, [
+      { id: 'greenpt/gpt-5-chat', provider: 'greenpt', model: 'gpt-5-chat', context: 128_000 },
+      { id: 'google/gemini-2.5-flash-image', provider: 'google', model: 'gemini-2.5-flash-image', context: 32_768, output: ['text', 'image'] },
+      { id: 'google/gemini-2.5-pro-tts', provider: 'google', model: 'gemini-2.5-pro-tts', context: 8_192, output: ['audio'] },
+      { id: 'mistral/mistral-embed', provider: 'mistral', model: 'mistral-embed', context: 8_000, output: ['text'] },
+      { id: 'greenpt/green-unknown-xyz', provider: 'greenpt', model: 'green-unknown-xyz', context: 128_000 },
+    ])
+    expect(diff.unsafe).toEqual([])
+    expect(diff.low).toEqual([])
+    expect(diff.uncovered).toEqual([])
+    expect(diff.skipped).toBe(5)
+  })
+
+  it('tolerates rounding noise instead of flagging overflow', () => {
+    // 1_048_576 vs 1_050_000 is a 1000000/1048576 unit gap, not overflow.
+    const kimi = [{ prefix: 'kimi-k3', contextWindow: 1_050_000, maxOutputTokens: 32_000 }]
+    expect(diffTable(kimi, [
+      { id: 'moonshotai/kimi-k3', provider: 'moonshotai', model: 'kimi-k3', context: 1_048_576 },
+    ]).unsafe).toEqual([])
+  })
+
   it('reports table-below-documented as reviewable low and unknown ids as uncovered', () => {
     const diff = diffTable(PREFIXES, [
       { id: 'deepseek/deepseek-v4', model: 'deepseek-v4', context: 1_000_000 },
-      { id: 'x/new-model', model: 'new-model', context: 512_000 },
+      { id: 'openai/new-model-xyz', provider: 'openai', model: 'new-model-xyz', context: 512_000 },
       { id: 'broken/no-limit', model: 'no-limit', context: 0 },
     ])
     expect(diff.low).toEqual([
       { id: 'deepseek/deepseek-v4', documented: 1_000_000, resolved: 64_000, prefix: 'deepseek' },
     ])
-    expect(diff.uncovered).toEqual([{ id: 'x/new-model', documented: 512_000 }])
+    expect(diff.uncovered).toEqual([{ id: 'openai/new-model-xyz', documented: 512_000 }])
     expect(diff.unsafe).toEqual([])
   })
 })

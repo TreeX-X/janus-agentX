@@ -8,10 +8,18 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Check curated window table against models.dev
-        run: node scripts/update-model-limits.mjs --check
+        run: set -o pipefail; node scripts/update-model-limits.mjs --check 2>&1 | tee model-limits-report.txt
+      - name: Upload drift report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-limits-report
+          path: model-limits-report.txt
+          retention-days: 30

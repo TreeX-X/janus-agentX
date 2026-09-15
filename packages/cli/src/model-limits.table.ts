@@ -26,6 +26,18 @@ export interface ModelLimitRow {
 }
 
 export const MODEL_LIMIT_ROWS: ModelLimitRow[] = [
+  { prefix: 'gpt-5.3-codex-spark', contextWindow: 128000, maxOutputTokens: 32000 }, // openai-docs
+  { prefix: 'gpt-5.3-chat', contextWindow: 128000, maxOutputTokens: 16384 }, // openai-docs
+  { prefix: 'gpt-5.2-chat', contextWindow: 128000, maxOutputTokens: 16384 }, // openai-docs
+  { prefix: 'gemini-2.5-computer-use', contextWindow: 131072, maxOutputTokens: 65536 }, // provider-docs
+  { prefix: 'gemini-embedding', contextWindow: 2048, maxOutputTokens: 1024 }, // provider-docs
+  { prefix: 'deepseek-r1-distill', contextWindow: 32768, maxOutputTokens: 16384 }, // provider-docs
+  { prefix: 'qwen-plus-character', contextWindow: 8192, maxOutputTokens: 512 }, // provider-docs
+  { prefix: 'qwen2-5-math', contextWindow: 4096, maxOutputTokens: 3072 }, // provider-docs
+  { prefix: 'qwen-math', contextWindow: 4096, maxOutputTokens: 3072 }, // provider-docs
+  { prefix: 'qwen-mt', contextWindow: 16384, maxOutputTokens: 8192 }, // provider-docs
+  { prefix: 'glm-4.5v', contextWindow: 64000, maxOutputTokens: 16384 }, // provider-docs
+  { prefix: 'mistral-embed', contextWindow: 8000, maxOutputTokens: 3072 }, // provider-docs
   { prefix: 'gpt-5.6', contextWindow: 1050000, maxOutputTokens: 128000 }, // openai-docs
   { prefix: 'gpt-4.1', contextWindow: 1000000, maxOutputTokens: 32768 }, // openai-docs
   { prefix: 'gpt-4.5', contextWindow: 128000, maxOutputTokens: 16384 }, // openai-docs

@@ -53,6 +53,11 @@ describe('resolveModelLimits', () => {
     expect(resolveModelLimits({ modelId: 'deepseek-chat' }).limits.contextWindow).toBe(64_000)
     expect(resolveModelLimits({ modelId: 'doubao-seed-1-6-250615' }).limits.contextWindow).toBe(256_000)
     expect(resolveModelLimits({ modelId: 'doubao-seed-2-0-lite' }).limits.contextWindow).toBe(128_000)
+    expect(resolveModelLimits({ modelId: 'gpt-5.2-chat-latest' }).limits.contextWindow).toBe(128_000)
+    expect(resolveModelLimits({ modelId: 'gpt-5.3-codex-spark' }).limits.contextWindow).toBe(128_000)
+    expect(resolveModelLimits({ modelId: 'deepseek-r1-distill-qwen-7b' }).limits.contextWindow).toBe(32_768)
+    expect(resolveModelLimits({ modelId: 'qwen-mt-turbo' }).limits.contextWindow).toBe(16_384)
+    expect(resolveModelLimits({ modelId: 'glm-4.5v' }).limits.contextWindow).toBe(64_000)
   })
 
   it('keeps the curated table well-formed', () => {
