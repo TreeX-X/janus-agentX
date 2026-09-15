@@ -28,7 +28,7 @@ import { executeCommand } from './exec.js'
 import type { TestConnectionFn } from '../connect.js'
 import { testConnection } from '../connect.js'
 import { listProviderModels, isProviderEnabled } from '../providers.js'
-import { CommandPalette, ApprovalPanel, EffortPanel, ModelPanel, ProviderPanel, PanelFrame, type PaletteItem } from './palette.js'
+import { CommandPalette, ApprovalPanel, EffortPanel, ModelPanel, ProviderPanel, PanelFrame, WrappedRow, type PaletteItem } from './palette.js'
 import { effortMeta } from '../effort.js'
 import { ConnectPanel } from './connect-panel.js'
 import { parseInputLine } from '../commands.js'
@@ -142,9 +142,13 @@ function TodoStickyBar({ todos, width, expanded }: { todos: ChatTodoItem[]; widt
         <Box flexDirection="column">
           <Text color={THEME.muted}>{'─'.repeat(innerW)}</Text>
           {todos.map((todo, index) => (
-            <Text key={index} color={todo.status === 'in_progress' ? TUI_CHROME.yellow : THEME.muted}>
-              {truncateToWidth(`  ${icon(todo.status)} ${todo.content}`, innerW)}
-            </Text>
+            <WrappedRow
+              key={index}
+              prefix={`  ${icon(todo.status)} `}
+              body={todo.content}
+              width={innerW}
+              color={todo.status === 'in_progress' ? TUI_CHROME.yellow : THEME.muted}
+            />
           ))}
         </Box>
       ) : null}
@@ -1182,6 +1186,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
           <QuestionPanel
             view={state.awaitingQuestion}
             onResolve={(answer) => questionResolveRef.current?.(answer)}
+            width={discW}
           />
         ) : (
           <Composer

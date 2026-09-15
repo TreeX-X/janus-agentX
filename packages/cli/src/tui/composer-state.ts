@@ -272,6 +272,74 @@ export function truncateToWidth(text: string, width: number): string {
 }
 
 /**
+ * Wrap text into lines of at most `width` cells - nothing is cut, no truncation marker.
+ * Honors existing newlines (blank lines preserved); packs words greedily
+ * and hard-splits overlong runs (CJK text has no spaces). Widths use the
+ * same Ink-aligned ruler as `truncateToWidth`. Tabs count as two spaces.
+ * For read-only rows (todo items, question options) that must show full
+ * content instead of truncating; single-line summaries keep
+ * `truncateToWidth` by design.
+ */
+// Note: read-only long rows wrap instead of truncating - see .agents/notes/implemented/bug-fix/2026-09-15-tui-wrap-long-rows.md
+export function wrapToWidth(text: string, width: number): string[] {
+  const budget = Math.max(1, Math.floor(width))
+  const lines: string[] = []
+  for (const paragraph of text.split('\n')) {
+    let line = ''
+    let used = 0
+    let pendingSpace = false
+    const flush = (): void => {
+      lines.push(line)
+      line = ''
+      used = 0
+      pendingSpace = false
+    }
+    // Hard-split one overlong word across lines (progress guaranteed even
+    // when a single char is wider than the budget).
+    const emitHard = (word: string): void => {
+      for (const char of word) {
+        const w = stringWidth(char)
+        if (used > 0 && used + w > budget) flush()
+        if (used === 0 && w > budget) {
+          line += char
+          used += w
+          flush()
+          continue
+        }
+        line += char
+        used += w
+      }
+    }
+    for (const token of paragraph.replace(/\t/g, '  ').split(/(\s+)/)) {
+      if (token.length === 0) continue
+      if (/^\s+$/.test(token)) {
+        pendingSpace = true
+        continue
+      }
+      const wordWidth = stringWidth(token)
+      const gap = pendingSpace && used > 0 ? 1 : 0
+      if (wordWidth > budget) {
+        if (used > 0) flush()
+        pendingSpace = false
+        emitHard(token)
+        continue
+      }
+      if (used + gap + wordWidth > budget) flush()
+      else if (gap > 0) {
+        line += ' '
+        used += 1
+      }
+      pendingSpace = false
+      line += token
+      used += wordWidth
+    }
+    // Always push (keeps trailing/blank lines so `\n` structure survives).
+    lines.push(line)
+  }
+  return lines
+}
+
+/**
  * Slice a line to `width` cells keeping the cursor visible: head when the
  * cursor fits, otherwise a `…`-led tail ending at the cursor. A cursor at
  * the very end of the line reserves one cell for its block.

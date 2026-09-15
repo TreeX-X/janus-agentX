@@ -10,14 +10,20 @@ import React, { useMemo, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { ASK_MAX_CUSTOM_CHARS } from '@janus-agent/chat-core'
 import type { AskUserPortAnswer } from '@janus-agent/janus-agent'
-import { truncateToWidth } from './composer-state.js'
-import { LineInput, PanelFrame, SelectedRow } from './palette.js'
+import { wrapToWidth } from './composer-state.js'
+import { LineInput, PanelFrame, WrappedRow } from './palette.js'
 import type { QuestionView } from './store.js'
 import { BODY, MUTED } from './palette.js'
 
-export function QuestionPanel({ view, onResolve }: {
+export function QuestionPanel({ view, onResolve, width }: {
   view: QuestionView
   onResolve: (answer: AskUserPortAnswer) => void
+  /**
+   * Discussion-column width in cells (the frame border + padding take 4).
+   * Unset keeps the legacy fixed budget; the App host passes `discW` so
+   * long questions/options wrap to the live terminal instead of truncating.
+   */
+  width?: number
 }): React.JSX.Element {
   const total = view.questions.length
   const [index, setIndex] = useState(0)
@@ -118,7 +124,9 @@ export function QuestionPanel({ view, onResolve }: {
 
   if (!current) return <Box><Text color={MUTED}>no questions</Text></Box>
 
-  const labelWidth = 56
+  // Panel inner width: frame border (2) + padding (2). Long questions and
+  // options wrap in full here instead of truncating with `...`.
+  const contentW = Math.max(24, (width ?? 60) - 4)
   return (
     <PanelFrame
       title={`? confirm plan · ${index + 1}/${total} · ${current.header}`}
@@ -126,19 +134,32 @@ export function QuestionPanel({ view, onResolve }: {
         ? '↑↓ move · Space check · 1-6 toggle · Enter confirm · c custom input · Esc cancel all'
         : '↑↓ move · 1-6 jump · Enter confirm · c custom input · Esc cancel all'}
     >
-      <Text color={BODY}>{truncateToWidth(current.question, 76)}</Text>
+      {wrapToWidth(current.question, contentW).map((line, lineIndex) => (
+        <Text key={lineIndex} color={BODY}>{line || ' '}</Text>
+      ))}
       {options.map((option, row) => {
         const mark = current.multiple ? (checked.includes(row) ? '◉' : '○') : row === highlight ? '▸' : ' '
-        const label = `${mark} ${row + 1} ${option.label}${option.description ? `  ${option.description}` : ''}`
         const selected = current.multiple ? checked.includes(row) : row === highlight
-        return selected
-          ? <SelectedRow key={row} text={label} width={labelWidth} />
-          : <Text key={row} color={BODY}>{truncateToWidth(label, labelWidth)}</Text>
+        return (
+          <WrappedRow
+            key={row}
+            prefix={`${mark} ${row + 1} `}
+            body={option.description ? `${option.label}  ${option.description}` : option.label}
+            width={contentW}
+            selected={selected}
+            color={BODY}
+          />
+        )
       })}
       {customRow === 1 ? (
-        highlightedCustom
-          ? <SelectedRow key="custom" text="▸ c · 自定义输入…" width={labelWidth} />
-          : <Text key="custom" color={MUTED}>{truncateToWidth('  c · 自定义输入…', labelWidth)}</Text>
+        <WrappedRow
+          key="custom"
+          prefix={highlightedCustom ? '▸ ' : '  '}
+          body="c · 自定义输入…"
+          width={contentW}
+          selected={highlightedCustom}
+          color={MUTED}
+        />
       ) : null}
       {customMode ? (
         <Box flexDirection="column" marginTop={1}>

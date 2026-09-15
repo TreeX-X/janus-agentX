@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 import { EFFORT_META, type EffortLevel } from '../effort.js'
-import { padToWidth, truncateToWidth } from './composer-state.js'
+import { displayWidth, padToWidth, truncateToWidth, wrapToWidth } from './composer-state.js'
 
 export const ACCENT = LOGO_TONE.orange
 export const MUTED = LOGO_TONE.dim
@@ -42,6 +42,34 @@ export function PanelFrame({ title, hint, children }: {
 /** Selected-row highlight: dark raised background, no orange block. */
 export function SelectedRow({ text, width }: { text: string; width: number }): React.JSX.Element {
   return <Text backgroundColor={TUI_CHROME.selectBg} color={BODY}>{padToWidth(truncateToWidth(text, width), width)}</Text>
+}
+
+/**
+ * Wrapped read-only row: `prefix` (marker/number, kept on line one) plus a
+ * wrappable `body` shown in full across as many lines as needed.
+ * Continuation lines hang under the body start. `selected` paints every
+ * line full-bleed so long options/todos stay highlighted end to end.
+ * Replaces single-line `truncateToWidth` rows where cutting text hides
+ * meaning (todo items, question options).
+ */
+export function WrappedRow({ prefix, body, width, selected = false, color }: {
+  prefix: string
+  body: string
+  width: number
+  selected?: boolean
+  color?: string
+}): React.JSX.Element {
+  const headWidth = displayWidth(prefix)
+  const wrapped = wrapToWidth(body, Math.max(1, width - headWidth))
+  const indent = ' '.repeat(headWidth)
+  const lines = wrapped.map((line, index) => (index === 0 ? `${prefix}${line}` : `${indent}${line}`))
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, index) => selected
+        ? <SelectedRow key={index} text={line} width={width} />
+        : <Text key={index} color={color ?? BODY}>{line}</Text>)}
+    </Box>
+  )
 }
 
 export interface PaletteItem {

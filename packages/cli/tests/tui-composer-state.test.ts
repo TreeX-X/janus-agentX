@@ -29,6 +29,7 @@ import {
   sliceAroundCursor,
   truncateToWidth,
   visibleStart,
+  wrapToWidth,
 } from '../src/tui/composer-state.js'
 import { isLiveTerminal, restoreNativeCaret } from '../src/tui/terminal-size.js'
 import { isKnownCommand, KNOWN_COMMAND_NAMES } from '../src/commands.js'
@@ -144,6 +145,33 @@ describe('displayWidth/padToWidth/truncateToWidth', () => {
     expect(displayWidth('👨‍👩‍👧‍👦')).toBe(2)
     expect(displayWidth('é')).toBe(1)
     expect(displayWidth('⚠️')).toBe(2)
+  })
+})
+
+describe('wrapToWidth', () => {
+  it('keeps short text on one line', () => {
+    expect(wrapToWidth('abcdef', 10)).toEqual(['abcdef'])
+    expect(wrapToWidth('', 10)).toEqual([''])
+  })
+
+  it('packs words and never emits a line wider than the budget', () => {
+    const lines = wrapToWidth('aaa bbb ccc ddd', 7)
+    expect(lines).toEqual(['aaa bbb', 'ccc ddd'])
+    for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(7)
+  })
+
+  it('wraps CJK per char and loses no content', () => {
+    const text = '中文测试内容过长需要换行显示'
+    const lines = wrapToWidth(text, 8)
+    expect(lines.length).toBeGreaterThan(1)
+    expect(lines.join('')).toBe(text)
+    for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(8)
+  })
+
+  it('hard-splits overlong words and honors existing newlines', () => {
+    expect(wrapToWidth('abcdefghij', 4)).toEqual(['abcd', 'efgh', 'ij'])
+    expect(wrapToWidth('ab\ncd', 10)).toEqual(['ab', 'cd'])
+    expect(wrapToWidth('a\n\nb', 10)).toEqual(['a', '', 'b'])
   })
 })
 
