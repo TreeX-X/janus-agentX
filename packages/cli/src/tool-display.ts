@@ -14,7 +14,7 @@ export interface ToolDisplay {
 }
 export type CliDisplayEvent =
   | { type: 'tool-display'; callId: string; display: ToolDisplay }
-  | { type: 'usage'; promptTokens: number; completionTokens: number }
+  | { type: 'usage'; promptTokens: number; completionTokens: number; reasoningTokens?: number }
 
 export function displayText(value: string): string {
   return stripVTControlCharacters(value).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')

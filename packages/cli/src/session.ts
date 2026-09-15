@@ -165,6 +165,8 @@ export class CliSession {
   private modelId: string | undefined
   private approvalMode: ApprovalModeOption
   private approvalSignal: AbortSignal | null = null
+  /** Latest unsettled approval request (cleared on resolve); drives always-approve. */
+  private pendingApproval: ApprovalRequestShape | null = null
   /** From --effort (wins over env; /effort wins over this once set). */
   private effortOverride?: string
   private readonly envEffort?: string
@@ -522,6 +524,7 @@ export class CliSession {
         actionRisk: request.actionRisk,
         preview: request.preview,
       }
+      this.pendingApproval = snapshot
       void (async () => {
         let approved = false
         try {
@@ -559,6 +562,7 @@ export class CliSession {
           toolName: snapshot.toolName,
           actionRisk: snapshot.actionRisk,
         }, APPROVAL_CALLER_ID)
+        if (this.pendingApproval?.id === snapshot.id) this.pendingApproval = null
       })()
     })
   }
@@ -926,6 +930,27 @@ export class CliSession {
     this.runtime.setApprovalMode(this.sessionId, mode)
   }
 
+  /**
+   * Note: approval-gate always-approve (`a`) — see .agents/notes/implemented/feature/2026-09-15-approval-gate-interrupt.md
+   * Switches to auto-run and approves the currently pending request, if any.
+   * opencode inline-card allow-always parity for the Composer-unmounted gate.
+   * Already-settled waits resolve false and are ignored.
+   */
+  approvePendingAndAutoRun(): boolean {
+    const pending = this.pendingApproval
+    this.setApprovalMode('auto-run')
+    if (!pending) return false
+    return this.runtime.resolveApproval({
+      approvalId: pending.id,
+      approved: true,
+      workspaceId: pending.workspaceId,
+      sessionId: pending.sessionId,
+      correlationId: pending.correlationId,
+      toolName: pending.toolName,
+      actionRisk: pending.actionRisk,
+    }, APPROVAL_CALLER_ID)
+  }
+
   async clearHistory(): Promise<void> {
     await this.registry.resetActive()
   }
@@ -1008,6 +1033,24 @@ export class CliSession {
           message: error instanceof Error ? error.message : String(error),
           raw: { hook: 'send-turn' },
         })
+        // C2: a failed turn still persists partial progress (prompt kept for
+        // retry, live todos, compaction state) — previously the throw below
+        // skipped every persist and memory forked from disk.
+        try {
+          record.data.messages = requestMessages
+          record.data.todos = [...record.chatSession.getTodos()]
+          const compaction = record.chatSession.getCompactionState()
+          if (compaction) {
+            record.data.compactionSummary = compaction.summary
+            record.data.compactionKey = compaction.key
+          } else {
+            delete record.data.compactionSummary
+            delete record.data.compactionKey
+          }
+          await this.registry.persist(record.data.id)
+        } catch {
+          // Best effort: persist must never mask the original failure.
+        }
         throw error
       }
       if (result.cancelled) {

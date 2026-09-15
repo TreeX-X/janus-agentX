@@ -34,6 +34,15 @@ function collect() {
   }
 }
 
+describe('arrayLineSource', () => {
+  it('drains queued lines so a cancelled turn opens nothing new', async () => {
+    const lines = arrayLineSource(['a', 'b'])
+    expect(await lines.next('> ')).toBe('a')
+    lines.drain?.()
+    expect(await lines.next('> ')).toBe(null)
+  })
+})
+
 describe('runRepl', () => {
   it('enters without a model; turns fail gracefully until /model sets one', async () => {
     const c = collect()

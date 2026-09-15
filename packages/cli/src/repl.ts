@@ -32,6 +32,8 @@ import { renderLogoAscii, renderLogoPlain } from './logo.js'
 export interface ReplLineSource {
   next(prompt?: string, opts?: { signal?: AbortSignal }): Promise<string | null>
   close(): void
+  /** Drops buffered rows queued while a turn was running (paste/pipe residue). */
+  drain?: () => void
 }
 
 export interface ReplIO {
@@ -56,6 +58,7 @@ export function arrayLineSource(lines: Array<string | null>): ReplLineSource {
   return {
     next: async () => (index < lines.length ? (lines[index++] as string | null) : null),
     close: () => undefined,
+    drain: () => { index = lines.length },
   }
 }
 
@@ -113,6 +116,9 @@ function createReadlineSource(onSigint: () => void): ReplLineSource {
       })
     },
     close: () => rl.close(),
+    // C2: drops rows buffered while a turn was running so a cancelled
+    // paste/pipe never opens a surprise turn after abort.
+    drain: () => { queued.length = 0 },
   }
 }
 
@@ -546,13 +552,18 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     if (activeController) activeController.abort()
     else lines.close()
   })
+  // C2: re-armable SIGINT. `once` consumed the only listener on the first
+  // Ctrl+C, so every later turn's Ctrl+C killed the process; `on` keeps
+  // cancel working for the whole session (removed on exit below).
+  let sigintHandler: (() => void) | null = null
   if (!io.lines) {
-    // Piped stdin never reaches the rl SIGINT listener; the first Ctrl+C
-    // cancels the turn, a second one falls through to default termination.
-    process.once('SIGINT', () => {
+    // Piped stdin never reaches the rl SIGINT listener; a Ctrl+C during a
+    // turn cancels it, idle Ctrl+C closes the source for a clean exit.
+    sigintHandler = () => {
       if (activeController) activeController.abort()
       else lines.close()
-    })
+    }
+    process.on('SIGINT', sigintHandler)
   }
   const catalogInput = loadEffectiveCatalog({
     // Explicit test seam wins (null = no file, even when flags exist);
@@ -643,10 +654,14 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
       try {
         await runTurn(state, parsed.text ?? '', activeController.signal)
       } finally {
+        // C2: a cancelled turn must not leak queued residue into the next
+        // prompt — pastes typed during the turn are dropped, not replayed.
+        if (activeController.signal.aborted) state.lines.drain?.()
         activeController = null
       }
     }
   } finally {
+    if (sigintHandler) process.removeListener('SIGINT', sigintHandler)
     lines.close()
     await state.session.close()
   }

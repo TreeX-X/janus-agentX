@@ -76,14 +76,15 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; query: string; path: string; maxResults: number }) => execute('workspace.search', input),
     },
     workspace_read: {
-      description: 'Read one UTF-8 text file and its SHA-256 hash from one attached workspace. Read immediately before editing.',
+      description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing.',
       parameters: z.object({
         workspaceId,
-        path: z.string().min(1),
-        offset: z.number().int().min(0).default(0),
-        maxBytes: z.number().int().min(1).max(256 * 1024).default(128 * 1024),
+        path: z.string().min(1).describe('Workspace-relative file path, e.g. src/notes/test.md'),
+        offset: z.number().int().min(0).default(1).describe('1-indexed line number to start from (default 1).'),
+        limit: z.number().int().min(1).max(2000).default(200).describe('Max lines to return (default 200, max 2000).'),
+        maxBytes: z.number().int().min(1).max(256 * 1024).default(50 * 1024).describe('Max bytes of page content (default 51200). The byte cap wins over limit.'),
       }),
-      execute: (input: { workspaceId: string; path: string; offset: number; maxBytes: number }) => execute('workspace.read', input),
+      execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number }) => execute('workspace.read', input),
     },
     workspace_edit: {
       description: 'Edit one existing UTF-8 file with either exact, unambiguous replacements or a single-file unified diff. Requires the SHA-256 returned by workspace_read; the configured Agent permission mode controls approval.',

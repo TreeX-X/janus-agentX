@@ -144,9 +144,12 @@ export interface TuiState extends TuiContextLabels {
   /** Current-turn tokens (reset on turn-start; shown in the turn-done caption). */
   promptTokens: number
   completionTokens: number
+  /** Reasoning share of completion when the provider reports it (budget honesty; display still in/out). */
+  reasoningTokens: number
   /** Session totals (opencode bottom-bar shape; survive across turns). */
   sessionPromptTokens: number
   sessionCompletionTokens: number
+  sessionReasoningTokens: number
   status: TuiStatus
   statusText: string
   awaitingApproval: ApprovalView | null
@@ -192,8 +195,10 @@ export function createInitialState(): TuiState {
     todos: [],
     promptTokens: 0,
     completionTokens: 0,
+    reasoningTokens: 0,
     sessionPromptTokens: 0,
     sessionCompletionTokens: 0,
+    sessionReasoningTokens: 0,
     status: 'idle',
     statusText: '',
     awaitingApproval: null,
@@ -417,7 +422,7 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
     case 'turn-start':
       return { ...state, status: 'thinking', statusText: 'thinking…', activeBlockId: undefined,
-        turnStartedAt: Date.now(), turnEndedAt: undefined, promptTokens: 0, completionTokens: 0 }
+        turnStartedAt: Date.now(), turnEndedAt: undefined, promptTokens: 0, completionTokens: 0, reasoningTokens: 0 }
     case 'agent-event':
       return reduceAgentEvent(state, action.event)
     case 'turn-done': {
@@ -468,8 +473,10 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         ...state,
         promptTokens: state.promptTokens + action.promptTokens,
         completionTokens: state.completionTokens + action.completionTokens,
+        reasoningTokens: state.reasoningTokens + (action.reasoningTokens ?? 0),
         sessionPromptTokens: state.sessionPromptTokens + action.promptTokens,
         sessionCompletionTokens: state.sessionCompletionTokens + action.completionTokens,
+        sessionReasoningTokens: state.sessionReasoningTokens + (action.reasoningTokens ?? 0),
       }
     case 'approval-requested':
       return { ...state, awaitingApproval: action.approval }
@@ -497,8 +504,10 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         turnEndedAt: undefined,
         promptTokens: 0,
         completionTokens: 0,
+        reasoningTokens: 0,
         sessionPromptTokens: 0,
         sessionCompletionTokens: 0,
+        sessionReasoningTokens: 0,
       }
     case 'context':
       return { ...state, ...action.labels }
@@ -516,8 +525,10 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         turnEndedAt: undefined,
         promptTokens: 0,
         completionTokens: 0,
+        reasoningTokens: 0,
         sessionPromptTokens: 0,
         sessionCompletionTokens: 0,
+        sessionReasoningTokens: 0,
       }
     default:
       return state

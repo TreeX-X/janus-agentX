@@ -218,6 +218,21 @@ describe('CliSession.sendTurn', () => {
     await session.close()
   })
 
+  it('persists the prompt on turn failure so memory never forks from disk', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-session-failpersist-'))
+    const session = await CliSession.create({
+      workspace: dir,
+      model: 'm',
+      apiKey: 'k',
+      streamTextFn: (async () => { throw new Error('provider down') }) as StreamFn,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+
+    await expect(session.sendTurn('doomed prompt')).rejects.toThrow('provider down')
+    expect(session.getActiveMessages().at(-1)).toMatchObject({ role: 'user', content: 'doomed prompt' })
+    await session.close()
+  })
+
   it('supports model switching and history clearing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-session-misc-'))
     const seen: unknown[][] = []

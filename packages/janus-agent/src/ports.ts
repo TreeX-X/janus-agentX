@@ -109,7 +109,7 @@ export interface ChatTurnPorts {
       argsTextDelta?: string
       args?: unknown
       finishReason?: unknown
-      usage?: { promptTokens?: number; completionTokens?: number }
+      usage?: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number }
       error?: unknown
     }>
     toolCalls?: Promise<Array<{ toolCallId: string; toolName: string; args: unknown }>>

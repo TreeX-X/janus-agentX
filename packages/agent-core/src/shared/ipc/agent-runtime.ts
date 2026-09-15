@@ -94,7 +94,7 @@ export type ToolInputPropertyType = 'string' | 'number' | 'boolean' | 'array' | 
 
 export interface ToolInputSchema {
   type: 'object'
-  properties?: Record<string, { type: ToolInputPropertyType; enum?: unknown[] }>
+  properties?: Record<string, { type: ToolInputPropertyType; description?: string; enum?: unknown[] }>
   required?: string[]
   additionalProperties?: boolean
 }

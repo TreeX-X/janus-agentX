@@ -721,4 +721,156 @@ describe('App', () => {
       await session.close()
     }
   })
+
+  it('aborts the whole turn on Esc during approval instead of deny-and-continue', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-app-gate-esc-'))
+    let calls = 0
+    const session = await CliSession.create({
+      workspace: dir,
+      model: 'm',
+      apiKey: 'k',
+      approvalMode: 'per-action',
+      store: memoryConversationStore(),
+      streamTextFn: (async () => {
+        calls += 1
+        if (calls % 2 === 1) {
+          return {
+            fullStream: (async function* () {
+              yield {
+                type: 'tool-call',
+                toolCallId: 'c1',
+                toolName: 'workspace_create',
+                args: { workspaceId: 'cli', path: 'created.txt', content: 'hello gate' },
+              }
+              yield { type: 'finish', finishReason: 'tool-calls' }
+            })(),
+            textStream: (async function* () {})(),
+          }
+        }
+        return { textStream: (async function* () { yield 'file is ready' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, 'create the file')
+      await waitForFrame(() => (lastFrame() ?? '').includes('! Approve'))
+      await press(stdin, '\x1b')
+      await waitForFrame(() => (lastFrame() ?? '').includes('cancelled — history kept'))
+      expect(existsSync(join(dir, 'created.txt'))).toBe(false)
+      // The session stays usable: the follow-up runs a fresh turn.
+      await typeLine(stdin, 'hi again')
+      await waitForFrame(() => (lastFrame() ?? '').includes('file is ready'))
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
+  it('always-approves with `a`: pending passes and the mode switches to auto-run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-app-gate-always-'))
+    let calls = 0
+    const session = await CliSession.create({
+      workspace: dir,
+      model: 'm',
+      apiKey: 'k',
+      approvalMode: 'per-action',
+      store: memoryConversationStore(),
+      streamTextFn: (async () => {
+        calls += 1
+        if (calls % 2 === 1) {
+          return {
+            fullStream: (async function* () {
+              yield {
+                type: 'tool-call',
+                toolCallId: 'c1',
+                toolName: 'workspace_create',
+                args: { workspaceId: 'cli', path: 'created.txt', content: 'hello gate' },
+              }
+              yield { type: 'finish', finishReason: 'tool-calls' }
+            })(),
+            textStream: (async function* () {})(),
+          }
+        }
+        return { textStream: (async function* () { yield 'file is ready' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, 'create the file')
+      await waitForFrame(() => (lastFrame() ?? '').includes('! Approve'))
+      await press(stdin, 'a')
+      await waitForFrame(() => existsSync(join(dir, 'created.txt')))
+      await waitForFrame(() => (lastFrame() ?? '').includes('file is ready'))
+      expect(session.getApprovalMode()).toBe('auto-run')
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
+  it('aborts the whole turn on Esc during ask_user instead of answering-and-continuing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'janus-app-question-esc-'))
+    let calls = 0
+    const session = await CliSession.create({
+      workspace: dir,
+      model: 'm',
+      apiKey: 'k',
+      store: memoryConversationStore(),
+      streamTextFn: (async () => {
+        calls += 1
+        if (calls === 1) {
+          return {
+            fullStream: (async function* () {
+              yield {
+                type: 'tool-call',
+                toolCallId: 'q1',
+                toolName: 'ask_user',
+                args: { questions: [{ question: 'Pick one?', header: 'Choice', options: [{ label: 'A' }, { label: 'B' }] }] },
+              }
+              yield { type: 'finish', finishReason: 'tool-calls' }
+            })(),
+            textStream: (async function* () {})(),
+          }
+        }
+        return { textStream: (async function* () { yield 'after question' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(session)) throw new Error(session.message)
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeLine(stdin, 'decide for me')
+      await waitForFrame(() => (lastFrame() ?? '').includes('? confirm plan'))
+      await press(stdin, '\x1b')
+      await waitForFrame(() => (lastFrame() ?? '').includes('cancelled — history kept'))
+      // The session stays usable: the follow-up runs a fresh turn.
+      await typeLine(stdin, 'hi again')
+      await waitForFrame(() => (lastFrame() ?? '').includes('after question'))
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
 })

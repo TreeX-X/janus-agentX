@@ -152,6 +152,9 @@ export async function runChatTurn(
   let streamedText = ''
   let compacted = false
   const executedToolTraces: ChatToolTraceEntry[] = []
+  // C2: turn-boundary tracking for the max-turns notice (reset per loop run).
+  let turnStarts = 0
+  let lastTurnToolResults = 0
 
   const endpoint = await ports.model.resolve(providerId, request.modelId)
   if (!endpoint.modelId) throw new Error('No model ID configured')
@@ -194,22 +197,26 @@ export async function runChatTurn(
     )
     const allToolManifests = ports.tools.registry.listManifests?.()
       ?? createToolManifests(ports.tools.registry.list())
+    // Note: tools sorted + frozen for cache affinity — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+    // Registry order is host-dependent; a stable order keeps the system prefix + tool array identical across turns.
+    const sortedManifests = [...allToolManifests].sort((left, right) =>
+      left.providerName.localeCompare(right.providerName))
     // Offer only what the host runtime implements. The static definition is
     // the cross-repo name contract (all 21 tools), but a host may implement a
     // subset — e.g. the janus CLI has no project.detect. Offering more would
     // let the model call tools that can only fail at execution.
-    const implemented = new Set(allToolManifests.map((manifest) => manifest.providerName))
+    const implemented = new Set(sortedManifests.map((manifest) => manifest.providerName))
     const offeredTools = createWorkspaceChatTools({
       runtime: { executeFunctionCall: (input) => ports.tools.executeFunctionCall(input, callerId) },
       resources: trustedResources,
       callerId,
-      toolManifests: allToolManifests,
+      toolManifests: sortedManifests,
     })
     workspaceTools = Object.fromEntries(
       Object.entries(offeredTools).filter(([name]) => implemented.has(name)),
     ) as typeof offeredTools
-    const activeToolManifests = allToolManifests
-      .filter((manifest) => Object.hasOwn(workspaceTools ?? {}, manifest.providerName))
+    const activeToolManifests = Object.freeze(sortedManifests
+      .filter((manifest) => Object.hasOwn(workspaceTools ?? {}, manifest.providerName)))
     promptMessages = [
       { role: 'system', content: buildChatSystemPrompt({ resources: trustedResources, toolManifests: activeToolManifests }) },
       ...(traceHistory ? [traceHistory] : []),
@@ -240,6 +247,10 @@ export async function runChatTurn(
   // One-shot resume nudge: fires once per turn when the loop ends a round
   // without tool calls while the todo plan still has open items.
   let todoResumeIssued = false
+  // One-shot failure-repair nudge: fires once per turn when the loop ends a
+  // round without tool calls while fixable tool errors are still unaddressed.
+  // Denied/cancelled outcomes are excluded — retrying those burns turns.
+  let failureRepairIssued = false
   const modelMessages: JanusAgentMessage[] = promptMessages.map((message) => ({
     role: message.role,
     content: message.content,
@@ -288,7 +299,13 @@ export async function runChatTurn(
   const { execute: _askExecute, ...askModelTool } = askVercelTool
   const askLoopTool = createAskLoopTool(askHooks)
   const workspaceModelTools = workspaceTools ? createVercelModelTools(workspaceTools) : {}
-  const modelTools = { ...workspaceModelTools, [TODOWRITE_TOOL_NAME]: todoModelTool, [ASKUSER_TOOL_NAME]: askModelTool }
+  // Stable tool order: sorted workspace tools first, local tools last. The same
+  // prefix every round keeps provider prompt-caching effective.
+  const sortedWorkspaceModelTools = Object.fromEntries(
+    Object.keys(workspaceModelTools).sort((left, right) => left.localeCompare(right))
+      .map((name) => [name, workspaceModelTools[name]]),
+  )
+  const modelTools = { ...sortedWorkspaceModelTools, [TODOWRITE_TOOL_NAME]: todoModelTool, [ASKUSER_TOOL_NAME]: askModelTool }
   const runtimeLoopTools = workspaceTools
     ? createJanusRuntimeToolsForResources(ports.tools, trustedResources, { callerId, preview: createToolPreview })
       .filter((tool) => !!workspaceModelTools[tool.name])
@@ -349,6 +366,9 @@ export async function runChatTurn(
       return result
     },
     getFollowUpMessages: async () => {
+      // C2: an aborted turn takes no follow-ups — no recovery prompt, no
+      // todo nudge, no extra model round after the user asked to stop.
+      if (signal?.aborted) return []
       const followUps: ChatMessage[] = []
       const mutationAttempted = executedToolTraces.some((entry) => WORKSPACE_MUTATION_TOOLS.has(entry.toolName))
       const needsRecovery = !!workspaceTools
@@ -371,9 +391,30 @@ export async function runChatTurn(
         todoResumeIssued = true
         followUps.push({ role: 'system', content: todoResumePrompt(openTodos.length) })
       }
+      // Note: failure-repair nudge — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+      // Tool errors already carry actionable text (C1回灌 + self-heal); without a
+      // nudge the model re-reads the 2k error blob and blind-retries the identical
+      // call. One explicit repair prompt per turn breaks that loop.
+      if (!failureRepairIssued) {
+        const fixable = executedToolTraces.filter((entry) =>
+          entry.status !== 'completed'
+          && entry.status !== 'cancelled'
+          && !/denied|cancelled/i.test(`${entry.status} ${entry.summary}`))
+        if (fixable.length > 0) {
+          failureRepairIssued = true
+          const names = [...new Set(fixable.map((entry) => entry.toolName))].slice(0, 4).join(', ')
+          followUps.push({
+            role: 'system',
+            content: `Tool repair (${names}): read the error text in the last tool result, fix the parameters or paths it names, then retry once with a corrected call. Do not repeat the identical failing call. When the error says approval was denied, stop that action and explain instead. When it says timed-out, rerun via background execution and poll.`,
+          })
+        }
+      }
       return followUps
     },
     shouldStopAfterTurn: async ({ messages }) => {
+      // C2: stop immediately after abort — the loop top-break covers the
+      // next iteration, this covers the tail awaits of the current one.
+      if (signal?.aborted) return true
       if (!workspaceTools) return false
       try {
         chatSession.buildContext(messages, {
@@ -386,6 +427,8 @@ export async function runChatTurn(
     },
     onEvent: (loopEvent) => {
       if (signal?.aborted) return
+      if (loopEvent.type === 'turn_start') turnStarts += 1
+      if (loopEvent.type === 'turn_end') lastTurnToolResults = loopEvent.toolResults.length
       const streamEvent = toAgentStreamEvent(requestId, loopEvent)
       if (streamEvent) {
         onEvent(toChatAgentEvent(streamEvent))
@@ -400,10 +443,18 @@ export async function runChatTurn(
   // Provider overflow recovery: one forced compact plus a single retry of the
   // same turn. A second overflow surfaces as the turn error. The retry reuses
   // the initial messages because the loop never mutates its input array.
+  // C2: a user abort is a cancellation, not a failure — transports that
+  // reject on abort (SDK AbortError) must not surface as "chat turn failed".
+  const resetTurnTracking = () => { turnStarts = 0; lastTurnToolResults = 0 }
   try {
+    resetTurnTracking()
     await runJanusAgentLoop(modelMessages, loopConfig, signal ?? new AbortController().signal)
   } catch (error) {
-    if (signal?.aborted || !isContextOverflowError(error) || !request.compactionSummarizer) throw error
+    if (signal?.aborted) {
+      onEvent({ type: 'stream_end', requestId, cancelled: true })
+      return { requestId, text: streamedText, toolTraces: executedToolTraces, recallTrace, cancelled: true, todos: chatSession.getTodos(), compacted }
+    }
+    if (!isContextOverflowError(error) || !request.compactionSummarizer) throw error
     try {
       if (await chatSession.maybeCompact(
         modelMessages,
@@ -417,7 +468,17 @@ export async function runChatTurn(
     } catch {
       // Fall through to the single retry below.
     }
+    resetTurnTracking()
     await runJanusAgentLoop(modelMessages, loopConfig, signal ?? new AbortController().signal)
+  }
+
+  // C2: max-turns exhaustion is an explicit outcome, not a silent truncation.
+  // The loop has no such event, so the turn tracks turn_start/turn_end here;
+  // a cap hit with pending tool work tells the user to say 'continue'.
+  if (!signal?.aborted && turnStarts >= maxTurns && lastTurnToolResults > 0) {
+    const notice = `Stopped after ${maxTurns} turns with tool calls still pending — say 'continue' to resume.`
+    onEvent({ type: 'text_delta', requestId, delta: streamedText.trim() ? `\n${notice}` : notice })
+    streamedText = streamedText.trim() ? `${streamedText}\n${notice}` : notice
   }
 
   if (signal?.aborted) {

@@ -216,8 +216,7 @@ describe('runChatTurn', () => {
     expect(streams).toBe(2)
   })
 
-  it('surfaces a second consecutive overflow instead of looping forever', async () => {
-    let streams = 0
+  it('surfaces a second consecutive overflow instead of looping forever', async () => {    let streams = 0
     const ports = stubPorts({
       streamTextFn: (async () => {
         streams += 1
@@ -244,5 +243,116 @@ describe('runChatTurn', () => {
       ports,
     )).rejects.toThrow('413')
     expect(streams).toBe(2)
+  })
+
+  it('maps a transport abort rejection to a cancelled result instead of throwing', async () => {
+    const controller = new AbortController()
+    const ports = stubPorts({
+      streamTextFn: (async () => {
+        controller.abort()
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' })
+      }) as ChatTurnPorts['streamTextFn'],
+    })
+    const events: string[] = []
+    const result = await runChatTurn(
+      { requestId: 'r9', messages: [{ role: 'user' as const, content: 'hi' }], providerId: 'p' },
+      ports,
+      { onEvent: (e) => events.push(e.type) },
+      controller.signal,
+    )
+    expect(result.cancelled).toBe(true)
+    expect(events).toContain('stream_end')
+  })
+
+  it('reports max-turns exhaustion with a resume hint instead of silent truncation', async () => {
+    const ports = stubPorts({
+      model: {
+        resolve: async () => ({ model: { id: 'm' }, modelId: 'm' }),
+        getMaxTurns: () => 1,
+      },
+      streamTextFn: (async () => ({
+        fullStream: (async function* () {
+          yield { type: 'tool-call', toolCallId: 'c1', toolName: 'missing-tool', args: {} }
+          yield { type: 'finish', finishReason: 'tool-calls' }
+        })(),
+        textStream: (async function* () { })(),
+      })) as ChatTurnPorts['streamTextFn'],
+    })
+    const result = await runChatTurn(
+      { requestId: 'r10', messages: [{ role: 'user' as const, content: 'hi' }], providerId: 'p' },
+      ports,
+    )
+    expect(result.cancelled).toBe(false)
+    expect(result.text).toContain('Stopped after 1 turns')
+    expect(result.text).toContain("'continue'")
+  })
+
+  function failurePorts(outcome: { status: string; error?: string }, streams: { count: number }) {
+    return stubPorts({
+      sessions: {
+        getSession: (id) => id === 's1'
+          ? { sessionId: 's1', workspaceId: 'w', workspaceRoot: '/tmp/w', status: 'running' }
+          : null,
+      },
+      tools: {
+        executeFunctionCall: async (input) => ({
+          status: outcome.status, toolName: input.call.toolName,
+          ...(outcome.error ? { error: outcome.error } : {}),
+          output: { path: 'a.ts' },
+        }) as never,
+        registry: {
+          list: () => [{
+            name: 'workspace.read', description: 'read',
+            inputSchema: { type: 'object', properties: {} },
+            actionRisk: 'read',
+          }] as never,
+        },
+      },
+      streamTextFn: (async () => {
+        streams.count += 1
+        if (streams.count === 1) {
+          return {
+            fullStream: (async function* () {
+              yield { type: 'tool-call', toolCallId: 'c1', toolName: 'workspace_read', args: { workspaceId: 'w', path: 'a.ts' } }
+              yield { type: 'finish', finishReason: 'tool-calls' }
+            })(),
+            textStream: (async function* () { })(),
+          }
+        }
+        if (streams.count === 2) {
+          return { textStream: (async function* () { yield 'stuck' })() }
+        }
+        return { textStream: (async function* () { yield 'fixed' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+    })
+  }
+
+  function failureRequest(requestId: string) {
+    return {
+      requestId, messages: [{ role: 'user' as const, content: 'check a.ts' }], providerId: 'p',
+      sourceTag: 'janus-chat' as const,
+      workspaceResources: [{ workspaceId: 'w', workspacePath: '/tmp/w', workspaceName: 'w', agentSessionId: 's1' }],
+    }
+  }
+
+  it('nudges one repair round after a fixable tool failure instead of blind retry', async () => {
+    const streams = { count: 0 }
+    const result = await runChatTurn(
+      failureRequest('r11'),
+      failurePorts({ status: 'failed', error: 'workspace.read failed: file not found, check the path' }, streams),
+    )
+    expect(streams.count).toBe(3)
+    expect(result.text).toContain('fixed')
+    expect(result.toolTraces.some((trace) => trace.status === 'failed')).toBe(true)
+  })
+
+  it('skips the repair nudge for denied approvals', async () => {
+    const streams = { count: 0 }
+    const result = await runChatTurn(
+      failureRequest('r12'),
+      failurePorts({ status: 'denied', error: 'User denied the approval' }, streams),
+    )
+    expect(streams.count).toBe(2)
+    expect(result.text).toContain('stuck')
   })
 })

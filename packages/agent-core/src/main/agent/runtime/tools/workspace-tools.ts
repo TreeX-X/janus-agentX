@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'path'
 import { resolveWorkspaceTarget } from '../path-guard'
 import { evaluateWorkspaceReadPolicy, isSensitivePath, redactHighConfidenceSecrets } from '../policy-gate'
 import type { RegisteredTool, ToolRegistry } from '../registry'
-import { isTextBuffer, janusWorkspaceFs } from '../../environment/janus-workspace-fs'
+import { isTextBuffer, janusWorkspaceFs, DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LINES, MAX_PAGE_LINES } from '../../environment/janus-workspace-fs'
 import { checkpointManager } from '../../checkpoint/checkpoint-manager'
 import {
   atomicReplaceWorkspaceFile,
@@ -17,7 +17,6 @@ import {
   type WorkspaceExactReplacement,
 } from '../file-transaction'
 
-const DEFAULT_MAX_BYTES = 256 * 1024
 const MAX_MAX_BYTES = 1024 * 1024
 const DEFAULT_DEPTH = 2
 const MAX_DEPTH = 4
@@ -83,17 +82,19 @@ function deleteDiffPreview(path: string, content: Buffer): CallDiffPreview | und
   return boundPreview([`--- a/${path}`, `+++ /dev/null`, `@@`, prefixLines(content.toString('utf-8'), '-')].join('\n'))
 }
 
+// Note: line-paged reads keep large-file evidence reachable without re-reading the head — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
-  description: 'Read a UTF-8 text file inside the current workspace',
+  description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
     properties: {
-      workspaceId: { type: 'string' },
-      path: { type: 'string' },
-      offset: { type: 'number' },
-      maxBytes: { type: 'number' },
+      workspaceId: { type: 'string', description: 'The exact workspaceId from the attached workspace list.' },
+      path: { type: 'string', description: 'Workspace-relative file path, e.g. src/notes/test.md.' },
+      offset: { type: 'number', description: '1-indexed line number to start from (default 1).' },
+      limit: { type: 'number', description: 'Max lines to return (default 200, max 2000).' },
+      maxBytes: { type: 'number', description: 'Max bytes of page content (default 51200, max 1048576). The byte cap wins over limit.' },
     },
     required: ['workspaceId', 'path'],
     additionalProperties: false,
@@ -101,44 +102,57 @@ export const workspaceReadTool: RegisteredTool = {
   execute: async (input, context) => {
     const workspaceId = input.workspaceId
     const requestedPath = input.path
-    const offset = input.offset ?? 0
-    const maxBytes = input.maxBytes ?? DEFAULT_MAX_BYTES
+    const offset = input.offset ?? 1
+    const limit = input.limit ?? DEFAULT_PAGE_LINES
+    const maxBytes = input.maxBytes ?? DEFAULT_PAGE_BYTES
     if (typeof workspaceId !== 'string' || workspaceId !== context.workspaceId) {
       throw new Error('workspace.read workspaceId must match the active workspace resource')
     }
     if (typeof requestedPath !== 'string') throw new Error('workspace.read path must be a string')
     if (!Number.isSafeInteger(offset) || Number(offset) < 0) {
-      throw new Error('workspace.read offset must be a non-negative integer')
+      throw new Error('workspace.read offset must be a non-negative integer line number (1-indexed, 0 is accepted as line 1)')
     }
-    if (!Number.isSafeInteger(maxBytes) || Number(maxBytes) < 0 || Number(maxBytes) > MAX_MAX_BYTES) {
-      throw new Error(`workspace.read maxBytes must be an integer between 0 and ${MAX_MAX_BYTES}`)
+    if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > MAX_PAGE_LINES) {
+      throw new Error(`workspace.read limit must be an integer between 1 and ${MAX_PAGE_LINES}`)
+    }
+    if (!Number.isSafeInteger(maxBytes) || Number(maxBytes) < 1 || Number(maxBytes) > MAX_MAX_BYTES) {
+      throw new Error(`workspace.read maxBytes must be an integer between 1 and ${MAX_MAX_BYTES}`)
     }
     if (context.signal.aborted) throw new Error('workspace.read cancelled')
 
-    const read = await janusWorkspaceFs.readWorkspaceTextRange(
+    const read = await janusWorkspaceFs.readWorkspaceTextPage(
       context.workspaceRoot,
       requestedPath,
       Number(offset),
+      Number(limit),
       Number(maxBytes),
       evaluateWorkspaceReadPolicy,
     )
     if (!read.ok) throw read.error
-    const range = read.value
+    const page = read.value
     if (context.signal.aborted) throw new Error('workspace.read cancelled')
 
     // sha256 is always computed from disk content: edits to unmasked regions
     // still match, and only the masked credential itself becomes uneditable.
-    const { text, redacted } = redactHighConfidenceSecrets(range.content.toString('utf-8'))
+    const { text, redacted } = redactHighConfidenceSecrets(page.content.toString('utf-8'))
+    const guidance = page.truncated
+      ? `Showing lines ${page.lineStart}-${page.lineEnd} of ${page.totalLines}. Use workspace_read with offset=${page.nextOffset} to continue.`
+      : undefined
     return {
       workspaceId,
       path: requestedPath,
       encoding: 'utf-8',
-      size: range.size,
-      offset: range.offset,
-      bytes: range.content.byteLength,
-      truncated: range.truncated,
+      size: page.size,
+      offset: page.lineStart,
+      lineStart: page.lineStart,
+      lineEnd: page.lineEnd,
+      totalLines: page.totalLines,
+      bytes: page.bytes,
+      truncated: page.truncated,
+      ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
+      ...(guidance === undefined ? {} : { guidance }),
       content: text,
-      sha256: range.sha256,
+      sha256: page.sha256,
       contentRedacted: redacted,
       ...(redacted ? {
         redactionNotice: 'High-confidence credential material was masked as [REDACTED]. The sha256 covers the original file; masked regions cannot be used as oldText in workspace.edit.',

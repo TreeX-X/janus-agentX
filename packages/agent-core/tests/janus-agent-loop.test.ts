@@ -117,7 +117,7 @@ describe('JanusAgentLoop', () => {
       stream: async (_context, signal) => {
         calls += 1
         if (calls === 1) {
-          // 生产者驱动打断：push �?abort 本轮 attempt，mock 感知 signal 后返回半截结果�?
+          // 生产者驱动打断：push �?abort 本轮 attempt，mock 感知 signal 后返回半截结果�?
           port.push('s1', { role: 'user', content: 'steer now' })
           await new Promise<void>((resolve) => {
             if (signal.aborted) resolve()
@@ -131,7 +131,7 @@ describe('JanusAgentLoop', () => {
       onEvent: (event) => events.push(event),
     })
     expect(calls).toBe(2)
-    // 半截正文保留但剥�?toolCalls（配对约束），steering 注入，工具永不执行�?
+    // 半截正文保留但剥�?toolCalls（配对约束），steering 注入，工具永不执行�?
     const partial = messages.find((message) => message.content === 'partial')
     expect(partial?.role).toBe('assistant')
     expect('toolCalls' in (partial ?? {})).toBe(false)
@@ -169,7 +169,7 @@ describe('JanusAgentLoop', () => {
       },
       onEvent: (event) => events.push(event),
     })
-    // a 已完成结果保留，b 永不执行，steering 紧跟 a 结果之后�?
+    // a 已完成结果保留，b 永不执行，steering 紧跟 a 结果之后�?
     expect(executed).toEqual(['a'])
     const contents = messages.map((message) => message.content)
     expect(contents).toContain('a-result')
@@ -192,5 +192,27 @@ describe('JanusAgentLoop', () => {
     expect(taken.map((entry) => entry.key)).toEqual(['k2'])
     expect(port.size).toBe(0)
     expect(port.take()).toEqual([])
+  })
+
+  it('C1: surfaces stream validation failures as tool errors without executing or ending the turn', async () => {
+    const execute = vi.fn(async () => ({ content: 'must not run' }))
+    let turn = 0
+    const messages = await runJanusAgentLoop([userMessage], {
+      tools: [{ name: 'workspace.read', execute }],
+      maxTurns: 3,
+      stream: async () => {
+        turn += 1
+        if (turn === 1) {
+          return {
+            message: { role: 'assistant', content: '' },
+            toolCalls: [{ id: 'bad-1', name: 'workspace.read', arguments: {}, validationError: 'Tool call arguments are not valid JSON. Fix the JSON syntax and retry the call.' }],
+          }
+        }
+        return { message: { role: 'assistant', content: 'recovered' } }
+      },
+    })
+    expect(execute).not.toHaveBeenCalled()
+    expect(messages).toContainEqual({ role: 'tool', content: 'Tool call arguments are not valid JSON. Fix the JSON syntax and retry the call.', toolCallId: 'bad-1', toolName: 'workspace.read' })
+    expect(messages.at(-1)).toEqual({ role: 'assistant', content: 'recovered' })
   })
 })

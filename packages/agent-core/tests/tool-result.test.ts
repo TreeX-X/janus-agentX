@@ -137,6 +137,27 @@ describe('toolResultToModelValue P4 preview-only', () => {
       .toEqual({ content: 'hello' })
   })
 
+  it('orders workspace.read paging refs before the page blob with a next-offset hint', () => {
+    const value = toolResultToModelValue(completed('workspace.read', {
+      workspaceId: 'workspace-1',
+      path: 'big.ts',
+      lineStart: 1,
+      lineEnd: 200,
+      totalLines: 1000,
+      offset: 1,
+      bytes: 9000,
+      size: 45000,
+      truncated: true,
+      nextOffset: 201,
+      sha256: 'abc',
+      content: 'page-text',
+    })) as Record<string, unknown>
+    const keys = Object.keys(value)
+    expect(keys.indexOf('nextOffset')).toBeLessThan(keys.indexOf('content'))
+    expect(keys.indexOf('guidance')).toBeLessThan(keys.indexOf('content'))
+    expect(value.guidance).toContain('offset=201')
+  })
+
   it('keeps display-only change diffs out of the model payload', () => {
     const value = toolResultToModelValue(completed('workspace.edit', {
       path: 'a.ts',

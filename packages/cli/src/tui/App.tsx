@@ -832,6 +832,9 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     if (!containsMouseSequence(inputValue)) lastInterruptRef.current = null
     if (overlay || state.awaitingQuestion) {
       if (key.ctrl && inputValue === 'd') setOverlay(null)
+      // C2收尾: question 期 Esc 整轮取消（面板同时按单次取消落定，两者一致）。
+      // Overlay 开着时 Esc 归 overlay 自己（palette 等自带关闭）。
+      else if (key.escape && state.awaitingQuestion && overlay === null) controllerRef.current?.abort()
       return
     }
     if (key.ctrl && inputValue === 'd') {
@@ -860,9 +863,9 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     if (containsMouseSequence(inputValue)) return
     // Esc interrupts a running turn (long output streams), mirroring a
     // single Ctrl+C press but without touching the draft. Placed after the
-    // mouse guards so SGR wheel bytes can never trigger it; overlays, the
-    // approval gate and the question panel own Esc above. Idle Esc stays
-    // with the Composer (completion dismiss).
+    // mouse guards so SGR wheel bytes can never trigger it; overlays own Esc
+    // themselves, the approval gate and the question panel abort the whole
+    // turn below. Idle Esc stays with the Composer (completion dismiss).
     if (key.escape) {
       if (busyRef.current) controllerRef.current?.abort()
       return
@@ -901,12 +904,17 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       return
     }
     // Confirm/Cancel gate (design/janus-TUI-design.html): arrows move focus,
-    // Enter confirms the focused action, Esc cancels. No y/n keys.
+    // Enter confirms the focused action, `a` always-approves (auto-run from
+    // here on). Esc never reaches this block — the generic busy-Esc handler
+    // above aborts the whole turn first. No y/n keys.
     if (state.awaitingApproval) {
       if (key.leftArrow) setApprovalChoice('confirm')
       else if (key.rightArrow) setApprovalChoice('cancel')
       else if (key.return) approvalResolveRef.current?.(approvalChoice === 'confirm')
-      else if (key.escape) approvalResolveRef.current?.(false)
+      else if ((inputValue === 'a' || inputValue === 'A') && !key.ctrl && !key.meta) {
+        sessionRef.current.approvePendingAndAutoRun()
+        approvalResolveRef.current?.(true)
+      }
     }
   })
 
@@ -1155,7 +1163,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
           />
         ) : null}
         {approval ? (
-          <PanelFrame title={`! Approve ${approval.toolName} [${approval.actionRisk}]`} hint="← → move · Enter confirm · Esc cancel">
+          <PanelFrame title={`! Approve ${approval.toolName} [${approval.actionRisk}]`} hint="← → move · Enter confirm · a always (auto-run) · Esc cancel turn">
             <Text color={THEME.body}>
               [{approval.workspaceId}]{approval.summary ? ` ${approval.summary}` : ''}{approval.paths?.length ? ` (${approval.paths.join(', ')})` : ''}
             </Text>

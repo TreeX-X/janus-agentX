@@ -70,6 +70,62 @@ describe('ChatSessionRuntime', () => {
     expect(tool?.content).not.toContain('x'.repeat(7_000))
   })
 
+  it('unifies the tail truncation at 2000 chars for tool previews', () => {
+    const runtime = new ChatSessionRuntime()
+    const context = runtime.buildContext([
+      { role: 'system', content: 'policy' },
+      { role: 'user', content: 'read the file' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'workspace_read', arguments: { path: 'a.ts' } }] },
+      { role: 'tool', toolCallId: 'call-1', toolName: 'workspace_read', content: JSON.stringify({ content: 'y'.repeat(3_000), path: 'a.ts' }) },
+    ], { model: { contextWindow: 4_000, maxOutputTokens: 100 } })
+
+    const tool = context.find((message) => message.role === 'tool')
+    expect(tool?.content).toContain('[truncated]')
+    expect(tool?.content).not.toContain('y'.repeat(2_500))
+  })
+
+  it('prunes stale tool outputs to digests while retaining the calls', () => {
+    const runtime = new ChatSessionRuntime()
+    const oldUnit = (id: string) => ([
+      { role: 'assistant' as const, content: '', toolCalls: [{ id, name: 'workspace_search', arguments: { query: 'old' } }] },
+      { role: 'tool' as const, toolCallId: id, toolName: 'workspace_search', content: JSON.stringify({ workspaceId: 'w', query: 'old', path: '', matches: [{ path: 'old.ts', line: 1 }] }) },
+    ])
+    const messages = [
+      { role: 'system' as const, content: 'policy' },
+      { role: 'user' as const, content: 'first dig' },
+      ...oldUnit('call-old'),
+      { role: 'user' as const, content: 'second dig' },
+      ...oldUnit('call-mid'),
+      { role: 'user' as const, content: `current request ${'z'.repeat(30_000)}` },
+    ]
+    const context = runtime.buildContext(messages, {
+      model: { contextWindow: 200_000, maxOutputTokens: 100 },
+      pruneKeepTokens: 4_000,
+    })
+
+    const pruned = context.find((message) => message.role === 'tool' && message.toolCallId === 'call-old')
+    expect(pruned?.content).toContain('"pruned":true')
+    expect(pruned?.content).toContain('workspace_search')
+    const prunedCalls = context.filter((message) => message.role === 'assistant' && message.toolCalls?.some((call) => call.id === 'call-old'))
+    expect(prunedCalls).toHaveLength(1)
+    const recent = context.find((message) => message.role === 'user' && message.content.includes('current request'))
+    expect(recent).toBeDefined()
+  })
+
+  it('keeps short sessions fully verbatim without pruning', () => {
+    const runtime = new ChatSessionRuntime()
+    const context = runtime.buildContext([
+      { role: 'system', content: 'policy' },
+      { role: 'user', content: 'search' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'workspace_search', arguments: { query: 'q' } }] },
+      { role: 'tool', toolCallId: 'call-1', toolName: 'workspace_search', content: JSON.stringify({ workspaceId: 'w', query: 'q', path: '', matches: [{ path: 'a.ts', line: 2 }] }) },
+    ], { model: { contextWindow: 200_000, maxOutputTokens: 100 } })
+
+    const tool = context.find((message) => message.role === 'tool')
+    expect(tool?.content).not.toContain('"pruned":true')
+    expect(tool?.content).toContain('a.ts')
+  })
+
   it('injects only read evidence and invalidates it after a file mutation', () => {
     const runtime = new ChatSessionRuntime()
     runtime.recordToolResult(toolResult({
@@ -108,13 +164,13 @@ describe('ChatSessionRuntime', () => {
     expect(afterDelete.some((message) => message.content.includes('Loaded workspace evidence: workspace-1/a.ts'))).toBe(false)
   })
 
-  it('keeps separately loaded file ranges and invalidates all ranges after an edit', () => {
+  it('keeps separately loaded file pages and invalidates all pages after an edit', () => {
     const runtime = new ChatSessionRuntime()
     runtime.recordToolResult(toolResult({
-      output: { workspaceId: 'workspace-1', path: 'a.ts', offset: 0, bytes: 5, sha256: 'abc', size: 20, truncated: true, content: 'first' },
+      output: { workspaceId: 'workspace-1', path: 'a.ts', offset: 1, lineEnd: 1, totalLines: 5, nextOffset: 2, bytes: 5, sha256: 'abc', size: 20, truncated: true, content: 'first' },
     }))
     runtime.recordToolResult(toolResult({
-      output: { workspaceId: 'workspace-1', path: 'a.ts', offset: 10, bytes: 5, sha256: 'abc', size: 20, truncated: true, content: 'second' },
+      output: { workspaceId: 'workspace-1', path: 'a.ts', offset: 2, lineEnd: 2, totalLines: 5, nextOffset: 3, bytes: 6, sha256: 'abc', size: 20, truncated: true, content: 'second' },
     }))
 
     const beforeEdit = runtime.buildContext([
@@ -123,7 +179,8 @@ describe('ChatSessionRuntime', () => {
     ], { model: { contextWindow: 4_000, maxOutputTokens: 100 } })
     const evidence = beforeEdit.filter((message) => message.content.includes('Loaded workspace evidence: workspace-1/a.ts'))
     expect(evidence).toHaveLength(1)
-    expect(evidence[0].content).toContain('range=10-15')
+    expect(evidence[0].content).toContain('lines=2-2/5')
+    expect(evidence[0].content).toContain('offset=3')
 
     runtime.recordToolResult(toolResult({
       toolName: 'workspace.edit',
@@ -202,5 +259,24 @@ describe('SystemPromptBuilder', () => {
 
     expect(prompt).toContain('No workspace tools are enabled for this request.')
     expect(prompt).not.toContain('Enabled tools:')
+  })
+
+  it('lists tools in sorted provider-name order regardless of registry order', () => {
+    const manifest = (providerName: string): ToolManifest => ({
+      canonicalName: providerName.replace(/_/g, '.'), providerName, version: 1,
+      description: `desc ${providerName}`, actionRisk: 'read',
+      inputSchema: { type: 'object' },
+    })
+    const prompt = buildChatSystemPrompt({
+      resources: new Map([['workspace-1', { workspaceName: 'Project' }]]),
+      toolManifests: [manifest('workspace_search'), manifest('command_run'), manifest('workspace_read')],
+    })
+
+    const lines = prompt.split('\n').filter((line) => line.includes('[read]: desc'))
+    expect(lines).toEqual([
+      '- command_run [read]: desc command_run',
+      '- workspace_read [read]: desc workspace_read',
+      '- workspace_search [read]: desc workspace_search',
+    ])
   })
 })

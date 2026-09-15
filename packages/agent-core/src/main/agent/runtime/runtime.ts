@@ -161,7 +161,9 @@ export class WorkspaceAgentRuntime {
     } catch (error) {
       const timedOut = error instanceof ToolTimeoutError
       const status = timedOut ? 'timed-out' : session.controller.signal.aborted ? 'cancelled' : 'failed'
-      if (timedOut) this.timeoutSession(session)
+      // C2: a tool timeout fails only that call — the session stays usable.
+      // Bricking the session forced a CLI restart for one slow command; the
+      // timed-out execution itself is already aborted by withTimeout above.
       const errorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : undefined
       if (errorCode === 'SENSITIVE_PATH' || (errorCode && PATH_DENIAL_CODES.has(errorCode))) {
         policyDecision = { ...policyDecision, outcome: 'deny', approvalDecision: 'denied', reasonCode: errorCode as PolicyDecision['reasonCode'] }
@@ -216,7 +218,6 @@ export class WorkspaceAgentRuntime {
   private endSession(session: ActiveSession): void { if (session.ended) return; session.ended = true; this.emit({ type: 'session-ended', session: this.publicSession(session) }) }
   private endSessionWhenIdle(session: ActiveSession): void { if (session.status !== 'running' && session.activeCalls.size === 0) this.endSession(session) }
   private settleApprovals(session: ActiveSession, outcome: ApprovalOutcome): void { session.pending.forEach(({ resolve }) => resolve(outcome)); session.pending.clear() }
-  private timeoutSession(session: ActiveSession): void { if (session.status !== 'running') return; session.status = 'timed-out'; session.updatedAt = new Date().toISOString(); session.controller.abort(); this.settleApprovals(session, 'cancelled') }
   private result(session: ActiveSession, toolName: string, correlationId: string, status: ToolResult['status'], output?: unknown, error?: string, approvalId?: string, startedAt = new Date().toISOString(), reasonCode?: string, policyDecision?: PolicyDecisionRecord): ToolResult { const completedAt = new Date().toISOString(); const safeError = error ? sanitizePolicyText(error) : undefined; const summary = safeError ? `${toolName} ${status}: ${safeError}` : `${toolName} ${status}`; return { workspaceId: session.workspace.workspaceId, sessionId: session.id, correlationId, toolName, status, startedAt, completedAt, durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)), summary, output, error: safeError, approvalId, reasonCode, policyDecision } }
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal, executionController: AbortController): Promise<T> { return await new Promise<T>((resolve, reject) => { const timer = setTimeout(() => { executionController.abort(); reject(new ToolTimeoutError('Tool execution timed out')) }, timeoutMs); const abort = () => { clearTimeout(timer); executionController.abort(); reject(new Error('Tool execution cancelled')) }; if (signal.aborted) return abort(); signal.addEventListener('abort', abort, { once: true }); promise.then((value) => { clearTimeout(timer); signal.removeEventListener('abort', abort); resolve(value) }, (error) => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(error) }) }) }
 }

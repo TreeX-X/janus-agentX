@@ -44,7 +44,7 @@ function commandRunModelValue(output: Record<string, unknown>): unknown {
   const totalBytes = typeof output.totalBytes === 'number' ? output.totalBytes : '?'
   const logPath = typeof output.logPath === 'string' ? output.logPath : undefined
   refs.guidance = logPath
-    ? `stdout/stderr below are 8KB tail previews (${totalBytes} bytes total). Read the full log at ${logPath} with workspace_read (offset/maxBytes) to find earlier errors such as TSxxxx.`
+    ? `stdout/stderr below are 8KB tail previews (${totalBytes} bytes total). Read the full log at ${logPath} with workspace_read (offset/limit) to find earlier errors such as TSxxxx.`
     : output.background === true
       ? 'Background job started. Poll project_process_output with the projectId above; increase offsetLines to read earlier lines.'
       : 'stdout/stderr below are 8KB tail previews.'
@@ -82,11 +82,45 @@ function processOutputModelValue(output: Record<string, unknown>): unknown {
   return value
 }
 
+/**
+ * P4 preview-only: workspace.read pages are already bounded, but the page
+ * blob must not bury totalLines/lineStart/truncated/nextOffset. Refs first,
+ * blob last, plus a paging hint when truncated (the tool already emits
+ * guidance; this backfills it for older results that lack the field).
+ */
+function workspaceReadModelValue(output: Record<string, unknown>): unknown {
+  const value: Record<string, unknown> = {
+    workspaceId: output.workspaceId,
+    path: output.path,
+    lineStart: output.lineStart,
+    lineEnd: output.lineEnd,
+    totalLines: output.totalLines,
+    offset: output.offset,
+    bytes: output.bytes,
+    size: output.size,
+    truncated: output.truncated,
+    ...(output.nextOffset !== undefined ? { nextOffset: output.nextOffset } : {}),
+    ...(typeof output.sha256 === 'string' ? { sha256: output.sha256 } : {}),
+  }
+  const guidance = typeof output.guidance === 'string' && output.guidance
+    ? output.guidance
+    : output.truncated === true && output.nextOffset !== undefined
+      ? `Showing lines ${String(output.lineStart)}-${String(output.lineEnd)} of ${String(output.totalLines)}. Use workspace_read with offset=${String(output.nextOffset)} to continue.`
+      : undefined
+  if (guidance !== undefined) value.guidance = guidance
+  if (output.content !== undefined) value.content = output.content
+  if (output.contentRedacted !== undefined) value.contentRedacted = output.contentRedacted
+  if (output.redactionNotice !== undefined) value.redactionNotice = output.redactionNotice
+  if (output.encoding !== undefined) value.encoding = output.encoding
+  return value
+}
+
 export function toolResultToModelValue(result: ToolResult): unknown {
   if (result.status === 'completed') {
     const output = asRecord(result.output)
     if (output && result.toolName === 'command.run') return commandRunModelValue(output)
     if (output && result.toolName === 'project.process-output') return processOutputModelValue(output)
+    if (output && result.toolName === 'workspace.read') return workspaceReadModelValue(output)
     // Display-only change-card assets ride the full ToolResult to traces/UI;
     // the model already holds the bytes it sent, so they never enter context.
     if (output && (result.toolName === 'workspace.edit' || result.toolName === 'workspace.create' || result.toolName === 'workspace.delete')

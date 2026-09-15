@@ -402,7 +402,7 @@ describe('WorkspaceAgentRuntime', () => {
     expect(execute).toHaveBeenCalledTimes(2)
   })
 
-  it('ends a timed-out concurrent session only after every tool is terminal', async () => {
+  it('keeps the session usable after concurrent tool timeouts', async () => {
     vi.useFakeTimers()
     const runtime = new WorkspaceAgentRuntime(async () => process.cwd())
     runtime.registry.register({ ...echoTool(() => new Promise(() => {})), name: 'workspace.first' })
@@ -412,20 +412,22 @@ describe('WorkspaceAgentRuntime', () => {
     const first = runtime.executeTool({ sessionId: session.id, call: { toolName: 'workspace.first', input: { text: 'a' } } })
     const second = runtime.executeTool({ sessionId: session.id, call: { toolName: 'workspace.second', input: { text: 'b' } } })
     await vi.advanceTimersByTimeAsync(11)
-    await Promise.all([first, second])
-    expect(events.filter((event) => event === 'session-ended')).toHaveLength(1)
-    expect(events.at(-1)).toBe('session-ended')
-    expect(events.slice(-3, -1).every((event) => event === 'tool-timed-out' || event === 'tool-cancelled')).toBe(true)
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    expect(firstResult.status).toBe('timed-out')
+    expect(secondResult.status).toBe('timed-out')
+    // C2: a timeout fails only its own call — no session-ended, session reusable.
+    expect(events).not.toContain('session-ended')
+    expect(runtime.getSession(session.id)?.status).toBe('running')
     vi.useRealTimers()
   })
 
-  it('marks tool and session timeout deterministically', async () => {
+  it('marks tool timeout deterministically without bricking the session', async () => {
     vi.useFakeTimers()
     const runtime = new WorkspaceAgentRuntime(async () => process.cwd()); runtime.registry.register(echoTool(vi.fn(() => new Promise(() => {}))))
     const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: process.cwd(), timeoutMs: 10 })
     const pending = runtime.executeTool({ sessionId: session.id, call: { toolName: 'workspace.echo', input: { text: 'wait' } } })
     await vi.advanceTimersByTimeAsync(11)
-    expect((await pending).status).toBe('timed-out'); expect(runtime.getSession(session.id)?.status).toBe('timed-out')
+    expect((await pending).status).toBe('timed-out'); expect(runtime.getSession(session.id)?.status).toBe('running')
     vi.useRealTimers()
   })
 
@@ -504,7 +506,7 @@ describe('WorkspaceAgentRuntime', () => {
     expect(resolve(runtime, approvalRequest!, true)).toBe(true)
     expect((await pending).status).toBe('completed')
 
-    // shell 元字�?/ �?tsc �?npx / 路径 program 一律不放行�?
+    // shell 元字�?/ �?tsc �?npx / 路径 program 一律不放行�?
     for (const input of [
       { program: 'npm', args: ['run', 'build', 'a&b'] },
       { program: 'npx', args: ['tsc'] },

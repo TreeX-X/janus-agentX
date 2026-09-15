@@ -106,7 +106,7 @@ export function createAskLoopTool(hooks: AskToolHooks): JanusAgentTool {
         if (signal.aborted) {
           answer = { status: 'cancelled' }
         } else if (!hooks.question) {
-          return { content: 'ask_user unavailable in this host (non-interactive). Proceed with best-effort defaults and state assumptions explicitly.', isError: true }
+          return { content: 'ask_user unavailable in this host (non-interactive). Proceed with best-effort defaults and state assumptions explicitly. Do not call ask_user again this turn.', isError: true }
         } else {
           const portAnswer = await hooks.question.askUser(
             {

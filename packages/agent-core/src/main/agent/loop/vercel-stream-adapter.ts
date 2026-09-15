@@ -29,7 +29,7 @@ interface VercelStreamPart {
   argsTextDelta?: string
   args?: unknown
   finishReason?: unknown
-  usage?: { promptTokens?: number; completionTokens?: number }
+  usage?: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number; inputTokens?: number; outputTokens?: number }
   error?: unknown
 }
 
@@ -137,7 +137,14 @@ function finishReason(value: unknown): 'stop' | 'tool_calls' | 'length' | 'unkno
 
 function usage(value: VercelStreamPart['usage']): AgentUsage | undefined {
   if (!value) return undefined
-  return { promptTokens: value.promptTokens ?? 0, completionTokens: value.completionTokens ?? 0 }
+  const result: AgentUsage = {
+    promptTokens: value.promptTokens ?? value.inputTokens ?? 0,
+    completionTokens: value.completionTokens ?? value.outputTokens ?? 0,
+  }
+  if (typeof value.reasoningTokens === 'number' && value.reasoningTokens > 0) {
+    result.reasoningTokens = value.reasoningTokens
+  }
+  return result
 }
 
 function modelError(error: unknown): NormalizedProviderError {
@@ -157,6 +164,38 @@ function asToolCall(part: VercelStreamPart): { callId: string; name?: string; ar
   return typeof part.toolCallId === 'string' && part.toolCallId
     ? { callId: part.toolCallId, name: part.toolName, arguments: part.args }
     : undefined
+}
+
+/**
+ * C1 recovery: stream-level tool-call failures (unknown tool, malformed or
+ * truncated JSON, schema rejection) recover as isError tool messages instead
+ * of killing the turn. Truncated payloads get shrink-and-retry guidance
+ * rather than generic syntax advice, so the model does not retry full-size
+ * and burn turns on the same cutoff.
+ */
+function looksTruncated(rawPreview: string | undefined): boolean {
+  if (!rawPreview || rawPreview.length === 0) return false
+  const trimmed = rawPreview.trimEnd()
+  if (trimmed.length === 0) return false
+  const last = trimmed.at(-1)
+  if (last === '}' || last === ']') return false
+  return trimmed.includes('{') || trimmed.includes('[')
+}
+
+function invalidCallGuidance(input: {
+  kind: 'missing-name' | 'json' | 'missing-arguments' | 'validation' | 'too_large'
+  error: string
+  name?: string
+  rawPreview?: string
+}): string {
+  if (input.kind === 'json' && looksTruncated(input.rawPreview)) {
+    return 'Tool call arguments were truncated as incomplete JSON (the payload was likely cut off). Retry the same call with smaller arguments: narrower line ranges, fewer replacements, or split into multiple calls.'
+  }
+  if (input.kind === 'json') {
+    const preview = input.rawPreview ? ` Received prefix: ${input.rawPreview}` : ''
+    return `Tool call arguments are not valid JSON. Fix the JSON syntax and retry the call.${preview}`
+  }
+  return input.error
 }
 
 export function createVercelStream(options: {
@@ -213,13 +252,25 @@ export function createVercelStream(options: {
         return
       }
       if (resolution.status === 'invalid') {
-        const error: NormalizedProviderError = {
-          code: 'INVALID_TOOL_CALL',
-          message: resolution.error,
-          retryable: false,
+        // Recovery over rejection: surface actionable guidance as an isError
+        // tool message so the model self-corrects within the same turn.
+        // Schema-valid JSON keeps its parsed arguments for field-level
+        // executor errors; unparseable payloads fall back to {}.
+        const name = input.name ?? 'invalid_tool_call'
+        const call: JanusToolCall = {
+          id: input.callId,
+          name,
+          arguments: resolution.arguments ?? {},
+          validationError: invalidCallGuidance({
+            kind: resolution.kind,
+            error: resolution.error,
+            name: input.name,
+            rawPreview: resolution.rawPreview,
+          }),
         }
-        attemptEmit({ type: 'model_error', error })
-        throw new Error(resolution.error)
+        toolCalls.push(call)
+        emitProgress({ type: 'tool_call_ready', call })
+        return
       }
     }
 
@@ -246,12 +297,16 @@ export function createVercelStream(options: {
               if (part.toolCallId) {
                 const started = accumulator.start(part.toolCallId, part.toolName)
                 if (started) emitProgress({ type: 'tool_call_start', callId: part.toolCallId, name: part.toolName })
-                if (accumulator.append(part.toolCallId, part.argsTextDelta ?? part.delta ?? '', part.toolName)) {
+                const delta = part.argsTextDelta ?? part.delta ?? ''
+                // Empty deltas carry no argument bytes; skip the update event
+                // so idle fragments never spin the UI or IPC.
+                if (!delta) break
+                if (accumulator.append(part.toolCallId, delta, part.toolName)) {
                   emitProgress({
                     type: 'tool_call_update',
                     callId: part.toolCallId,
                     name: part.toolName,
-                    argumentsDelta: part.argsTextDelta ?? part.delta ?? '',
+                    argumentsDelta: delta,
                   })
                 }
               }

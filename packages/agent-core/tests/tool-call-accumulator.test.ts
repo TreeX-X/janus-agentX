@@ -59,12 +59,39 @@ describe('ToolCallAccumulator', () => {
     accumulator.append('bad-json', '{"path":', 'read_file')
     expect(accumulator.complete({ callId: 'bad-json' })).toEqual({
       status: 'invalid',
+      kind: 'json',
       error: 'Tool call arguments are not valid JSON',
+      rawPreview: '{"path":',
     })
 
     expect(accumulator.complete({ callId: 'unknown', name: 'shell', arguments: {} })).toEqual({
       status: 'invalid',
+      kind: 'validation',
       error: 'Unknown tool or invalid arguments',
+      arguments: {},
+    })
+  })
+
+  it('ignores empty deltas so idle fragments emit no updates', () => {
+    const accumulator = new ToolCallAccumulator()
+
+    expect(accumulator.start('call-1', 'read_file')).toBe(true)
+    expect(accumulator.append('call-1', '')).toBe(false)
+    expect(accumulator.append('call-1', '{"path":"a.ts"}')).toBe(true)
+    expect(accumulator.complete({ callId: 'call-1' })).toEqual({
+      status: 'ready',
+      call: { id: 'call-1', name: 'read_file', arguments: { path: 'a.ts' } },
+    })
+  })
+
+  it('fails closed with guidance when streamed arguments exceed the bound', () => {
+    const accumulator = new ToolCallAccumulator({ maxArgumentsChars: 10 })
+
+    expect(accumulator.append('call-1', '{"path":"a.ts",', 'read_file')).toBe(true)
+    expect(accumulator.append('call-1', '"extra":"data"}')).toBe(true)
+    expect(accumulator.complete({ callId: 'call-1' })).toMatchObject({
+      status: 'invalid',
+      kind: 'too_large',
     })
   })
 

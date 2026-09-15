@@ -10,15 +10,19 @@ const SAFETY_MARGIN_TOKENS = 512
 /** User tuning may only move the trigger earlier, never past this share of the window. */
 const MAX_COMPACTION_THRESHOLD_RATIO = 0.9
 const MAX_LOADED_FILES = 3
-const MAX_LOADED_FILE_CHARS = 6_000
-const MAX_TOOL_CONTENT_CHARS = 6_000
-const MAX_TOOL_MESSAGE_CHARS = 4_000
+const MAX_LOADED_FILE_CHARS = 4_000
+/** Tail truncation is uniform: every tool preview entering context is capped here. */
+const MAX_TOOL_CONTENT_CHARS = 2_000
+const MAX_TOOL_MESSAGE_CHARS = 2_000
 /** Tool output is truncated per result before it enters a summary call. */
 const COMPACTION_TOOL_OUTPUT_MAX_CHARS = 2_000
 /** Head text is capped so the summary call itself cannot overflow. */
 const COMPACTION_MAX_HEAD_CHARS = 24_000
 /** Stored summaries stay re-readable at a glance and cheap to resend. */
-const COMPACTION_MAX_SUMMARY_CHARS = 8_000
+const COMPACTION_MAX_SUMMARY_CHARS = 6_000
+/** Prune tier: newest tool outputs stay verbatim within this tail budget; older ones keep the call and a digest. */
+const DEFAULT_PRUNE_KEEP_TOKENS = 40_000
+const MIN_PRUNE_KEEP_TOKENS = 4_000
 const DEFAULT_COMPACTION_KEEP_UNITS = 1
 const MIN_COMPACTION_KEEP_UNITS = 1
 const MAX_COMPACTION_KEEP_UNITS = 50
@@ -83,6 +87,9 @@ interface LoadedContextEntry {
   path: string
   offset: number
   bytes: number
+  lineEnd?: number
+  totalLines?: number
+  nextOffset?: number
   truncated: boolean
   sha256: string
   content: string
@@ -99,6 +106,9 @@ interface ToolOutput {
   content?: unknown
   offset?: unknown
   bytes?: unknown
+  lineEnd?: unknown
+  totalLines?: unknown
+  nextOffset?: unknown
   truncated?: unknown
   changedPaths?: unknown
 }
@@ -130,14 +140,20 @@ export class LoadedContextIndex {
       && typeof output.workspaceId === 'string' && typeof output.path === 'string'
       && typeof output.sha256 === 'string' && typeof output.content === 'string') {
       const content = bounded(output.content, MAX_LOADED_FILE_CHARS)
-      const offset = typeof output.offset === 'number' ? output.offset : 0
+      const offset = typeof output.offset === 'number' ? output.offset : 1
       const bytes = typeof output.bytes === 'number' ? output.bytes : output.content.length
+      const lineEnd = typeof output.lineEnd === 'number' ? output.lineEnd : undefined
+      const totalLines = typeof output.totalLines === 'number' ? output.totalLines : undefined
+      const nextOffset = typeof output.nextOffset === 'number' ? output.nextOffset : undefined
       const key = `${output.workspaceId}:${output.path}:${offset}`
       this.entries.set(key, {
         workspaceId: output.workspaceId,
         path: output.path,
         offset,
         bytes,
+        lineEnd,
+        totalLines,
+        nextOffset,
         truncated: output.truncated === true || content.truncated,
         sha256: output.sha256,
         content: content.value,
@@ -169,9 +185,15 @@ export class LoadedContextIndex {
     const sections: string[] = []
     let usedTokens = 0
     for (const entry of eligible) {
+      const range = entry.totalLines !== undefined && entry.lineEnd !== undefined
+        ? `lines=${entry.offset}-${entry.lineEnd}/${entry.totalLines}`
+        : `range=${entry.offset}-${entry.offset + entry.bytes}`
+      const paging = entry.nextOffset !== undefined
+        ? ` continue with offset=${entry.nextOffset} when more is needed.`
+        : ' read again when a newer range is needed.'
       const header = [
         `Loaded workspace evidence: ${entry.workspaceId}/${entry.path}`,
-        `range=${entry.offset}-${entry.offset + entry.bytes}; sha256=${entry.sha256}; size=${entry.size};${entry.truncated ? ' truncated;' : ''} read again when a newer range is needed.`,
+        `${range}; sha256=${entry.sha256}; size=${entry.size};${entry.truncated ? ' truncated;' : ''}${paging}`,
       ].join('\n')
       const availableChars = Math.max(0, (remainingTokens - usedTokens) * 4 - header.length - 1)
       if (availableChars < 128) continue
@@ -193,12 +215,19 @@ function compactToolMessage(message: JanusAgentMessage): JanusAgentMessage {
     const output = asRecord(value)
     if (output && typeof output.content === 'string') {
       const content = bounded(output.content, MAX_TOOL_CONTENT_CHARS)
+      const nextOffset = typeof output.nextOffset === 'number' ? output.nextOffset : undefined
+      const pagingGuidance = nextOffset !== undefined
+        ? `Showing lines ${String(output.lineStart ?? output.offset ?? 1)}-${String(output.lineEnd ?? '?')} of ${String(output.totalLines ?? '?')}. Use workspace_read with offset=${nextOffset} to continue.`
+        : 'Use workspace_read again for another range.'
+      const existingGuidance = typeof output.guidance === 'string' && output.guidance ? output.guidance : undefined
       return {
         ...message,
         content: JSON.stringify({
           ...output,
           content: content.value,
-          ...(content.truncated ? { truncated: true, guidance: 'Use workspace.read again for another range.' } : {}),
+          ...(content.truncated || output.truncated === true
+            ? { truncated: true, guidance: existingGuidance ?? pagingGuidance }
+            : {}),
         }),
       }
     }
@@ -206,6 +235,25 @@ function compactToolMessage(message: JanusAgentMessage): JanusAgentMessage {
     // Non-JSON tool output is still bounded below.
   }
   return { ...message, content: bounded(message.content, MAX_TOOL_MESSAGE_CHARS).value }
+}
+
+/**
+ * opencode-style prune: the assistant tool_call is always retained, but a
+ * stale tool_output body is replaced by a one-line digest placeholder. The
+ * digest (paths/hashes/queries) is what handoff and traces already carry, so
+ * no evidence is lost — only the bulky verbatim blob is erased.
+ */
+function pruneToolMessage(message: JanusAgentMessage): JanusAgentMessage {
+  if (message.role !== 'tool') return message
+  const digest = toolDigest(message) ?? `- ${message.toolName ?? 'tool'}`
+  return {
+    ...message,
+    content: JSON.stringify({
+      pruned: true,
+      digest,
+      guidance: 'Output pruned to save context; the call above is retained. Re-read the file or re-run the query when verbatim content is needed.',
+    }),
+  }
 }
 
 function toolDigest(message: JanusAgentMessage): string | undefined {
@@ -236,7 +284,10 @@ function toolDigest(message: JanusAgentMessage): string | undefined {
     }
     if (typeof parsed.content === 'string' && typeof parsed.path === 'string') {
       const sha = typeof parsed.sha256 === 'string' ? ` sha256=${String(parsed.sha256).slice(0, 12)}…` : ''
-      return `- ${label} ${scope}${String(parsed.path)}${sha} (content retained in loaded evidence when available)`
+      const range = typeof parsed.lineStart === 'number' && typeof parsed.lineEnd === 'number'
+        ? ` L${String(parsed.lineStart)}-${String(parsed.lineEnd)}${typeof parsed.totalLines === 'number' ? `/${String(parsed.totalLines)}` : ''}`
+        : ''
+      return `- ${label} ${scope}${String(parsed.path)}${range}${sha} (content retained in loaded evidence when available)`
     }
     // workspace.delete results carry path + kind/entryCount instead of content:
     // keep a one-line digest so pruned turns still show what was removed.
@@ -490,6 +541,13 @@ export interface ChatContextBuildOptions {
   model?: Pick<ModelInfo, 'contextWindow' | 'maxOutputTokens'>
   /** Safety reserve below the window; clamped to 0..10% so callers tune early only. */
   bufferTokens?: number
+  /**
+   * Note: prune tail budget — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+   * Newest tool outputs stay verbatim within this token tail; older kept units
+   * keep the assistant tool_call but have their tool_output replaced by a digest
+   * placeholder. Tunable; defaults far above system+tools so short sessions never prune.
+   */
+  pruneKeepTokens?: number
 }
 
 export interface CompactionOptions extends ChatContextBuildOptions {
@@ -650,7 +708,28 @@ export class ChatSessionRuntime {
     const context = [...layout.systems]
     if (layout.evidence) context.push(layout.evidence)
     if (this.summary) context.push(this.summaryMessage())
-    for (const unit of keptChrono) context.push(...unit.map(compactToolMessage))
+    // Prune tier (newest-first tail budget): the newest ~pruneKeep tokens keep
+    // verbatim tool outputs; older kept units keep the assistant tool_call and
+    // carry only a digest placeholder for the output. Dropped units are still
+    // represented by the deterministic handoff below.
+    const pruneKeep = Math.max(
+      MIN_PRUNE_KEEP_TOKENS,
+      Math.floor(options.pruneKeepTokens ?? DEFAULT_PRUNE_KEEP_TOKENS),
+    )
+    let tailTokens = 0
+    const renderedChrono: JanusAgentMessage[][] = []
+    for (let index = keptChrono.length - 1; index >= 0; index -= 1) {
+      const compacted = keptChrono[index].map(compactToolMessage)
+      const unitTokens = compacted.reduce((total, message) => total + estimateTokens(message.content), 0)
+      if (tailTokens < pruneKeep) {
+        tailTokens += unitTokens
+        renderedChrono.unshift(compacted)
+      } else {
+        renderedChrono.unshift(keptChrono[index].map((message) =>
+          message.role === 'tool' ? pruneToolMessage(message) : message))
+      }
+    }
+    for (const unit of renderedChrono) context.push(...unit)
     let usedTokens = layout.usedTokens + this.summaryCost()
     // Summarize everything pruned so exploration is not silently lost.
     // pi uses an LLM summary here; we use exact digests to keep sha256 usable.

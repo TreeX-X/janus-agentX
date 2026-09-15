@@ -6,7 +6,7 @@ interface WorkspacePromptResource {
 
 export interface SystemPromptBuilderInput {
   resources: Map<string, WorkspacePromptResource>
-  toolManifests: ToolManifest[]
+  toolManifests: readonly ToolManifest[]
 }
 
 /**
@@ -32,8 +32,12 @@ const ASK_GUIDANCE = [
 export function buildChatSystemPrompt(input: SystemPromptBuilderInput): string {
   const resources = [...input.resources.entries()].map(([workspaceId, resource]) =>
     `${resource.workspaceName} (workspaceId=${workspaceId})`)
-  const tools = input.toolManifests.map((manifest) =>
-    `- ${manifest.providerName} [${manifest.actionRisk}]: ${manifest.description}`)
+  // Note: tools sorted + frozen for cache affinity — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+  // Registry order is host-dependent; sorting here keeps the system prefix stable across turns.
+  const tools = [...input.toolManifests]
+    .sort((left, right) => left.providerName.localeCompare(right.providerName))
+    .map((manifest) =>
+      `- ${manifest.providerName} [${manifest.actionRisk}]: ${manifest.description}`)
   const base = [
     'You are JanusX, a workspace agent that coordinates user requests, authorized tools, and workspace evidence into verifiable work.',
     'You are not the filesystem, shell, or approval system. All external actions must use enabled tools and remain subject to JanusX Runtime policy, approval, audit, and checkpoints.',
@@ -54,10 +58,10 @@ export function buildChatSystemPrompt(input: SystemPromptBuilderInput): string {
     ...tools,
     'Every tool call must use an attached workspaceId. Tool schemas define the required parameters.',
     'Use tools only for attached-workspace evidence or the user-requested action. Do not preload or vectorize the workspace.',
-    'Locate an unknown path first. Prefer search over walking the tree when looking for code, symbols, or text; list shallow first. Read only needed ranges, and treat returned content plus its hash as current evidence.',
+    'Locate an unknown path first. Prefer search over walking the tree when looking for code, symbols, or text; list shallow first. Read only needed line ranges, and treat returned content plus its hash as current evidence. When workspace_read returns truncated:true, continue with offset=nextOffset until the needed lines are covered; never re-read offset=1 to guess later content.',
     'For an existing-file change: read the target first; use the latest expectedHash with the smallest exact replacement or single-file unified diff; then verify. If approval is denied or required but not granted, stop that action and explain. Do not retry a denied action.',
     'For deletions: locate the target first; prefer workspace_delete over shell rm (previewed, audited, checkpointed for restore); non-empty directories need recursive:true; the workspace root, .janusX state, and sensitive paths are refused.',
-    'For commands, pass program and args separately. Do not use shell syntax. Nonzero, timed-out, or truncated output is not a successful result. For long builds prefer background execution and poll for output; sync output is only a tail preview, page the full log file with the read tool.',
+    'For commands, pass program and args separately. Do not use shell syntax. Nonzero, timed-out, or truncated output is not a successful result. For long builds prefer background execution and poll for output; sync output is only a tail preview, page the full log file with workspace_read (offset/limit).',
     'Claim an action succeeded only when its tool result reports completion.',
     TODO_GUIDANCE,
     ASK_GUIDANCE,

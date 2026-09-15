@@ -50,7 +50,7 @@ function autoApprove(runtime: WorkspaceAgentRuntime, approved = true) {
   })
 }
 
-async function executeRead(root: string, path: string, maxBytes?: number, offset?: number) {
+async function executeRead(root: string, path: string, maxBytes?: number, offset?: number, limit?: number) {
   const runtime = new WorkspaceAgentRuntime(async () => root)
   registerWorkspaceTools(runtime.registry)
   const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
@@ -63,6 +63,7 @@ async function executeRead(root: string, path: string, maxBytes?: number, offset
         path,
         ...(maxBytes === undefined ? {} : { maxBytes }),
         ...(offset === undefined ? {} : { offset }),
+        ...(limit === undefined ? {} : { limit }),
       },
     },
   })
@@ -186,48 +187,89 @@ describe('workspace.read tool', () => {
     expect(result.error).not.toContain(content.toString())
   })
 
-  it('fails closed for outside files and bounds oversized reads', async () => {
+  it('fails closed for outside files and pages large files by lines', async () => {
     const state = await temporaryDirectory()
     const root = await temporaryDirectory()
     const outsidePath = join(state, 'outside.txt')
     await writeFile(outsidePath, 'outside secret')
-    await writeFile(join(root, 'large.txt'), 'larger than limit')
+    await writeFile(join(root, 'large.txt'), 'aaa\nbbb\nccc\n', 'utf-8')
 
     const outside = await executeRead(root, outsidePath)
-    const oversized = await executeRead(root, 'large.txt', 4)
+    // Byte cap wins over the line cap: only the first line fits in 5 bytes.
+    const paged = await executeRead(root, 'large.txt', 5, 1)
 
     expect(outside).toMatchObject({ status: 'failed', output: undefined })
     expect(outside.error).not.toContain('outside secret')
-    expect(oversized).toMatchObject({
+    expect(paged).toMatchObject({
       status: 'completed',
       output: {
-        content: 'larg',
-        offset: 0,
-        bytes: 4,
-        size: 'larger than limit'.length,
+        content: 'aaa',
+        offset: 1,
+        lineStart: 1,
+        lineEnd: 1,
+        totalLines: 4,
+        bytes: 3,
+        size: 'aaa\nbbb\nccc\n'.length,
         truncated: true,
-        sha256: createHash('sha256').update('larger than limit').digest('hex'),
+        nextOffset: 2,
+        sha256: createHash('sha256').update('aaa\nbbb\nccc\n').digest('hex'),
       },
     })
+    expect((paged.output as { guidance: string }).guidance).toContain('offset=2')
   })
 
-  it('reads a bounded range with the complete file hash', async () => {
+  it('reads a bounded line range with the complete file hash', async () => {
     const root = await temporaryDirectory()
-    await writeFile(join(root, 'large.txt'), '0123456789abcdef', 'utf-8')
+    await writeFile(join(root, 'large.txt'), 'l1\nl2\nl3\nl4\n', 'utf-8')
 
-    const result = await executeRead(root, 'large.txt', 4, 6)
+    const result = await executeRead(root, 'large.txt', undefined, 2, 2)
 
     expect(result).toMatchObject({
       status: 'completed',
       output: {
-        content: '6789',
-        offset: 6,
-        bytes: 4,
-        size: 16,
+        content: 'l2\nl3',
+        offset: 2,
+        lineStart: 2,
+        lineEnd: 3,
+        totalLines: 5,
         truncated: true,
-        sha256: createHash('sha256').update('0123456789abcdef').digest('hex'),
+        nextOffset: 4,
+        sha256: createHash('sha256').update('l1\nl2\nl3\nl4\n').digest('hex'),
       },
     })
+  })
+
+  it('walks every page to the end without repeating the head', async () => {
+    const root = await temporaryDirectory()
+    const source = 'one\ntwo\nthree\nfour\n'
+    await writeFile(join(root, 'paged.txt'), source, 'utf-8')
+
+    const first = await executeRead(root, 'paged.txt', undefined, 1, 2)
+    const second = await executeRead(
+      root, 'paged.txt', undefined,
+      (first.output as { nextOffset: number }).nextOffset, 2,
+    )
+    const third = await executeRead(
+      root, 'paged.txt', undefined,
+      (second.output as { nextOffset: number }).nextOffset, 10,
+    )
+
+    expect(first).toMatchObject({ status: 'completed', output: { content: 'one\ntwo', truncated: true, nextOffset: 3 } })
+    expect(second).toMatchObject({ status: 'completed', output: { content: 'three\nfour', truncated: true, nextOffset: 5 } })
+    expect(third).toMatchObject({ status: 'completed', output: { content: '', truncated: false } })
+    expect((second.output as { content: string }).content).not.toBe((first.output as { content: string }).content)
+  })
+
+  it('rejects limit 0 and offsets past the last line instead of looping on the head', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'notes.txt'), 'a\nb\n', 'utf-8')
+
+    const zeroLimit = await executeRead(root, 'notes.txt', undefined, 1, 0)
+    const pastEnd = await executeRead(root, 'notes.txt', undefined, 99, 10)
+
+    expect(zeroLimit).toMatchObject({ status: 'failed', output: undefined })
+    expect(pastEnd).toMatchObject({ status: 'failed', output: undefined })
+    expect(pastEnd.error).toContain('beyond end of file (3 lines total)')
   })
 
   it('rejects a range read whose full hash would exceed the file safety bound', async () => {
@@ -236,11 +278,13 @@ describe('workspace.read tool', () => {
     await writeFile(file, 'x')
     await truncate(file, 16 * 1024 * 1024 + 1)
 
-    await expect(executeRead(root, 'too-large.txt', 1)).resolves.toMatchObject({
+    const result = await executeRead(root, 'too-large.txt', 1)
+    expect(result).toMatchObject({
       status: 'failed',
       reasonCode: 'FILE_TOO_LARGE',
       output: undefined,
     })
+    expect(result.error).toContain('workspace.search')
   })
 
   it('requires the explicit workspace resource id to match the session', async () => {
@@ -336,20 +380,23 @@ describe('workspace.edit tool', () => {
     })
   })
 
-  it('does not return partial UTF-8 characters at a byte range boundary', async () => {
+  it('pages multi-byte lines without splitting characters', async () => {
     const root = await temporaryDirectory()
-    const source = 'a你b好c'
+    const source = 'a你\nb好\nc'
     await writeFile(join(root, 'unicode.txt'), source, 'utf-8')
 
-    const result = await executeRead(root, 'unicode.txt', 5, 2)
+    const result = await executeRead(root, 'unicode.txt', undefined, 2, 1)
 
     expect(result).toMatchObject({
       status: 'completed',
       output: {
-        content: 'b',
-        offset: 4,
-        bytes: 1,
+        content: 'b好',
+        offset: 2,
+        lineStart: 2,
+        lineEnd: 2,
+        totalLines: 3,
         truncated: true,
+        nextOffset: 3,
         sha256: createHash('sha256').update(source).digest('hex'),
       },
     })

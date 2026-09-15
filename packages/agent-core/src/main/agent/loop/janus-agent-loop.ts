@@ -19,6 +19,14 @@ export interface JanusToolCall {
   id: string
   name: string
   arguments: unknown
+  /**
+   * C1 recovery channel: when the stream adapter cannot produce valid
+   * arguments (malformed/truncated JSON, unknown tool, schema rejection),
+   * it attaches actionable guidance here instead of throwing. The loop
+   * surfaces it as an isError tool message so the model self-corrects
+   * without losing the turn (codex RespondToModel / opencode InvalidTool).
+   */
+  validationError?: string
 }
 
 export interface JanusAgentToolResult {
@@ -256,6 +264,13 @@ export async function runJanusAgentLoop(
       }
       const execute = async (call: JanusToolCall): Promise<JanusAgentMessage> => {
         emit({ type: 'tool_execution_start', call })
+        // Note: stream-level validation failures recover as tool messages — see .agents/notes/implemented/bug-fix/2026-09-15-tool-call-recovery.md
+        if (typeof call.validationError === 'string' && call.validationError.length > 0) {
+          const result = errorResult(call.validationError)
+          emit({ type: 'tool_execution_end', call, result, isError: true })
+          terminateFlags.push(false)
+          return toolMessage(call, result)
+        }
         const tool = tools.get(call.name)
         if (!tool) {
           const result = errorResult(`Unknown tool: ${call.name}`)

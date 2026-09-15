@@ -64,6 +64,37 @@ describe('Vercel stream adapter', () => {
     expect(events.filter((event) => event.type === 'model_finish')).toHaveLength(1)
   })
 
+  it('passes reasoning tokens through instead of dropping them from usage', async () => {
+    const streamTextFn = vi.fn(async () => ({
+      textStream: (async function* () {})(),
+      fullStream: (async function* () {
+        yield { type: 'text-delta', textDelta: 'thinking hard' }
+        yield { type: 'finish', finishReason: 'stop', usage: { promptTokens: 10, completionTokens: 20, reasoningTokens: 12 } }
+      })(),
+    }))
+    const stream = createVercelStream({ model: {}, streamTextFn })
+    const events: JanusAgentEvent[] = []
+    await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event))
+    expect(events).toEqual(expect.arrayContaining([
+      { type: 'model_finish', reason: 'stop', usage: { promptTokens: 10, completionTokens: 20, reasoningTokens: 12 } },
+    ]))
+  })
+
+  it('accepts provider input/output token shapes for usage', async () => {
+    const streamTextFn = vi.fn(async () => ({
+      textStream: (async function* () {})(),
+      fullStream: (async function* () {
+        yield { type: 'finish', finishReason: 'stop', usage: { inputTokens: 7, outputTokens: 9 } }
+      })(),
+    }))
+    const stream = createVercelStream({ model: {}, streamTextFn })
+    const events: JanusAgentEvent[] = []
+    await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event))
+    expect(events).toEqual(expect.arrayContaining([
+      { type: 'model_finish', reason: 'stop', usage: { promptTokens: 7, completionTokens: 9 } },
+    ]))
+  })
+
   it('returns the completed call and result to the next model step', async () => {
     let turn = 0
     const execute = vi.fn(async () => ({ content: 'a.ts contents' }))
@@ -181,7 +212,7 @@ describe('Vercel stream adapter', () => {
     const result = await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event.type))
     expect(result.message.content).toBe('recovered')
     expect(streamTextFn).toHaveBeenCalledTimes(2)
-    // 中间可重试失败静默（�?model_error），终态只吐一遍成功进度�?
+    // 中间可重试失败静默（�?model_error），终态只吐一遍成功进度�?
     expect(events).not.toContain('model_error')
     expect(events.filter((type) => type === 'message_update')).toEqual(['message_update'])
   })
@@ -199,11 +230,11 @@ describe('Vercel stream adapter', () => {
     await expect(stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event.type)))
       .rejects.toThrow('overloaded')
     expect(streamTextFn).toHaveBeenCalledTimes(1)
-    // 有进度轮次走原终态通道：先吐过�?delta 保留，model_error 只发一次�?
+    // 有进度轮次走原终态通道：先吐过�?delta 保留，model_error 只发一次�?
     expect(events).toEqual(['message_start', 'message_update', 'model_error'])
   })
 
-  it('R5: does not retry INVALID_TOOL_CALL', async () => {
+  it('R5: recovers INVALID_TOOL_CALL as an isError tool call instead of killing the turn', async () => {
     const streamTextFn = vi.fn(async () => ({
       textStream: (async function* () {})(),
       fullStream: (async function* () {
@@ -216,10 +247,75 @@ describe('Vercel stream adapter', () => {
       streamTextFn,
     })
     const events: string[] = []
-    await expect(stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event.type)))
-      .rejects.toThrow()
+    const result = await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event.type))
     expect(streamTextFn).toHaveBeenCalledTimes(1)
-    expect(events).toContain('model_error')
+    expect(events).not.toContain('model_error')
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls?.[0]).toMatchObject({
+      id: 'call-1',
+      name: 'missing-tool',
+      validationError: expect.stringContaining('Unknown tool'),
+    })
+  })
+
+  it('guides truncated JSON toward smaller arguments instead of generic syntax advice', async () => {
+    const streamTextFn = vi.fn(async () => ({
+      textStream: (async function* () {})(),
+      fullStream: (async function* () {
+        yield { type: 'tool-call-streaming-start', toolCallId: 'call-1', toolName: 'read' }
+        yield { type: 'tool-call-delta', toolCallId: 'call-1', toolName: 'read', argsTextDelta: '{"path":"a.ts","lines":"' }
+        yield { type: 'tool-call', toolCallId: 'call-1', toolName: 'read' }
+      })(),
+    }))
+    const stream = createVercelStream({
+      model: {},
+      tools: { read: { parameters: {}, execute: async () => ({ ok: true }) } },
+      streamTextFn,
+    })
+    const result = await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, () => undefined)
+    expect(result.toolCalls?.[0]?.validationError).toMatch(/smaller arguments|truncated/i)
+  })
+
+  it('keeps parsed arguments on schema rejection so the executor reports field-level errors', async () => {
+    const streamTextFn = vi.fn(async () => ({
+      textStream: (async function* () {})(),
+      fullStream: (async function* () {
+        yield { type: 'tool-call', toolCallId: 'call-1', toolName: 'read', args: { wrong: 1 } }
+      })(),
+    }))
+    const stream = createVercelStream({
+      model: {},
+      tools: { read: { parameters: { safeParse: () => ({ success: false }) }, execute: async () => ({ ok: true }) } },
+      streamTextFn,
+    })
+    const result = await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, () => undefined)
+    expect(result.toolCalls?.[0]).toMatchObject({
+      id: 'call-1',
+      name: 'read',
+      arguments: { wrong: 1 },
+      validationError: expect.any(String),
+    })
+  })
+
+  it('skips update events for empty argument deltas', async () => {
+    const streamTextFn = vi.fn(async () => ({
+      textStream: (async function* () {})(),
+      fullStream: (async function* () {
+        yield { type: 'tool-call-streaming-start', toolCallId: 'call-1', toolName: 'read' }
+        yield { type: 'tool-call-delta', toolCallId: 'call-1', toolName: 'read', argsTextDelta: '' }
+        yield { type: 'tool-call-delta', toolCallId: 'call-1', toolName: 'read', argsTextDelta: '{"path":"a.ts"}' }
+        yield { type: 'tool-call', toolCallId: 'call-1', toolName: 'read', args: { path: 'a.ts' } }
+        yield { type: 'finish', finishReason: 'tool-calls' }
+      })(),
+    }))
+    const stream = createVercelStream({
+      model: {},
+      tools: { read: { parameters: {}, execute: async () => ({ ok: true }) } },
+      streamTextFn,
+    })
+    const events: JanusAgentEvent[] = []
+    await stream([{ role: 'user', content: 'hi' }], new AbortController().signal, (event) => events.push(event))
+    expect(events.filter((event) => event.type === 'tool_call_update')).toHaveLength(1)
   })
 
   it('R5: surfaces model_error once after exhausting consumption retries', async () => {

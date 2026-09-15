@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { extname, relative, resolve, sep } from 'node:path'
 import { writeFileAtomic } from '../../lib/atomic-file'
-import { readWorkspaceFile, readWorkspaceFileRange, type WorkspaceFileRange, type WorkspaceReadAuthorizer } from '../runtime/path-guard'
+import { readWorkspaceFile, readWorkspaceFileRange, WorkspacePathGuardError, type WorkspaceFileRange, type WorkspaceReadAuthorizer } from '../runtime/path-guard'
 import { isSensitivePath } from '../runtime/policy-gate'
 import type { BlueprintEvidenceManifest } from '../../../shared/janus/maintenance-types'
 
@@ -25,6 +25,26 @@ export interface WorkspaceContextOptions {
 
 const DEFAULT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.md', '.txt', '.yml', '.yaml', '.toml', '.css', '.html', '.xml'])
 const DEFAULT_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', 'build', 'release', 'coverage', '.cache'])
+
+// Note: line-paged reads keep the model on rails for large files — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
+/** Full-file ceiling for a paged read; the whole file is hashed for edit safety. */
+export const MAX_PAGED_READ_BYTES = 16 * 1024 * 1024
+/** Default page: small enough to survive the 6K context cap without a second cut. */
+export const DEFAULT_PAGE_LINES = 200
+export const MAX_PAGE_LINES = 2000
+export const DEFAULT_PAGE_BYTES = 50 * 1024
+
+export interface WorkspaceTextPage {
+  content: Buffer
+  lineStart: number
+  lineEnd: number
+  totalLines: number
+  size: number
+  sha256: string
+  truncated: boolean
+  nextOffset?: number
+  bytes: number
+}
 
 function failure(error: unknown): { ok: false; error: Error } {
   return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
@@ -161,6 +181,80 @@ export class JanusWorkspaceFs {
           content,
           offset: read.offset + start,
           truncated: read.truncated || start > 0 || end < read.content.length,
+        },
+      }
+    } catch (error) { return failure(error) }
+  }
+
+  async readWorkspaceTextPage(
+    workspaceRoot: string,
+    requestedPath: string,
+    offset: number,
+    limit: number,
+    maxBytes: number,
+    authorize: WorkspaceReadAuthorizer,
+  ): Promise<JanusResult<WorkspaceTextPage>> {
+    try {
+      if (!Number.isSafeInteger(offset) || offset < 0) {
+        throw new WorkspacePathGuardError('INVALID_READ_LIMIT', 'Workspace file read offset is invalid')
+      }
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_LINES) {
+        throw new Error(`workspace.read limit must be an integer between 1 and ${MAX_PAGE_LINES}`)
+      }
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+        throw new WorkspacePathGuardError('INVALID_READ_LIMIT', 'Workspace file read limit is invalid')
+      }
+      // offset 0 is the pre-line-pages default: forgive it as line 1 instead
+      // of failing callers that never set the new 1-indexed base.
+      const lineStart = offset === 0 ? 1 : offset
+      let buffer: Buffer
+      try {
+        buffer = await readWorkspaceFile(workspaceRoot, requestedPath, MAX_PAGED_READ_BYTES, authorize)
+      } catch (error) {
+        if (error instanceof WorkspacePathGuardError && error.code === 'FILE_TOO_LARGE') {
+          throw new WorkspacePathGuardError(
+            'FILE_TOO_LARGE',
+            'Workspace file exceeds the 16MB paged-read ceiling; use workspace.search scoped to this file to locate lines instead of reading it whole',
+          )
+        }
+        throw error
+      }
+      if (!isTextBuffer(buffer)) throw new Error('Workspace file is not UTF-8 text')
+      const text = buffer.toString('utf-8')
+      const lines = text.split('\n')
+      const totalLines = lines.length
+      if (lineStart > totalLines) {
+        throw new Error(`Offset ${lineStart} is beyond end of file (${totalLines} lines total)`)
+      }
+      const endIdx = Math.min(lineStart - 1 + limit, totalLines)
+      const selected = lines.slice(lineStart - 1, endIdx)
+      // Byte cap wins over the line cap: take the longest prefix that fits.
+      const taken: string[] = []
+      let takenBytes = 0
+      for (const line of selected) {
+        const size = Buffer.byteLength(line, 'utf-8') + (taken.length > 0 ? 1 : 0)
+        if (takenBytes + size > maxBytes) break
+        taken.push(line)
+        takenBytes += size
+      }
+      if (taken.length === 0) {
+        throw new Error(`Line ${lineStart} exceeds ${maxBytes} bytes; re-read with a larger maxBytes (up to 1048576)`)
+      }
+      const lineEnd = lineStart + taken.length - 1
+      const truncated = endIdx < totalLines || taken.length < selected.length
+      const content = Buffer.from(taken.join('\n'), 'utf-8')
+      return {
+        ok: true,
+        value: {
+          content,
+          lineStart,
+          lineEnd,
+          totalLines,
+          size: buffer.byteLength,
+          sha256: createHash('sha256').update(buffer).digest('hex'),
+          truncated,
+          ...(truncated ? { nextOffset: lineEnd + 1 } : {}),
+          bytes: content.byteLength,
         },
       }
     } catch (error) { return failure(error) }
