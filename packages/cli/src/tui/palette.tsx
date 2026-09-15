@@ -148,15 +148,16 @@ export function CommandPalette({ items, onPick, onClose }: {
   )
 }
 
-/** Two-option switch panel (approval mode): arrows + Enter, Esc closes. */
+/** Three-option switch panel (approval mode): arrows + Enter, Esc closes. */
 export function ApprovalPanel({ current, onPick, onClose }: {
-  current: 'auto-run' | 'per-action'
-  onPick: (mode: 'auto-run' | 'per-action') => void
+  current: 'auto-run' | 'per-action' | 'plan'
+  onPick: (mode: 'auto-run' | 'per-action' | 'plan') => void
   onClose: () => void
 }): React.JSX.Element {
-  const modes = useMemo<Array<{ id: 'auto-run' | 'per-action'; hint: string }>>(() => [
+  const modes = useMemo<Array<{ id: 'auto-run' | 'per-action' | 'plan'; hint: string }>>(() => [
     { id: 'auto-run', hint: 'tools run immediately' },
     { id: 'per-action', hint: 'each write asks y/N' },
+    { id: 'plan', hint: 'read-only: mutations denied' },
   ], [])
   const [index, setIndex] = useState(() => Math.max(0, modes.findIndex((mode) => mode.id === current)))
 

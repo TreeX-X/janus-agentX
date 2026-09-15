@@ -76,8 +76,10 @@ describe('executeCommand', () => {
     const shown = (await executeCommand(session, 'approval', [])).stdout.join('\n')
     expect(shown).toContain('approval: auto-run')
     expect(shown).toContain('per-action')
+    expect(shown).toContain('plan')
     expect((await executeCommand(session, 'approval', ['per-action'])).stdout.join('')).toContain('per-action')
-    expect((await executeCommand(session, 'approval', ['sometimes'])).stderr).toEqual(['usage: /approval [auto-run|per-action]'])
+    expect((await executeCommand(session, 'approval', ['plan'])).stdout.join('')).toContain('plan')
+    expect((await executeCommand(session, 'approval', ['sometimes'])).stderr).toEqual(['usage: /approval [auto-run|per-action|plan]'])
     await session.close()
   })
 

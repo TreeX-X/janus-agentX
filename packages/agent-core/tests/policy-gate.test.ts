@@ -100,6 +100,28 @@ describe('workspace read policy', () => {
     },
   )
 
+  // Note: permission-tier plan mode — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  it.each(['write', 'create', 'config-apply', 'run', 'restore', 'delete', 'external-command', 'network'] as const)(
+    'denies %s in plan mode before execution or approval',
+    (actionRisk) => {
+      expect(evaluateWorkspaceActionPolicy({ actionRisk, approvalMode: 'plan' })).toMatchObject({
+        outcome: 'deny', approvalPolicy: 'plan', approvalDecision: 'denied', reasonCode: 'PLAN_MODE_BLOCKED',
+      })
+    },
+  )
+
+  it.each(['inspect', 'list', 'stat', 'read'] as const)('keeps read-only %s available in plan mode', (actionRisk) => {
+    expect(evaluateWorkspaceActionPolicy({ actionRisk, approvalMode: 'plan' })).toMatchObject({
+      outcome: 'allow', reasonCode: actionRisk === 'read' ? 'READ_ALLOWED' : 'READ_ONLY_ALLOWED',
+    })
+  })
+
+  it('keeps sensitive paths denied in plan mode', () => {
+    expect(evaluateWorkspaceActionPolicy({ actionRisk: 'read', relativePath: '.env', approvalMode: 'plan' })).toMatchObject({
+      outcome: 'deny', reasonCode: 'SENSITIVE_PATH',
+    })
+  })
+
   it('keeps sensitive paths denied in auto-run mode', () => {
     expect(evaluateWorkspaceActionPolicy({ actionRisk: 'write', relativePath: '.env', approvalMode: 'auto-run' })).toMatchObject({
       outcome: 'deny', approvalPolicy: 'none', reasonCode: 'SENSITIVE_PATH',

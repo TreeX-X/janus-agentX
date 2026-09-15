@@ -557,6 +557,190 @@ describe('workspace.edit tool', () => {
     expect(result.error).toContain('3 lines')
     expect(result.error).toContain('line 2')
   })
+
+  // Note: pi-style hash-anchored line edits — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  describe('hash-anchored lineEdits', () => {
+    async function readWithAnchors(root: string, path: string, offset?: number) {
+      const runtime = new WorkspaceAgentRuntime(async () => root)
+      registerWorkspaceTools(runtime.registry)
+      const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+      const read = await runtime.executeTool({
+        sessionId: session.id,
+        call: {
+          toolName: 'workspace.read',
+          input: { workspaceId: 'workspace-1', path, withLineAnchors: true, ...(offset ? { offset } : {}) },
+        },
+      })
+      if (read.status !== 'completed') throw new Error(read.error ?? 'read failed')
+      return read.output as {
+        sha256: string
+        lineAnchors: string[]
+        lineStart: number
+        lineEnd: number
+      }
+    }
+
+    async function executeLineEdit(
+      root: string,
+      expectedHash: string,
+      lineEdits: Array<{ line: number; anchor: string; newText: string }>,
+      approved = true,
+    ) {
+      const runtime = new WorkspaceAgentRuntime(async () => root)
+      registerWorkspaceTools(runtime.registry)
+      const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+      autoApprove(runtime, approved)
+      return runtime.executeTool({
+        sessionId: session.id,
+        call: {
+          toolName: 'workspace.edit',
+          input: { workspaceId: 'workspace-1', path: 'notes.txt', expectedHash, lineEdits },
+          preview: { summary: 'Edit notes.txt with line edits', paths: ['notes.txt'], truncated: false },
+        },
+      })
+    }
+
+    it('returns LINE#HASH anchors with the page and applies a two-line anchored edit', async () => {
+      const root = await temporaryDirectory()
+      await writeFile(join(root, 'notes.txt'), 'alpha\nbeta\ngamma\ndelta\n', 'utf-8')
+
+      const page = await readWithAnchors(root, 'notes.txt')
+      expect(page.lineAnchors).toHaveLength(4)
+      expect(page.lineAnchors[0]).toMatch(/^1#[a-f0-9]{8}$/)
+      expect(page.lineAnchors[3]).toMatch(/^4#[a-f0-9]{8}$/)
+      const anchor = (line: number) => page.lineAnchors[line - 1]!.split('#')[1]!
+
+      const result = await executeLineEdit(root, page.sha256, [
+        { line: 2, anchor: anchor(2), newText: 'BETA' },
+        { line: 4, anchor: anchor(4), newText: 'DELTA\nDELTA-2' },
+      ])
+
+      expect(result).toMatchObject({ status: 'completed', output: { editMode: 'line_edits', replacements: 2 } })
+      expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('alpha\nBETA\ngamma\nDELTA\nDELTA-2\n')
+    })
+
+    it('anchors apply bottom-up so line numbers before an insertion stay valid', async () => {
+      const root = await temporaryDirectory()
+      await writeFile(join(root, 'notes.txt'), 'one\ntwo\nthree\n', 'utf-8')
+
+      const page = await readWithAnchors(root, 'notes.txt')
+      const anchor = (line: number) => page.lineAnchors[line - 1]!.split('#')[1]!
+
+      // Inserting at line 1 shifts every later line, but bottom-up order means
+      // line 3's anchor was verified against the original array first.
+      const result = await executeLineEdit(root, page.sha256, [
+        { line: 1, anchor: anchor(1), newText: 'zero\nzero-b' },
+        { line: 3, anchor: anchor(3), newText: 'THREE' },
+      ])
+
+      expect(result.status).toBe('completed')
+      expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('zero\nzero-b\ntwo\nTHREE\n')
+    })
+
+    it('keeps the CRLF style of a CRLF file', async () => {
+      const root = await temporaryDirectory()
+      const source = 'first\r\nsecond\r\n'
+      await writeFile(join(root, 'notes.txt'), source, 'utf-8')
+
+      const page = await readWithAnchors(root, 'notes.txt')
+      const anchor = page.lineAnchors[1]!.split('#')[1]!
+
+      const result = await executeLineEdit(root, page.sha256, [{ line: 2, anchor, newText: 'SECOND' }])
+
+      expect(result.status).toBe('completed')
+      expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('first\r\nSECOND\r\n')
+    })
+
+    it('aborts the whole batch on a stale anchor and returns fresh anchors without writing', async () => {
+      const root = await temporaryDirectory()
+      await writeFile(join(root, 'notes.txt'), 'alpha\nbeta\ngamma\ndelta\n', 'utf-8')
+
+      const stalePage = await readWithAnchors(root, 'notes.txt')
+      const staleAnchor = (line: number) => stalePage.lineAnchors[line - 1]!.split('#')[1]!
+      // The file changes after the read (e.g. an earlier edit landed).
+      await writeFile(join(root, 'notes.txt'), 'alpha\nbeta!\ngamma\ndelta\n', 'utf-8')
+      const freshPage = await readWithAnchors(root, 'notes.txt')
+      const freshAnchor = (line: number) => freshPage.lineAnchors[line - 1]!.split('#')[1]!
+
+      const result = await executeLineEdit(root, freshPage.sha256, [
+        { line: 1, anchor: staleAnchor(1), newText: 'A' },
+        { line: 2, anchor: staleAnchor(2), newText: 'B' },
+      ])
+
+      expect(result).toMatchObject({ status: 'failed', reasonCode: 'TARGET_CHANGED' })
+      expect(result.error).toContain('line 2')
+      expect(result.error).toContain(freshAnchor(1))
+      expect(result.error).toContain(freshAnchor(2))
+      expect(result.error.toLowerCase()).toContain('fresh anchors')
+      // Whole batch aborted: line 1 was never written even though its anchor matched.
+      expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('alpha\nbeta!\ngamma\ndelta\n')
+    })
+
+    it('rejects duplicate line targets and lines beyond the file', async () => {
+      const root = await temporaryDirectory()
+      await writeFile(join(root, 'notes.txt'), 'one\ntwo\n', 'utf-8')
+      const page = await readWithAnchors(root, 'notes.txt')
+      const anchor = (line: number) => page.lineAnchors[line - 1]!.split('#')[1]!
+
+      const duplicate = await executeLineEdit(root, page.sha256, [
+        { line: 1, anchor: anchor(1), newText: 'a' },
+        { line: 1, anchor: anchor(1), newText: 'b' },
+      ])
+      expect(duplicate.status).toBe('failed')
+      expect(duplicate.error).toContain('line 1')
+
+      const beyond = await executeLineEdit(root, page.sha256, [{ line: 9, anchor: anchor(1), newText: 'x' }])
+      expect(beyond.status).toBe('failed')
+      expect(beyond.error).toContain('9')
+      expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('one\ntwo\n')
+    })
+
+    it('requires exactly one edit mode and rejects malformed anchors', async () => {
+      const root = await temporaryDirectory()
+      await writeFile(join(root, 'notes.txt'), 'one\n', 'utf-8')
+      const page = await readWithAnchors(root, 'notes.txt')
+      const anchor = page.lineAnchors[0]!.split('#')[1]!
+
+      const valid = await executeLineEdit(root, page.sha256, [{ line: 1, anchor, newText: 'x' }])
+      expect(valid.status).toBe('completed')
+      await writeFile(join(root, 'notes.txt'), 'one\n', 'utf-8')
+
+      const runtime = new WorkspaceAgentRuntime(async () => root)
+      registerWorkspaceTools(runtime.registry)
+      // auto-run: the malformed anchor must fail in the tool itself, not at
+      // an approval gate nobody resolves in this test.
+      const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root, approvalMode: 'auto-run' })
+      const malformed = await runtime.executeTool({
+        sessionId: session.id,
+        call: {
+          toolName: 'workspace.edit',
+          input: {
+            workspaceId: 'workspace-1', path: 'notes.txt', expectedHash: createHash('sha256').update('one\n').digest('hex'),
+            lineEdits: [{ line: 1, anchor: 'nothex!', newText: 'x' }],
+          },
+          preview: { summary: 'Edit notes.txt with line edits', paths: ['notes.txt'], truncated: false },
+        },
+      })
+      expect(malformed.status).toBe('failed')
+      expect(malformed.error).toContain('anchor')
+    })
+
+    it('reads anchors from a later page with page-relative line numbers intact', async () => {
+      const root = await temporaryDirectory()
+      await writeFile(join(root, 'notes.txt'), 'l1\nl2\nl3\nl4\nl5\n', 'utf-8')
+
+      const page = await readWithAnchors(root, 'notes.txt', 3)
+      expect(page.lineStart).toBe(3)
+      // The anchor array covers exactly the returned page (lines 3-5).
+      expect(page.lineAnchors[0]).toMatch(/^3#/)
+      expect(page.lineAnchors).toHaveLength(3)
+      const anchor = page.lineAnchors[0]!.split('#')[1]!
+
+      const result = await executeLineEdit(root, page.sha256, [{ line: 3, anchor, newText: 'L3' }])
+      expect(result.status).toBe('completed')
+      expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('l1\nl2\nL3\nl4\nl5\n')
+    })
+  })
 })
 
 describe('workspace.create tool', () => {

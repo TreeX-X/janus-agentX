@@ -170,6 +170,22 @@ export function evaluateWorkspaceActionPolicy(input: {
       reasonCode: input.actionRisk === 'read' ? 'READ_ALLOWED' : 'READ_ONLY_ALLOWED',
     }
   }
+  // Note: permission-tier plan mode — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  // opencode `plan`/grok `--permission-mode plan` parity: a session in plan mode
+  // is read-only at the policy layer, not by prompt convention. Every mutating
+  // or side-effecting tool is denied before execution or approval — the model
+  // can explore freely, and "confirm first" means the user flips the mode
+  // (or approves the plan), never that a write sneaks through the gate.
+  if (input.approvalMode === 'plan') {
+    return {
+      outcome: 'deny',
+      evidenceConfidence,
+      actionRisk: input.actionRisk,
+      approvalPolicy: 'plan',
+      approvalDecision: 'denied',
+      reasonCode: 'PLAN_MODE_BLOCKED',
+    }
+  }
   if (input.approvalMode === 'auto-run') {
     return {
       outcome: 'allow',

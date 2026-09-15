@@ -8,13 +8,17 @@ import { isTextBuffer, janusWorkspaceFs, DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LINES,
 import { checkpointManager } from '../../checkpoint/checkpoint-manager'
 import {
   atomicReplaceWorkspaceFile,
+  buildLineAnchors,
   commitWorkspaceDelete,
   createWorkspaceFile,
+  freshAnchorsAround,
   prepareWorkspaceDelete,
   prepareWorkspaceEdit,
+  prepareWorkspaceLineEdit,
   prepareWorkspaceUnifiedDiffEdit,
   MAX_WORKSPACE_EDIT_BYTES,
   type WorkspaceExactReplacement,
+  type WorkspaceLineEdit,
 } from '../file-transaction'
 
 const MAX_MAX_BYTES = 1024 * 1024
@@ -82,10 +86,27 @@ function deleteDiffPreview(path: string, content: Buffer): CallDiffPreview | und
   return boundPreview([`--- a/${path}`, `+++ /dev/null`, `@@`, prefixLines(content.toString('utf-8'), '-')].join('\n'))
 }
 
+/** Line-level `LINE#HASH` anchors for one replacement, for change cards. */
+function lineEditsDiffPreview(path: string, value: unknown): CallDiffPreview | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const hunks: string[] = []
+  for (const [index, item] of value.entries()) {
+    const edit = item && typeof item === 'object'
+      ? item as { line?: unknown; anchor?: unknown; newText?: unknown }
+      : {}
+    if (typeof edit.line !== 'number' || typeof edit.newText !== 'string') return undefined
+    hunks.push([
+      `@@ line ${edit.line}${typeof edit.anchor === 'string' ? ` anchor=${edit.anchor}` : ''} (${index + 1}/${value.length}) @@`,
+      prefixLines(edit.newText, '+'),
+    ].join('\n'))
+  }
+  return boundPreview([`--- a/${path}`, `+++ b/${path}`, ...hunks].join('\n'))
+}
+
 // Note: line-paged reads keep large-file evidence reachable without re-reading the head — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
-  description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits.',
+  description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits; withLineAnchors:true also returns a LINE#HASH anchor per line for hash-anchored lineEdits in workspace.edit.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -95,6 +116,7 @@ export const workspaceReadTool: RegisteredTool = {
       offset: { type: 'number', description: '1-indexed line number to start from (default 1).' },
       limit: { type: 'number', description: 'Max lines to return (default 200, max 2000).' },
       maxBytes: { type: 'number', description: 'Max bytes of page content (default 51200, max 1048576). The byte cap wins over limit.' },
+      withLineAnchors: { type: 'boolean', description: 'Also return a LINE#HASH anchor array for this page (for workspace.edit lineEdits).' },
     },
     required: ['workspaceId', 'path'],
     additionalProperties: false,
@@ -105,10 +127,12 @@ export const workspaceReadTool: RegisteredTool = {
     const offset = input.offset ?? 1
     const limit = input.limit ?? DEFAULT_PAGE_LINES
     const maxBytes = input.maxBytes ?? DEFAULT_PAGE_BYTES
+    const withLineAnchors = input.withLineAnchors ?? false
     if (typeof workspaceId !== 'string' || workspaceId !== context.workspaceId) {
       throw new Error('workspace.read workspaceId must match the active workspace resource')
     }
     if (typeof requestedPath !== 'string') throw new Error('workspace.read path must be a string')
+    if (typeof withLineAnchors !== 'boolean') throw new Error('workspace.read withLineAnchors must be a boolean')
     if (!Number.isSafeInteger(offset) || Number(offset) < 0) {
       throw new Error('workspace.read offset must be a non-negative integer line number (1-indexed, 0 is accepted as line 1)')
     }
@@ -138,6 +162,12 @@ export const workspaceReadTool: RegisteredTool = {
     const guidance = page.truncated
       ? `Showing lines ${page.lineStart}-${page.lineEnd} of ${page.totalLines}. Use workspace_read with offset=${page.nextOffset} to continue.`
       : undefined
+    // Anchors cover the lines actually returned (after the byte cap may have
+    // cut the page short) and hash the on-disk line, so redacted regions keep
+    // a stable anchor even though their content cannot be edited.
+    const lineAnchors = withLineAnchors
+      ? buildLineAnchors(page.content.toString('utf-8'), page.lineStart, page.lineEnd - page.lineStart + 1)
+      : undefined
     return {
       workspaceId,
       path: requestedPath,
@@ -151,6 +181,7 @@ export const workspaceReadTool: RegisteredTool = {
       truncated: page.truncated,
       ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
       ...(guidance === undefined ? {} : { guidance }),
+      ...(lineAnchors === undefined ? {} : { lineAnchors }),
       content: text,
       sha256: page.sha256,
       contentRedacted: redacted,
@@ -163,7 +194,7 @@ export const workspaceReadTool: RegisteredTool = {
 
 export const workspaceEditTool: RegisteredTool = {
   name: 'workspace.edit',
-  description: 'Apply bounded exact replacements or one unified diff to an existing workspace file after approval',
+  description: 'Apply bounded exact replacements, one unified diff, or hash-anchored lineEdits to an existing workspace file after approval. lineEdits need the LINE#HASH anchors from workspace.read withLineAnchors:true and apply bottom-up; any anchor mismatch aborts the whole batch and returns fresh anchors.',
   actionRisk: 'write',
   inputSchema: {
     type: 'object',
@@ -173,6 +204,7 @@ export const workspaceEditTool: RegisteredTool = {
       expectedHash: { type: 'string' },
       replacements: { type: 'array' },
       unifiedDiff: { type: 'string' },
+      lineEdits: { type: 'array' },
     },
     required: ['workspaceId', 'path', 'expectedHash'],
     additionalProperties: false,
@@ -186,15 +218,19 @@ export const workspaceEditTool: RegisteredTool = {
     }
     const hasReplacements = input.replacements !== undefined
     const hasUnifiedDiff = input.unifiedDiff !== undefined
-    if (hasReplacements === hasUnifiedDiff) {
-      throw new Error('workspace.edit requires exactly one of replacements or unifiedDiff')
+    const hasLineEdits = input.lineEdits !== undefined
+    if (Number(hasReplacements) + Number(hasUnifiedDiff) + Number(hasLineEdits) !== 1) {
+      throw new Error('workspace.edit requires exactly one of replacements, unifiedDiff, or lineEdits')
     }
     if (hasReplacements && !Array.isArray(input.replacements)) throw new Error('workspace.edit replacements must be an array')
     if (hasUnifiedDiff && typeof input.unifiedDiff !== 'string') throw new Error('workspace.edit unifiedDiff must be a string')
+    if (hasLineEdits && !Array.isArray(input.lineEdits)) throw new Error('workspace.edit lineEdits must be an array')
     if (context.signal.aborted) throw new Error('workspace.edit cancelled')
     const prepare = () => hasUnifiedDiff
       ? prepareWorkspaceUnifiedDiffEdit(context.workspaceRoot, input.path as string, input.expectedHash as string, input.unifiedDiff as string)
-      : prepareWorkspaceEdit(context.workspaceRoot, input.path as string, input.expectedHash as string, input.replacements as WorkspaceExactReplacement[])
+      : hasLineEdits
+        ? prepareWorkspaceLineEdit(context.workspaceRoot, input.path as string, input.expectedHash as string, input.lineEdits as WorkspaceLineEdit[])
+        : prepareWorkspaceEdit(context.workspaceRoot, input.path as string, input.expectedHash as string, input.replacements as WorkspaceExactReplacement[])
     let prepared = await prepare()
     await checkpointManager.initialize(context.workspaceRoot)
     const checkpoint = await checkpointManager.createCheckpoint({
@@ -208,7 +244,9 @@ export const workspaceEditTool: RegisteredTool = {
     await atomicReplaceWorkspaceFile(context.workspaceRoot, prepared)
     const callDiff = hasUnifiedDiff
       ? unifiedInputDiffPreview(input.unifiedDiff)
-      : replacementsDiffPreview(prepared.path, input.replacements)
+      : hasLineEdits
+        ? lineEditsDiffPreview(prepared.path, input.lineEdits)
+        : replacementsDiffPreview(prepared.path, input.replacements)
     return {
       workspaceId: context.workspaceId,
       path: prepared.path,

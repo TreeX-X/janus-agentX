@@ -190,6 +190,16 @@ export async function runJanusAgentLoop(
       // R6-full：本轮注入过 steering 则强制续轮（steering 本身就是“继续干”的
       // 指令，不能让无工具分支直接 break，否则纠偏无人回答）。
       let steeredThisTurn = false
+      // C4：steering 消费收敛为单一出口——所有检查点（流后/工具间隙/轮尾）
+      // 都经 takeSteered 读取、发 steering_consumed、置位强制续轮标记；
+      // 条目落到哪个队列由调用点决定，exactly-once 语义集中在此处。
+      const takeSteered = (): SteeredEntry[] => {
+        const taken = config.steeringPort?.take() ?? []
+        if (taken.length === 0) return []
+        emit({ type: 'steering_consumed', keys: taken.map((entry) => entry.key) })
+        steeredThisTurn = true
+        return taken
+      }
       const context = config.transformContext
         ? await config.transformContext([...messages], signal)
         : [...messages]
@@ -211,10 +221,10 @@ export async function runJanusAgentLoop(
       // 半截调用配不到 tool 结果，进模型上下文会违反 provider
       // tool_use/tool_result 配对约束；其 tool_call_ready 卡片停在
       // requested，本轮 UI 状态，下轮重置），注入 steering，走无工具分支。
-      const steeredAfterStream = config.steeringPort?.take() ?? []
-      if (steeredAfterStream.length > 0) {
-        emit({ type: 'steering_consumed', keys: steeredAfterStream.map((entry) => entry.key) })
-        steeredThisTurn = true
+      // C4：父级 abort 同样走剥离路径——中断只弃当轮 stream，不弃已落历史
+      // （半截正文保留，未执行的半截 toolCalls 剥除，已执行结果不动）。
+      const steeredAfterStream = takeSteered()
+      if (steeredAfterStream.length > 0 || signal.aborted) {
         const keptText = streamed.message.content.trim()
         const keptMessage: JanusAgentMessage = { role: 'assistant', content: keptText }
         if (keptText) messages.push(keptMessage)
@@ -233,16 +243,10 @@ export async function runJanusAgentLoop(
           && await config.shouldStopAfterTurn({ turn, message: streamed.message, toolResults: [], messages: [...messages] }, signal)) break
         const followUp = config.getFollowUpMessages ? await config.getFollowUpMessages({ turn, messages: [...messages] }) : []
         // R6-full：tail awaits（shouldStop/followUp）期间到达的 steering 同样强制续轮。
-        if (config.steeringPort) {
-          const lateSteered = config.steeringPort.take()
-          if (lateSteered.length > 0) {
-            emit({ type: 'steering_consumed', keys: lateSteered.map((entry) => entry.key) })
-            steeredThisTurn = true
-            messages.push(...lateSteered.map((entry) => entry.message))
-          }
-        }
+        const lateSteered = takeSteered()
         if (followUp.length === 0 && !steeredThisTurn) break
         messages.push(...followUp)
+        if (lateSteered.length > 0) messages.push(...lateSteered.map((entry) => entry.message))
         continue
       }
 
@@ -254,11 +258,8 @@ export async function runJanusAgentLoop(
       // 只在串行间隙与并行批次后应用；已完成结果保留，未执行调用直接丢弃。
       const pendingInject: JanusAgentMessage[] = []
       const drainSteering = (): boolean => {
-        if (!config.steeringPort) return false
-        const injected = config.steeringPort.take()
+        const injected = takeSteered()
         if (injected.length === 0) return false
-        emit({ type: 'steering_consumed', keys: injected.map((entry) => entry.key) })
-        steeredThisTurn = true
         pendingInject.push(...injected.map((entry) => entry.message))
         return true
       }
@@ -325,10 +326,7 @@ export async function runJanusAgentLoop(
 
       // R6-full：轮尾检查点——覆盖 tail awaits（afterToolCall/shouldStop/
       // followUp）期间到达的 steering，与既有 getSteeringMessages 槽位合并。
-      const lateSteered = config.steeringPort?.take() ?? []
-      if (lateSteered.length > 0) {
-        emit({ type: 'steering_consumed', keys: lateSteered.map((entry) => entry.key) })
-      }
+      const lateSteered = takeSteered()
       const steering = [
         ...lateSteered.map((entry) => entry.message),
         ...(config.getSteeringMessages ? await config.getSteeringMessages({ turn, messages: [...messages] }) : []),

@@ -76,18 +76,19 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; query: string; path: string; maxResults: number }) => execute('workspace.search', input),
     },
     workspace_read: {
-      description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing.',
+      description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing; withLineAnchors:true also returns LINE#HASH anchors per line for lineEdits.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1).describe('Workspace-relative file path, e.g. src/notes/test.md'),
         offset: z.number().int().min(0).default(1).describe('1-indexed line number to start from (default 1).'),
         limit: z.number().int().min(1).max(2000).default(200).describe('Max lines to return (default 200, max 2000).'),
         maxBytes: z.number().int().min(1).max(256 * 1024).default(50 * 1024).describe('Max bytes of page content (default 51200). The byte cap wins over limit.'),
+        withLineAnchors: z.boolean().default(false).describe('Also return a LINE#HASH anchor per line (for workspace_edit lineEdits).'),
       }),
-      execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number }) => execute('workspace.read', input),
+      execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number; withLineAnchors?: boolean }) => execute('workspace.read', input),
     },
     workspace_edit: {
-      description: 'Edit one existing UTF-8 file with either exact, unambiguous replacements or a single-file unified diff. Requires the SHA-256 returned by workspace_read; the configured Agent permission mode controls approval.',
+      description: 'Edit one existing UTF-8 file with exact, unambiguous replacements, a single-file unified diff, or hash-anchored lineEdits. Requires the SHA-256 returned by workspace_read; the configured Agent permission mode controls approval. lineEdits use LINE#HASH anchors from workspace_read withLineAnchors:true and apply bottom-up; a stale anchor aborts the whole batch and returns fresh anchors to retry with.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1),
@@ -97,9 +98,14 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
           newText: z.string(),
         })).min(1).max(40).optional(),
         unifiedDiff: z.string().min(1).max(1024 * 1024).optional(),
+        lineEdits: z.array(z.object({
+          line: z.number().int().min(1).describe('1-indexed line number from the read.'),
+          anchor: z.string().regex(/^[a-f0-9]{8}$/i).describe("The line's anchor from workspace_read withLineAnchors (the 8 hex chars after LINE#)."),
+          newText: z.string().describe('Replacement for that line; may contain \\n to insert multiple lines.'),
+        })).min(1).max(40).optional(),
       }).superRefine((value, context) => {
-        if ((value.replacements === undefined) === (value.unifiedDiff === undefined)) {
-          context.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide exactly one of replacements or unifiedDiff' })
+        if (Number(value.replacements !== undefined) + Number(value.unifiedDiff !== undefined) + Number(value.lineEdits !== undefined) !== 1) {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide exactly one of replacements, unifiedDiff, or lineEdits' })
         }
       }),
       execute: (input: {
@@ -108,6 +114,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         expectedHash: string
         replacements?: Array<{ oldText: string; newText: string }>
         unifiedDiff?: string
+        lineEdits?: Array<{ line: number; anchor: string; newText: string }>
       }) => execute('workspace.edit', input),
     },
     workspace_create: {
@@ -302,6 +309,28 @@ function createEditPreview(path: string, value: unknown) {
   }
 }
 
+function createLineEditPreview(path: string, value: unknown) {
+  const edits = Array.isArray(value) ? value : []
+  const parts = edits.map((edit, index) => {
+    const item = edit && typeof edit === 'object'
+      ? edit as { line?: unknown; anchor?: unknown; newText?: unknown }
+      : {}
+    const line = typeof item.line === 'number' ? item.line : '?'
+    const newText = typeof item.newText === 'string' ? item.newText : ''
+    return [
+      `@@ line ${line} (${index + 1}/${edits.length}) @@`,
+      ...newText.split('\n').map((text) => `+${text}`),
+    ].join('\n')
+  })
+  const fullDetail = [`--- a/${path}`, `+++ b/${path}`, ...parts].join('\n')
+  return {
+    summary: `Edit ${path} with ${edits.length} hash-anchored line edit${edits.length === 1 ? '' : 's'}`,
+    paths: [path],
+    detail: fullDetail.slice(0, 4_000),
+    truncated: fullDetail.length > 4_000,
+  }
+}
+
 function createUnifiedDiffPreview(path: string, value: unknown) {
   const diff = typeof value === 'string' ? value : ''
   return {
@@ -396,9 +425,11 @@ function createCommandPreview(input: Record<string, unknown>) {
 export function createToolPreview(toolName: string, input: Record<string, unknown>) {
   const path = String(input.path ?? '')
   switch (toolName) {
-    case 'workspace.edit': return input.unifiedDiff === undefined
-      ? createEditPreview(path, input.replacements)
-      : createUnifiedDiffPreview(path, input.unifiedDiff)
+    case 'workspace.edit': return input.unifiedDiff !== undefined
+      ? createUnifiedDiffPreview(path, input.unifiedDiff)
+      : input.lineEdits !== undefined
+        ? createLineEditPreview(path, input.lineEdits)
+        : createEditPreview(path, input.replacements)
     case 'workspace.create': return createCreatePreview(path, String(input.content ?? ''))
     case 'workspace.delete': return createDeletePreview(path, input.recursive === true)
     case 'project.apply-config': return createConfigPreview(path, input.config)

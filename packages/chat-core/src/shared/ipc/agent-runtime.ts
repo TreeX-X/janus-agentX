@@ -27,8 +27,8 @@ export type ActionRisk =
   | 'delete'
   | 'external-command'
   | 'network'
-export type AgentApprovalMode = 'per-action' | 'auto-run'
-export type ApprovalPolicy = 'none' | 'per-action' | 'auto-run'
+export type AgentApprovalMode = 'per-action' | 'auto-run' | 'plan'
+export type ApprovalPolicy = 'none' | 'per-action' | 'auto-run' | 'plan'
 export type ApprovalDecision = 'not-required' | 'pending' | 'approved' | 'denied' | 'cancelled' | 'timed-out'
 export type PolicyOutcome = 'allow' | 'deny' | 'approval-required'
 export type PolicyReasonCode =
@@ -40,6 +40,7 @@ export type PolicyReasonCode =
   | 'APPROVAL_DENIED'
   | 'APPROVAL_CANCELLED'
   | 'APPROVAL_TIMED_OUT'
+  | 'PLAN_MODE_BLOCKED'
   | 'SENSITIVE_PATH'
   | 'ABSOLUTE_PATH'
   | 'PATH_TRAVERSAL'
@@ -186,7 +187,7 @@ export interface CreateAgentSessionInput { workspaceId: string; workspaceRoot: s
 export interface ExecuteToolInput { sessionId: string; call: ToolCall }
 
 export function normalizeAgentApprovalMode(value: unknown): AgentApprovalMode {
-  return value === 'auto-run' ? 'auto-run' : 'per-action'
+  return value === 'auto-run' || value === 'plan' ? value : 'per-action'
 }
 
 export interface AgentRuntimeAPI {

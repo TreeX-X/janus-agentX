@@ -11,7 +11,7 @@
 
 export type CliCommand = 'chat' | 'tui' | 'version' | 'help'
 
-export type ApprovalModeOption = 'auto-run' | 'per-action'
+export type ApprovalModeOption = 'auto-run' | 'per-action' | 'plan'
 
 export interface ChatOptions {
   workspace: string
@@ -145,9 +145,9 @@ function parseSharedFlag(
     }
     case '--approval-mode': {
       const value = takeValue()
-      if (value !== 'auto-run' && !(opts.allowPerActionApproval && value === 'per-action')) {
+      if (value !== 'auto-run' && value !== 'plan' && !(opts.allowPerActionApproval && value === 'per-action')) {
         return opts.allowPerActionApproval
-          ? `Invalid --approval-mode: ${value ?? '(missing)'}. Supported: auto-run, per-action`
+          ? `Invalid --approval-mode: ${value ?? '(missing)'}. Supported: auto-run, per-action, plan`
           : `Invalid --approval-mode: ${value ?? '(missing)'}. Only auto-run is supported headless`
       }
       shared.approvalMode = value
@@ -291,7 +291,7 @@ export function helpText(): string {
     '',
     '  janus [tui] [-C <dir>] [-m <id>] [-p <provider>] [--base-url <url>] [--api-key <key>]',
     '            [--config <path> | --no-config]',
-    '            [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run|per-action]',
+    '            [--max-turns <n>] [--timeout-ms <ms>] [--approval-mode auto-run|per-action|plan]',
     '            [--effort <none|minimal|low|medium|high|xhigh|max|ultra>]',
     '            [--conversation <id>] [--fullscreen] [--plain]',
     '      Resident interactive loop (default with no argv); human-readable streaming.',

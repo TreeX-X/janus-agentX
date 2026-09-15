@@ -14,9 +14,21 @@ import {
 
 export const MAX_WORKSPACE_EDIT_BYTES = 1024 * 1024
 export const MAX_WORKSPACE_REPLACEMENTS = 40
+export const MAX_WORKSPACE_LINE_EDITS = 40
 
 export interface WorkspaceExactReplacement {
   oldText: string
+  newText: string
+}
+
+// Note: pi-style hash-anchored line edits — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+// Each entry names one 1-indexed line with its LINE#HASH anchor from workspace.read
+// (withLineAnchors: `12#<8 hex>`). Edits apply bottom-up so earlier line numbers
+// stay valid while later lines shift; any anchor mismatch aborts the whole
+// batch (no partial writes) and the error carries fresh anchors for a one-round retry.
+export interface WorkspaceLineEdit {
+  line: number
+  anchor: string
   newText: string
 }
 
@@ -27,7 +39,7 @@ export interface PreparedWorkspaceEdit {
   previousContent: string
   nextContent: string
   replacements: number
-  editMode: 'replace_blocks' | 'unified_diff'
+  editMode: 'replace_blocks' | 'unified_diff' | 'line_edits'
 }
 
 export class WorkspaceEditConflictError extends Error {
@@ -263,6 +275,121 @@ function applyUnifiedDiff(content: string, requestedPath: string, diff: string):
   return { content: next, hunks: parsed.hunks.length }
 }
 
+export const LINE_ANCHOR_PATTERN = /^[a-f0-9]{8}$/i
+
+function lineAnchor(lines: string[], index: number): string {
+  return createHash('sha256').update(lines[index] ?? '').digest('hex').slice(0, 8)
+}
+
+/** pi parity: compact `line#hash` anchors for the lines a page exposes. */
+export function buildLineAnchors(pageContent: string, lineStart: number, count: number): string[] {
+  // `pageContent` covers exactly lines lineStart..lineEnd (the read tool passes
+  // the page slice, not the whole file). Same normalization as applyLineEdits
+  // (CRLF pages hand back \r-terminated lines) so a read anchor is verifiable
+  // by an edit one round later; a trailing empty line carries no anchor.
+  const lines = normalizeEditText(pageContent).split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  const effective = Math.max(0, Math.min(count, lines.length))
+  return Array.from({ length: effective }, (_, offset) =>
+    `${lineStart + offset}#${lineAnchor(lines, offset)}`)
+}
+
+/**
+ * Fresh anchors for the lines around a failed line-edit, returned inside the
+ * conflict error so the model can retry without re-reading (the file hash is
+ * unchanged — a failed batch never writes).
+ */
+export function freshAnchorsAround(content: string, line: number, radius = 2): string[] {
+  const lines = content.split('\n')
+  const total = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+  const from = Math.max(1, line - radius)
+  const to = Math.min(total, line + radius)
+  return Array.from({ length: Math.max(0, to - from + 1) }, (_, offset) => {
+    const index = from - 1 + offset
+    return `${from + offset}#${lineAnchor(lines, index)}`
+  })
+}
+
+interface ParsedLineEdit {
+  line: number
+  anchor: string
+  newText: string
+}
+
+function parseLineEdits(value: WorkspaceLineEdit[]): ParsedLineEdit[] {
+  if (value.length < 1 || value.length > MAX_WORKSPACE_LINE_EDITS) {
+    throw new Error(`workspace.edit requires between 1 and ${MAX_WORKSPACE_LINE_EDITS} lineEdits`)
+  }
+  return value.map((edit, index) => {
+    if (!edit || typeof edit !== 'object') throw new Error(`workspace.edit lineEdits[${index}] is invalid`)
+    if (!Number.isSafeInteger(edit.line) || edit.line < 1) {
+      throw new Error(`workspace.edit lineEdits[${index}].line must be a positive 1-indexed line number`)
+    }
+    if (typeof edit.anchor !== 'string' || !LINE_ANCHOR_PATTERN.test(edit.anchor)) {
+      throw new Error(`workspace.edit lineEdits[${index}].anchor must be the line's anchor from workspace.read (format: LINE#HASH, 8 hex chars)`)
+    }
+    if (typeof edit.newText !== 'string') {
+      throw new Error(`workspace.edit lineEdits[${index}].newText must be a string`)
+    }
+    if (Buffer.byteLength(edit.newText, 'utf-8') > MAX_WORKSPACE_EDIT_BYTES) {
+      throw new Error(`workspace.edit output exceeds ${MAX_WORKSPACE_EDIT_BYTES} bytes`)
+    }
+    return { line: edit.line, anchor: edit.anchor.toLowerCase(), newText: edit.newText }
+  })
+}
+
+/**
+ * Apply hash-anchored line edits bottom-up. Every anchor is verified against
+ * the current line before its replacement lands; the first mismatch aborts
+ * the whole batch (nothing written — the caller's prepare ran pre-checkpoint
+ * and the atomic replace re-verifies the file hash) and names the mismatched
+ * line plus fresh anchors around it. Duplicate lines are rejected rather than
+ * guessed. Multi-line `newText` splits on \n; the file keeps its dominant
+ * line-ending style exactly like exact replacements.
+ */
+function applyLineEdits(content: string, edits: WorkspaceLineEdit[]): { content: string; applied: number } {
+  const parsed = parseLineEdits(edits)
+  const duplicates = new Set<number>()
+  for (const edit of parsed) {
+    if (duplicates.has(edit.line)) {
+      throw new Error(`workspace.edit has two lineEdits for line ${edit.line}; merge them into one entry`)
+    }
+    duplicates.add(edit.line)
+  }
+  const fileEol = content.includes('\r\n') ? '\r\n' : '\n'
+  const normalized = normalizeEditText(content)
+  const lines = normalized.split('\n')
+  const total = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+  // Bottom-up: later lines apply first so earlier line numbers keep pointing
+  // at the same content while the array shifts under them.
+  const ordered = [...parsed].sort((left, right) => right.line - left.line)
+  for (const edit of ordered) {
+    if (edit.line > total) {
+      throw new WorkspaceEditConflictError(
+        `workspace.edit lineEdits target line ${edit.line} but the file has ${total} lines; re-read the file for current line numbers and anchors`,
+      )
+    }
+    const index = edit.line - 1
+    if (lineAnchor(lines, index) !== edit.anchor) {
+      const fresh = freshAnchorsAround(normalized, edit.line).join(', ')
+      throw new WorkspaceEditConflictError(
+        `workspace.edit lineEdits anchor mismatch at line ${edit.line}: the line changed since the read (expected ${edit.anchor}, found ${lineAnchor(lines, index)}). The whole batch was aborted and nothing was written. Fresh anchors: ${fresh}. Retry with an updated anchor for line ${edit.line}, or re-read the file if other lines also moved`,
+      )
+    }
+    lines.splice(index, 1, ...edit.newText.split('\n'))
+  }
+  const next = lines.join('\n')
+  if (next === content) throw new Error('workspace.edit does not change the file')
+  if (Buffer.byteLength(next) > MAX_WORKSPACE_EDIT_BYTES) {
+    throw new Error(`workspace.edit output exceeds ${MAX_WORKSPACE_EDIT_BYTES} bytes`)
+  }
+  const restored = fileEol === '\n' ? next : next.replace(/\n/g, '\r\n')
+  if (Buffer.byteLength(restored) > MAX_WORKSPACE_EDIT_BYTES) {
+    throw new Error(`workspace.edit output exceeds ${MAX_WORKSPACE_EDIT_BYTES} bytes`)
+  }
+  return { content: restored, applied: parsed.length }
+}
+
 async function prepareWorkspaceEditWithTransform(
   workspaceRoot: string,
   requestedPath: string,
@@ -327,6 +454,24 @@ export async function prepareWorkspaceUnifiedDiffEdit(
     (content, path) => {
       const result = applyUnifiedDiff(content, path, unifiedDiff)
       return { content: result.content, operations: result.hunks }
+    },
+  )
+}
+
+export async function prepareWorkspaceLineEdit(
+  workspaceRoot: string,
+  requestedPath: string,
+  expectedHash: string,
+  lineEdits: WorkspaceLineEdit[],
+): Promise<PreparedWorkspaceEdit> {
+  return prepareWorkspaceEditWithTransform(
+    workspaceRoot,
+    requestedPath,
+    expectedHash,
+    'line_edits',
+    (content) => {
+      const result = applyLineEdits(content, lineEdits)
+      return { content: result.content, operations: result.applied }
     },
   )
 }

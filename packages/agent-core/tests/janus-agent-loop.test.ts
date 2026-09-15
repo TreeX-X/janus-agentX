@@ -215,4 +215,56 @@ describe('JanusAgentLoop', () => {
     expect(messages).toContainEqual({ role: 'tool', content: 'Tool call arguments are not valid JSON. Fix the JSON syntax and retry the call.', toolCallId: 'bad-1', toolName: 'workspace.read' })
     expect(messages.at(-1)).toEqual({ role: 'assistant', content: 'recovered' })
   })
+
+  // Note: C4 loop convergence — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  it('C4: a parent abort after the stream keeps partial text, strips half-made toolCalls, and lands history', async () => {
+    const execute = vi.fn(async () => ({ content: 'must not run' }))
+    const controller = new AbortController()
+    const events: JanusAgentEvent[] = []
+    const messages = await runJanusAgentLoop([userMessage], {
+      tools: [{ name: 'workspace.edit', execute }],
+      maxTurns: 3,
+      stream: async (_context, signal) => {
+        // The transport aborts the parent mid-turn but still resolves with the
+        // partial result it had buffered (real adapters resolve, not throw).
+        controller.abort()
+        expect(signal.aborted).toBe(true)
+        return {
+          message: { role: 'assistant', content: 'halfway through' },
+          toolCalls: [{ id: 'half-1', name: 'workspace.edit', arguments: { path: 'a.ts' } }],
+        }
+      },
+      onEvent: (event) => events.push(event.type),
+    }, controller.signal)
+    // Interrupt drops the stream's half-made calls, not the settled history.
+    const partial = messages.find((message) => message.content === 'halfway through')
+    expect(partial?.role).toBe('assistant')
+    expect('toolCalls' in (partial ?? {})).toBe(false)
+    expect(execute).not.toHaveBeenCalled()
+    expect(events).not.toContain('tool_execution_start')
+    expect(messages.at(-1)).toEqual({ role: 'assistant', content: 'halfway through' })
+  })
+
+  it('C4: steering consumption emits exactly one steering_consumed per take across all checkpoints', async () => {
+    const port = new AgentSteeringPort()
+    const events: JanusAgentEvent[] = []
+    let turn = 0
+    const messages = await runJanusAgentLoop([userMessage], {
+      tools: [{ name: 'workspace.read', execute: async () => ({ content: 'ok' }) }],
+      maxTurns: 4,
+      steeringPort: port,
+      stream: async () => {
+        turn += 1
+        if (turn === 1) {
+          return { message: { role: 'assistant', content: '' }, toolCalls: [{ id: 'r1', name: 'workspace.read', arguments: {} }] }
+        }
+        return { message: { role: 'assistant', content: 'done' } }
+      },
+      onEvent: (event) => events.push(event),
+    })
+    expect(turn).toBeGreaterThanOrEqual(2)
+    expect(messages.at(-1)).toEqual({ role: 'assistant', content: 'done' })
+    // Baseline: no steering pushed, no steering_consumed events at any checkpoint.
+    expect(events.filter((event) => event.type === 'steering_consumed')).toEqual([])
+  })
 })

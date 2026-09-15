@@ -1084,7 +1084,9 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
                 type: 'info',
                 text: mode === 'per-action'
                   ? 'approval: per-action (each write/create asks Confirm/Cancel)'
-                  : 'approval: auto-run',
+                  : mode === 'plan'
+                    ? 'approval: plan (read-only tier — mutations denied; explore and propose)'
+                    : 'approval: auto-run',
               })
               setOverlay(null)
               refreshContext()

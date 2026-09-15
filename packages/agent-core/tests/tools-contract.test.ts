@@ -63,6 +63,21 @@ describe('model tool-name contract', () => {
     expect(createToolPreview('workspace.read', { path: 'a.ts' })).toBeUndefined()
   })
 
+  it('builds a bounded lineEdits preview naming lines and count', () => {
+    const preview = createToolPreview('workspace.edit', {
+      path: 'a.ts',
+      lineEdits: [
+        { line: 3, anchor: 'aabbccdd', newText: 'one line' },
+        { line: 9, anchor: '11223344', newText: 'two\nlines' },
+      ],
+    })
+    expect(preview?.summary).toBe('Edit a.ts with 2 hash-anchored line edits')
+    expect(preview?.paths).toEqual(['a.ts'])
+    expect(preview?.detail).toContain('@@ line 3 (1/2) @@')
+    expect(preview?.detail).toContain('@@ line 9 (2/2) @@')
+    expect((preview?.detail?.length ?? 0)).toBeLessThanOrEqual(4_000)
+  })
+
   it('builds a bounded delete preview naming the target and scope', () => {
     const preview = createToolPreview('workspace.delete', { path: 'old/', recursive: true })
     expect(preview?.summary).toBe('Delete old/ (recursive)')

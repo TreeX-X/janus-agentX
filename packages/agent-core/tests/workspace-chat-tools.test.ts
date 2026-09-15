@@ -40,6 +40,28 @@ describe('workspace chat tools', () => {
 
     expect(tools.workspace_read.description).toBe(toolManifests[0].description)
     expect(tools.workspace_edit.description).toContain('exact, unambiguous replacements')
+    expect(tools.workspace_edit.description).toContain('lineEdits')
+  })
+
+  it('accepts exactly one edit mode in the workspace_edit schema, including lineEdits', () => {
+    const tools = createWorkspaceChatTools({
+      runtime: { executeFunctionCall: vi.fn() },
+      resources,
+      callerId: 'renderer:7',
+    })
+    const schema = tools.workspace_edit.parameters as { safeParse: (input: unknown) => { success: boolean } }
+    const hash = 'a'.repeat(64)
+    const lineEdits = [{ line: 3, anchor: 'aabbccdd', newText: 'next' }]
+    const replacements = [{ oldText: 'old', newText: 'new' }]
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash, lineEdits }).success).toBe(true)
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash, replacements }).success).toBe(true)
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash, unifiedDiff: '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n' }).success).toBe(true)
+    // None or several of the three modes is rejected.
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash }).success).toBe(false)
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash, lineEdits, replacements }).success).toBe(false)
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash, lineEdits, unifiedDiff: 'x' }).success).toBe(false)
+    // Anchor format is enforced (8 hex).
+    expect(schema.safeParse({ workspaceId: 'workspace-1', path: 'a.ts', expectedHash: hash, lineEdits: [{ line: 3, anchor: 'nothex', newText: 'x' }] }).success).toBe(false)
   })
 
   it('routes each call through the explicitly requested trusted workspace session', async () => {

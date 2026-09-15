@@ -98,7 +98,12 @@ export class WorkspaceAgentRuntime {
     }
     let policyRecord = await this.recordPolicyDecision(session, correlationId, tool.name, executionInput, policyDecision)
     if (policyDecision.outcome === 'deny') {
-      const result = this.result(session, tool.name, correlationId, 'failed', undefined, 'Tool denied by workspace policy', undefined, undefined, policyDecision.reasonCode, policyRecord)
+      // Plan mode is a read-only tier, not a fault: tell the model to stop the
+      // action and explain instead of retrying (a retry can never succeed).
+      const deniedMessage = policyDecision.reasonCode === 'PLAN_MODE_BLOCKED'
+        ? 'Tool denied by plan mode (read-only): this session may explore and analyze but not mutate the workspace. Stop this action and explain the proposed change; the user switches the approval mode to run it'
+        : 'Tool denied by workspace policy'
+      const result = this.result(session, tool.name, correlationId, 'failed', undefined, deniedMessage, undefined, undefined, policyDecision.reasonCode, policyRecord)
       this.emit({ type: 'tool-failed', result })
       return result
     }

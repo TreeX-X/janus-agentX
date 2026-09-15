@@ -134,6 +134,38 @@ describe('WorkspaceAgentRuntime', () => {
     expect(execute).toHaveBeenCalledTimes(1)
   })
 
+  // Note: permission-tier plan mode — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  it('denies mutations in plan mode without executing, keeps reads working, and explains the tier', async () => {
+    const execute = vi.fn(async () => 'side effect')
+    const runtime = new WorkspaceAgentRuntime(async () => process.cwd())
+    const { name: _echoName, ...peekDefinition } = echoTool(execute)
+    runtime.registry.register({ ...echoTool(execute), actionRisk: 'write' })
+    // Same shape under a second name so one registry holds both a write and a read tool.
+    runtime.registry.register({ ...peekDefinition, actionRisk: 'read', name: 'workspace.peek' })
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: process.cwd(), approvalMode: 'plan' })
+    expect(session.approvalMode).toBe('plan')
+
+    const denied = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.echo', input: { text: 'write' }, preview: { summary: 'write', paths: ['file.txt'], truncated: false } },
+    })
+    expect(denied).toMatchObject({ status: 'failed', reasonCode: 'PLAN_MODE_BLOCKED' })
+    expect(denied.error).toContain('plan mode (read-only)')
+    expect(execute).not.toHaveBeenCalled()
+
+    const read = await runtime.executeTool({ sessionId: session.id, call: { toolName: 'workspace.peek', input: { text: 'read' } } })
+    expect(read).toMatchObject({ status: 'completed', reasonCode: 'READ_ALLOWED' })
+
+    // Switching out of plan mode unblocks the same call (the session survives).
+    expect(runtime.setApprovalMode(session.id, 'auto-run')).toMatchObject({ approvalMode: 'auto-run' })
+    const allowed = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.echo', input: { text: 'write' }, preview: { summary: 'write', paths: ['file.txt'], truncated: false } },
+    })
+    expect(allowed).toMatchObject({ status: 'completed' })
+    expect(execute).toHaveBeenCalledTimes(2)
+  })
+
   it('supports synchronous approval without exposing execution input to listeners', async () => {
     const execute = vi.fn(async (input) => input)
     const runtime = new WorkspaceAgentRuntime(async () => process.cwd())

@@ -210,15 +210,20 @@ export async function executeCommand(
           `approval: ${mode}`,
           '  auto-run — tools run immediately',
           '  per-action — each write/create asks Confirm/Cancel',
+          '  plan — read-only tier: mutations are denied; explore and propose changes',
           'switch with /approval <mode>',
         ].join('\n')])
       }
       const mode = args[0].toLowerCase()
-      if (mode !== 'auto-run' && mode !== 'per-action') return continued([], ['usage: /approval [auto-run|per-action]'])
+      if (mode !== 'auto-run' && mode !== 'per-action' && mode !== 'plan') {
+        return continued([], ['usage: /approval [auto-run|per-action|plan]'])
+      }
       session.setApprovalMode(mode as ApprovalModeOption)
       return continued([mode === 'per-action'
         ? 'approval: per-action (each write/create asks Confirm/Cancel)'
-        : 'approval: auto-run'])
+        : mode === 'plan'
+          ? 'approval: plan (read-only tier — mutations denied; explore and propose, switch modes to apply)'
+          : 'approval: auto-run'])
     }
     default:
       return continued([], [`unknown command: /${command} (type /help)`])
