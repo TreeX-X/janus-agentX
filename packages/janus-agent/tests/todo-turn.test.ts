@@ -122,7 +122,7 @@ describe('todo_write loop tool', () => {
     expect(todoMessages).toHaveLength(1)
   })
 
-  it('injects a one-shot resume nudge when the turn ends with open todos', async () => {
+  it('injects a continuous resume nudge while open todos remain', async () => {
     const seen: unknown[] = []
     const chatSession = new ChatSessionRuntime()
     chatSession.setTodos([
@@ -139,13 +139,16 @@ describe('todo_write loop tool', () => {
       { requestId: 'todo-4', messages: [{ role: 'user', content: 'continue' }], providerId: 'p', chatSession },
       ports,
     )
-    // Text-only round ends with open todos: the loop re-enters once with the
-    // follow-up nudge, so the stream runs exactly two rounds.
-    expect(seen).toHaveLength(2)
-    const second = (seen[1] as { messages: Array<{ role: string; content: string }> }).messages
-    const nudge = second.find((m) => m.role === 'system' && m.content.includes('ended without a tool call'))
-    expect(nudge?.content).toContain('state the concrete blocker')
-    expect(nudge?.content).toContain('2 item(s)')
+    // Note: continuous execution — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
+    // Text-only rounds with open todos re-nudge every round, so the stream
+    // runs to the maxTurns bound (3 in this stub), not just one extra round.
+    expect(seen).toHaveLength(3)
+    for (const round of seen.slice(1)) {
+      const messages = (round as { messages: Array<{ role: string; content: string }> }).messages
+      const nudge = messages.find((m) => m.role === 'system' && m.content.includes('ended without a tool call'))
+      expect(nudge?.content).toContain('state the concrete blocker')
+      expect(nudge?.content).toContain('2 item(s)')
+    }
   })
 
   it('does not nudge when every todo is closed', async () => {
@@ -163,5 +166,62 @@ describe('todo_write loop tool', () => {
       ports,
     )
     expect(seen).toHaveLength(1)
+  })
+
+  it('does not nudge when remaining todos are only cancelled', async () => {
+    const seen: unknown[] = []
+    const chatSession = new ChatSessionRuntime()
+    chatSession.setTodos([
+      { content: 'Done deal', status: 'completed' },
+      { content: 'Dropped', status: 'cancelled' },
+    ])
+    const ports = stubPorts({
+      streamTextFn: async (options) => {
+        seen.push(options)
+        return { textStream: (async function* () { yield 'ok' })() }
+      },
+    })
+    await runChatTurn(
+      { requestId: 'todo-6', messages: [{ role: 'user', content: 'continue' }], providerId: 'p', chatSession },
+      ports,
+    )
+    expect(seen).toHaveLength(1)
+  })
+
+  it('stops nudging once the model closes the list mid-turn', async () => {
+    const seen: unknown[] = []
+    const chatSession = new ChatSessionRuntime()
+    chatSession.setTodos([{ content: 'Resumable', status: 'in_progress' }])
+    const ports = stubPorts({
+      streamTextFn: (() => {
+        let n = 0
+        return async (options: unknown) => {
+          seen.push(options)
+          n += 1
+          if (n === 1) {
+            return {
+              fullStream: (async function* () {
+                yield {
+                  type: 'tool-call',
+                  toolCallId: 't-close',
+                  toolName: 'todo_write',
+                  args: { todos: [{ content: 'Resumable', status: 'completed' }] },
+                }
+                yield { type: 'finish', finishReason: 'tool-calls' }
+              })(),
+              textStream: (async function* () { })(),
+            }
+          }
+          return { textStream: (async function* () { yield 'done' })() }
+        }
+      })(),
+    })
+    await runChatTurn(
+      { requestId: 'todo-7', messages: [{ role: 'user', content: 'continue' }], providerId: 'p', chatSession },
+      ports,
+    )
+    // First round closes the list via todo_write; the following pure-text
+    // round finds no open items, so no nudge round follows.
+    expect(seen).toHaveLength(2)
   })
 })

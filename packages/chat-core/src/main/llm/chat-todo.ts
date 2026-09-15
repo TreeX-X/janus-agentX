@@ -117,8 +117,10 @@ export interface TodoSummary {
 export function summarizeTodos(todos: readonly ChatTodoItem[]): TodoSummary {
   const total = todos.length
   const done = todos.filter((todo) => todo.status === 'completed').length
+  // Note: open excludes cancelled so the sticky bar matches hasOpenTodos — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
+  const open = todos.filter((todo) => todo.status === 'pending' || todo.status === 'in_progress').length
   const current = todos.find((todo) => todo.status === 'in_progress')?.content
-  return { total, done, open: total - done, ...(current !== undefined ? { current } : {}) }
+  return { total, done, open, ...(current !== undefined ? { current } : {}) }
 }
 
 /** Sticky visibility rule (mirrors opencode sidebar): hide when empty or all done. */

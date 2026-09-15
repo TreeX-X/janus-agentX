@@ -72,6 +72,19 @@ describe('sticky helpers', () => {
     expect(summarizeTodos(todos)).toMatchObject({ total: 3, done: 1, open: 2, current: 'B' })
   })
 
+  it('excludes cancelled items from the open count', () => {
+    // Note: open口径与 hasOpenTodos 一致 — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
+    expect(summarizeTodos([
+      { content: 'A', status: 'completed' as const },
+      { content: 'B', status: 'cancelled' as const },
+    ])).toMatchObject({ total: 2, done: 1, open: 0 })
+    expect(summarizeTodos([
+      { content: 'A', status: 'completed' as const },
+      { content: 'B', status: 'cancelled' as const },
+      { content: 'C', status: 'pending' as const },
+    ])).toMatchObject({ total: 3, done: 1, open: 1 })
+  })
+
   it('hides the bar when empty or fully done', () => {
     expect(hasOpenTodos([])).toBe(false)
     expect(hasOpenTodos([{ content: 'A', status: 'completed' }])).toBe(false)

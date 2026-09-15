@@ -244,9 +244,9 @@ export async function runChatTurn(
 
   const userRequestedMutation = hasExplicitWorkspaceMutationIntent(latestUserQuery(promptMessages))
   let recoveryIssued = false
-  // One-shot resume nudge: fires once per turn when the loop ends a round
-  // without tool calls while the todo plan still has open items.
-  let todoResumeIssued = false
+  // Todo resume nudge is continuous (not one-shot): every no-tool-call round
+  // with open items re-injects the prompt. Upper bound is CHAT_MAX_STEPS via
+  // maxTurns; a concrete blocker statement is the legitimate exit.
   // One-shot failure-repair nudge: fires once per turn when the loop ends a
   // round without tool calls while fixable tool errors are still unaddressed.
   // Denied/cancelled outcomes are excluded — retrying those burns turns.
@@ -381,14 +381,15 @@ export async function runChatTurn(
           content: workspaceRecoveryPrompt(userRequestedMutation && !mutationAttempted),
         })
       }
-      // Todo resume nudge: same one-shot guard pattern as the recovery prompt.
-      // The loop only consults follow-ups on no-tool-call rounds, so this costs
-      // at most one extra model round per turn.
+      // Note: todo list drives continuous execution — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
+      // Continuous resume nudge: the loop only consults follow-ups on
+      // no-tool-call rounds, so each pure-text round with open items costs
+      // one more model round until a tool call, a blocker statement, or
+      // maxTurns. Closed lists (completed/cancelled only) never nudge.
       const openTodos = chatSession.getTodos().filter(
         (todo) => todo.status === 'pending' || todo.status === 'in_progress',
       )
-      if (!todoResumeIssued && openTodos.length > 0) {
-        todoResumeIssued = true
+      if (openTodos.length > 0) {
         followUps.push({ role: 'system', content: todoResumePrompt(openTodos.length) })
       }
       // Note: failure-repair nudge — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
