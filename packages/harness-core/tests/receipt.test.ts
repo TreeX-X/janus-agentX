@@ -1,0 +1,78 @@
+/** Receipt shape and effective validity (C4, F06 subset). */
+import { describe, expect, it } from 'vitest';
+import { coverageRatio, codeKey, evaluateReceipt, validateReceiptShape, type Receipt } from '../src/index.js';
+
+const R = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
+const CONTRACT = '73e315502bb2e0678461ba859f4d16d73c101bdd55d2c167ecbee36eae1b8ae6';
+const TASK = `note://${R}/55555555-5555-4555-8555-555555555555`;
+const REQ = `note://${R}/33333333-3333-4333-8333-333333333333`;
+
+function receipt(over: Partial<Receipt> = {}): Receipt {
+  return {
+    schema: 'harness-receipt/1',
+    id: 'r1',
+    taskUri: TASK,
+    mode: 'xdo',
+    attempt: 1,
+    taskContractHash: CONTRACT,
+    inputs: [{ uri: REQ, contentHash: 'a'.repeat(64), criteria: ['AC-1'] }],
+    codeManifest: [{ repoId: R, path: 'src/a.ts', sha256: 'b'.repeat(64) }],
+    checks: [{ id: 'V-1', kind: 'command', required: true, status: 'passed', repoId: R, exitCode: 0, summary: 'ok', performedBy: 'cli' }],
+    coverage: [{ uri: REQ, criterionId: 'AC-1', criterionHash: 'c'.repeat(64), checkIds: ['V-1'] }],
+    review: { kind: 'self', verdict: 'approved', reviewedManifestHash: 'd'.repeat(64), actor: 'cli' },
+    createdAt: '2026-09-16T00:00:00Z',
+    actor: 'cli',
+    ...over,
+  };
+}
+
+const liveCtx = () => ({
+  taskContractHash: CONTRACT,
+  inputHashes: new Map([[REQ, 'a'.repeat(64)]]),
+  criterionHashes: new Map([[REQ, new Map([['AC-1', 'c'.repeat(64)]])]]),
+  codeHashes: new Map([[codeKey(R, 'src/a.ts'), 'b'.repeat(64)]]),
+  implementor: 'cli',
+});
+
+describe('receipt', () => {
+  it('accepts a well-formed receipt', () => {
+    expect(validateReceiptShape(receipt())).toEqual([]);
+    expect(evaluateReceipt(receipt(), liveCtx())).toEqual([]);
+  });
+  it('rejects xflow self-review as a stand-in for independent review', () => {
+    const r = receipt({ mode: 'xflow' });
+    expect(validateReceiptShape(r).some((d) => d.code === 'SCHEMA_INVALID')).toBe(true);
+    const indep = receipt({
+      mode: 'xflow',
+      review: { kind: 'independent', verdict: 'approved', reviewedManifestHash: 'd'.repeat(64), actor: 'reviewer' },
+    });
+    expect(validateReceiptShape(indep)).toEqual([]);
+    expect(evaluateReceipt(indep, { ...liveCtx(), implementor: 'builder' })).toEqual([]);
+  });
+  it('expires on contract, input, criterion, or code drift', () => {
+    expect(
+      evaluateReceipt(receipt(), { ...liveCtx(), taskContractHash: '0'.repeat(64) }).some(
+        (d) => d.code === 'STALE_BASELINE',
+      ),
+    ).toBe(true);
+    expect(
+      evaluateReceipt(receipt(), { ...liveCtx(), inputHashes: new Map([[REQ, 'f'.repeat(64)]]) }).some(
+        (d) => d.code === 'STALE_BASELINE',
+      ),
+    ).toBe(true);
+    expect(
+      evaluateReceipt(receipt(), {
+        ...liveCtx(),
+        codeHashes: new Map([[codeKey(R, 'src/a.ts'), '9'.repeat(64)]]),
+      }).some((d) => d.code === 'STALE_BASELINE'),
+    ).toBe(true);
+    const failed = receipt({
+      checks: [{ id: 'V-1', kind: 'command', required: true, status: 'failed', repoId: R, exitCode: 1, summary: 'no', performedBy: 'cli' }],
+    });
+    expect(evaluateReceipt(failed, liveCtx()).some((d) => d.code === 'NOT_READY')).toBe(true);
+  });
+  it('never averages an empty required set to complete', () => {
+    expect(coverageRatio(0, 0)).toBeUndefined();
+    expect(coverageRatio(1, 2)).toBe(0.5);
+  });
+});
