@@ -1,11 +1,13 @@
 import { searchWorkspace } from './workspace-search'
 import { readdir, readFile, stat } from 'fs/promises'
+import { spawn } from 'node:child_process'
 import { isUtf8 } from 'node:buffer'
 import { dirname, join, resolve } from 'path'
 import { resolveWorkspaceTarget } from '../path-guard'
 import { evaluateWorkspaceReadPolicy, isSensitivePath, redactHighConfidenceSecrets } from '../policy-gate'
 import type { RegisteredTool, ToolRegistry } from '../registry'
-import { isTextBuffer, janusWorkspaceFs, DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LINES, MAX_PAGE_LINES } from '../../environment/janus-workspace-fs'
+import { isTextBuffer, janusWorkspaceFs, MAX_PAGE_BYTES, MAX_PAGE_LINES } from '../../environment/janus-workspace-fs'
+import { MAX_OUTPUT_TOKEN_BUDGET, estimateOutputTokens, fitItemsToBudget, parseOutputTokenBudget } from './output-budget'
 import { checkpointManager } from '../../checkpoint/checkpoint-manager'
 import {
   atomicReplaceWorkspaceFile,
@@ -22,10 +24,10 @@ import {
   type WorkspaceLineEdit,
 } from '../file-transaction'
 
-const MAX_MAX_BYTES = 1024 * 1024
 const DEFAULT_DEPTH = 2
 const MAX_DEPTH = 4
 const DEFAULT_MAX_ENTRIES = 200
+const DEFAULT_OVERVIEW_MAX_ENTRIES = 300
 const MAX_MAX_ENTRIES = 1000
 const registeredRegistries = new WeakSet<ToolRegistry>()
 
@@ -105,9 +107,10 @@ function lineEditsDiffPreview(path: string, value: unknown): CallDiffPreview | u
 }
 
 // Note: line-paged reads keep large-file evidence reachable without re-reading the head — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
+// Note: adaptive pages, token budgets, and search-carried hashes cut diagnostic round trips — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
-  description: 'Read one UTF-8 text file as line pages (default 200 lines or 16KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits; withLineAnchors:true also returns a LINE#HASH anchor per line for hash-anchored lineEdits in workspace.edit.',
+  description: 'Read one UTF-8 text file as line pages (files ≤100KB return whole from offset, larger files default 800 lines or 48KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits; withLineAnchors:true also returns a LINE#HASH anchor per line for hash-anchored lineEdits in workspace.edit. maxTokens optionally tightens the page further.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -115,8 +118,9 @@ export const workspaceReadTool: RegisteredTool = {
       workspaceId: { type: 'string', description: 'The exact workspaceId from the attached workspace list.' },
       path: { type: 'string', description: 'Workspace-relative file path, e.g. src/notes/test.md.' },
       offset: { type: 'number', description: '1-indexed line number to start from (default 1).' },
-      limit: { type: 'number', description: 'Max lines to return (default 200, max 2000).' },
-      maxBytes: { type: 'number', description: 'Max bytes of page content (default 16384, max 1048576). The byte cap wins over limit.' },
+      limit: { type: 'number', description: 'Max lines to return (default 800, max 2000; omitted with maxBytes on files ≤100KB returns whole).' },
+      maxBytes: { type: 'number', description: 'Max bytes of page content (default 49152, max 1048576). The byte cap wins over limit.' },
+      maxTokens: { type: 'number', description: `Optional output budget in tokens (1-${MAX_OUTPUT_TOKEN_BUDGET}); tighter than the page caps when given.` },
       withLineAnchors: { type: 'boolean', description: 'Also return a LINE#HASH anchor array for this page (for workspace.edit lineEdits).' },
     },
     required: ['workspaceId', 'path'],
@@ -126,8 +130,11 @@ export const workspaceReadTool: RegisteredTool = {
     const workspaceId = input.workspaceId
     const requestedPath = input.path
     const offset = input.offset ?? 1
-    const limit = input.limit ?? DEFAULT_PAGE_LINES
-    const maxBytes = input.maxBytes ?? DEFAULT_PAGE_BYTES
+    // Omitted caps resolve adaptively inside readWorkspaceTextPage (≤100KB
+    // returns whole); explicit values are validated there.
+    const limit = input.limit
+    const maxBytes = input.maxBytes
+    const maxTokens = parseOutputTokenBudget(input.maxTokens, 'workspace.read')
     const withLineAnchors = input.withLineAnchors ?? false
     if (typeof workspaceId !== 'string' || workspaceId !== context.workspaceId) {
       throw new Error('workspace.read workspaceId must match the active workspace resource')
@@ -137,11 +144,11 @@ export const workspaceReadTool: RegisteredTool = {
     if (!Number.isSafeInteger(offset) || Number(offset) < 0) {
       throw new Error('workspace.read offset must be a non-negative integer line number (1-indexed, 0 is accepted as line 1)')
     }
-    if (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > MAX_PAGE_LINES) {
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > MAX_PAGE_LINES)) {
       throw new Error(`workspace.read limit must be an integer between 1 and ${MAX_PAGE_LINES}`)
     }
-    if (!Number.isSafeInteger(maxBytes) || Number(maxBytes) < 1 || Number(maxBytes) > MAX_MAX_BYTES) {
-      throw new Error(`workspace.read maxBytes must be an integer between 1 and ${MAX_MAX_BYTES}`)
+    if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || Number(maxBytes) < 1 || Number(maxBytes) > MAX_PAGE_BYTES)) {
+      throw new Error(`workspace.read maxBytes must be an integer between 1 and ${MAX_PAGE_BYTES}`)
     }
     if (context.signal.aborted) throw new Error('workspace.read cancelled')
 
@@ -149,8 +156,8 @@ export const workspaceReadTool: RegisteredTool = {
       context.workspaceRoot,
       requestedPath,
       Number(offset),
-      Number(limit),
-      Number(maxBytes),
+      limit === undefined ? undefined : Number(limit),
+      maxBytes === undefined ? undefined : Number(maxBytes),
       evaluateWorkspaceReadPolicy,
     )
     if (!read.ok) throw read.error
@@ -159,16 +166,35 @@ export const workspaceReadTool: RegisteredTool = {
 
     // sha256 is always computed from disk content: edits to unmasked regions
     // still match, and only the masked credential itself becomes uneditable.
-    const { text, redacted } = redactHighConfidenceSecrets(page.content.toString('utf-8'))
-    const guidance = page.truncated
-      ? `Showing lines ${page.lineStart}-${page.lineEnd} of ${page.totalLines}. Use workspace_read with offset=${page.nextOffset} to continue.`
+    // The token budget applies before masking (masking can join lines), and
+    // anchors hash the same unmasked lines the model sees positions for.
+    const pageText = page.content.toString('utf-8')
+    let takenText = pageText
+    let budgetTruncated = false
+    let totalTokens: number | undefined
+    if (maxTokens !== undefined) {
+      totalTokens = estimateOutputTokens(pageText)
+      if (totalTokens > maxTokens) {
+        const fitted = fitItemsToBudget(pageText.split('\n'), (line) => line, maxTokens)
+        takenText = fitted.items.join('\n')
+        budgetTruncated = fitted.truncated || estimateOutputTokens(takenText) > maxTokens
+      }
+    }
+    const { text: content, redacted } = redactHighConfidenceSecrets(takenText)
+    const truncated = page.truncated || budgetTruncated
+    const lineEnd = page.lineStart + takenText.split('\n').length - 1
+    const guidance = truncated
+      ? page.truncated
+        ? `Showing lines ${page.lineStart}-${lineEnd} of ${page.totalLines}. Use workspace_read with offset=${lineEnd + 1} to continue.`
+        : `Showing ${takenText.split('\n').length} of ${page.lineEnd - page.lineStart + 1} page lines within maxTokens=${maxTokens} (${totalTokens} tokens total). Re-read with a larger maxTokens or a narrower offset/limit.`
       : undefined
     // Anchors cover the lines actually returned (after the byte cap may have
     // cut the page short) and hash the on-disk line, so redacted regions keep
     // a stable anchor even though their content cannot be edited.
     const lineAnchors = withLineAnchors
-      ? buildLineAnchors(page.content.toString('utf-8'), page.lineStart, page.lineEnd - page.lineStart + 1)
+      ? buildLineAnchors(takenText, page.lineStart, takenText.split('\n').length)
       : undefined
+    const estimatedTokens = estimateOutputTokens(content)
     return {
       workspaceId,
       path: requestedPath,
@@ -176,14 +202,16 @@ export const workspaceReadTool: RegisteredTool = {
       size: page.size,
       offset: page.lineStart,
       lineStart: page.lineStart,
-      lineEnd: page.lineEnd,
+      lineEnd,
       totalLines: page.totalLines,
-      bytes: page.bytes,
-      truncated: page.truncated,
-      ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }),
+      bytes: Buffer.byteLength(takenText, 'utf-8'),
+      truncated,
+      ...(truncated ? { nextOffset: lineEnd + 1 } : {}),
       ...(guidance === undefined ? {} : { guidance }),
       ...(lineAnchors === undefined ? {} : { lineAnchors }),
-      content: text,
+      ...(totalTokens === undefined ? {} : { totalTokens }),
+      estimatedTokens,
+      content,
       sha256: page.sha256,
       contentRedacted: redacted,
       ...(redacted ? {
@@ -195,7 +223,7 @@ export const workspaceReadTool: RegisteredTool = {
 
 export const workspaceEditTool: RegisteredTool = {
   name: 'workspace.edit',
-  description: 'Apply bounded exact replacements, one unified diff, or hash-anchored lineEdits to an existing workspace file after approval. lineEdits need the LINE#HASH anchors from workspace.read withLineAnchors:true and apply bottom-up; any anchor mismatch aborts the whole batch and returns fresh anchors.',
+  description: 'Apply bounded exact replacements, one unified diff, or hash-anchored lineEdits to an existing workspace file after approval. expectedHash accepts the SHA-256 from workspace.read or from a workspace.search content match when the file is unchanged, so a located fix needs no second read. lineEdits need the LINE#HASH anchors from workspace.read withLineAnchors:true and apply bottom-up; any anchor mismatch aborts the whole batch and returns fresh anchors.',
   actionRisk: 'write',
   inputSchema: {
     type: 'object',
@@ -309,11 +337,174 @@ export const workspaceCreateTool: RegisteredTool = {
   },
 }
 
-type WorkspaceListEntry = {
+export interface WorkspaceTreeEntry {
   path: string
   name: string
   type: 'file' | 'directory'
   depth: number
+  /** File bytes (directories report 0); lets the model skip oversized files before reading. */
+  size: number
+  /** Modification time in whole seconds; ordering signal, ties break alphabetically. */
+  mtime: number
+}
+
+/**
+ * Bounded tree walk shared by workspace.list and workspace.overview.
+ * Directories sort before files (navigation stays a tree); within each group
+ * recently modified entries sort first so active work surfaces without
+ * globals or extra calls. Symlinks never resolve: they are skipped before
+ * stat, so a raced path can at most leak a stale size, never content.
+ */
+async function walkWorkspaceTree(options: {
+  rootPath: string
+  baseRelative: string
+  depth: number
+  maxEntries: number
+  signal: AbortSignal
+  cancelMessage: string
+}): Promise<{ entries: WorkspaceTreeEntry[]; truncated: boolean }> {
+  const { rootPath, baseRelative, depth, maxEntries, signal, cancelMessage } = options
+  const entries: WorkspaceTreeEntry[] = []
+  let truncated = false
+
+  const walk = async (directoryPath: string, relativeDirectory: string, currentDepth: number): Promise<void> => {
+    if (currentDepth > depth || truncated) return
+    if (signal.aborted) throw new Error(cancelMessage)
+    const children = await readdir(directoryPath, { withFileTypes: true })
+    const visible: Array<{ name: string; childPath: string; isDirectory: boolean; size: number; mtimeMs: number }> = []
+    await Promise.all(children.map(async (child) => {
+      if (signal.aborted) throw new Error(cancelMessage)
+      if (child.isSymbolicLink()) return
+      if (!child.isDirectory() && !child.isFile()) return
+      const childPath = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name
+      if (isSensitivePath(childPath)) return
+      try {
+        const info = await stat(join(directoryPath, child.name))
+        visible.push({
+          name: child.name,
+          childPath,
+          isDirectory: child.isDirectory(),
+          size: child.isDirectory() ? 0 : info.size,
+          mtimeMs: info.mtimeMs,
+        })
+      } catch {
+        return
+      }
+    }))
+    visible.sort((left, right) => {
+      const leftDirectory = left.isDirectory ? 0 : 1
+      const rightDirectory = right.isDirectory ? 0 : 1
+      return leftDirectory - rightDirectory
+        || right.mtimeMs - left.mtimeMs
+        || left.name.localeCompare(right.name)
+    })
+    for (const child of visible) {
+      if (signal.aborted) throw new Error(cancelMessage)
+      entries.push({
+        path: child.childPath,
+        name: child.name,
+        type: child.isDirectory ? 'directory' : 'file',
+        depth: currentDepth,
+        size: child.size,
+        mtime: Math.floor(child.mtimeMs / 1000),
+      })
+      if (entries.length > maxEntries) {
+        truncated = true
+        entries.pop()
+        return
+      }
+      if (child.isDirectory && currentDepth < depth) {
+        await walk(join(directoryPath, child.name), child.childPath, currentDepth + 1)
+        if (truncated) return
+      }
+    }
+  }
+
+  await walk(rootPath, baseRelative, 1)
+  return { entries, truncated }
+}
+
+/** Best-effort git summary for workspace.overview; undefined outside a repo or on timeout. */
+async function readGitSummary(workspaceRoot: string): Promise<{
+  branch: string
+  head: string
+  staged: number
+  unstaged: number
+  untracked: number
+} | undefined> {
+  const runGit = (args: string[]): Promise<string | undefined> => new Promise((resolveGit) => {
+    let output = ''
+    let settled = false
+    const finish = (value: string | undefined) => {
+      if (settled) return
+      settled = true
+      resolveGit(value)
+    }
+    let child
+    try {
+      child = spawn('git', args, { cwd: workspaceRoot, windowsHide: true })
+    } catch {
+      finish(undefined)
+      return
+    }
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(undefined)
+    }, 10_000)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk
+    })
+    child.on('error', () => {
+      clearTimeout(timer)
+      finish(undefined)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      finish(code === 0 ? output : undefined)
+    })
+  })
+  const [branch, head, porcelain] = await Promise.all([
+    runGit(['rev-parse', '--abbrev-ref', 'HEAD']),
+    runGit(['rev-parse', 'HEAD']),
+    runGit(['status', '--porcelain=v1', '--no-renames', '--untracked-files=normal', '-z']),
+  ])
+  if (porcelain === undefined) return undefined
+  let staged = 0
+  let unstaged = 0
+  let untracked = 0
+  for (const record of porcelain.split('\0').filter(Boolean)) {
+    const indexState = record[0]
+    const worktreeState = record[1]
+    if (indexState === '?' && worktreeState === '?') untracked += 1
+    else {
+      if (indexState !== undefined && indexState !== ' ' && indexState !== '?') staged += 1
+      if (worktreeState !== undefined && worktreeState !== ' ' && worktreeState !== '?') unstaged += 1
+    }
+  }
+  return {
+    branch: branch?.trim() || 'unknown',
+    head: head?.trim() || 'unknown',
+    staged,
+    unstaged,
+    untracked,
+  }
+}
+
+function fitEntriesToBudget<T extends { path: string }>(
+  entries: T[],
+  maxTokens: number | undefined,
+): { entries: T[]; budgetTruncated: boolean; totalTokens?: number; totalEntries?: number } {
+  if (maxTokens === undefined) return { entries, budgetTruncated: false }
+  const totalTokens = estimateOutputTokens(JSON.stringify(entries))
+  if (totalTokens <= maxTokens) return { entries, budgetTruncated: false }
+  const fitted = fitItemsToBudget(entries, (entry) => JSON.stringify(entry), maxTokens)
+  return {
+    entries: fitted.items,
+    budgetTruncated: fitted.truncated || estimateOutputTokens(JSON.stringify(fitted.items)) > maxTokens,
+    totalTokens,
+    totalEntries: entries.length,
+  }
 }
 
 export const workspaceDeleteTool: RegisteredTool = {
@@ -381,7 +572,7 @@ export const workspaceDeleteTool: RegisteredTool = {
 
 export const workspaceListTool: RegisteredTool = {
   name: 'workspace.list',
-  description: 'List a bounded, non-sensitive file tree inside an explicitly selected workspace',
+  description: 'List a bounded, non-sensitive file tree inside an explicitly selected workspace. Entries carry sizes and modification times with recently modified paths first; prefer workspace.overview when the shape of the checkout is unknown.',
   actionRisk: 'list',
   inputSchema: {
     type: 'object',
@@ -390,6 +581,7 @@ export const workspaceListTool: RegisteredTool = {
       path: { type: 'string' },
       depth: { type: 'number' },
       maxEntries: { type: 'number' },
+      maxTokens: { type: 'number', description: `Optional output budget in tokens (1-${MAX_OUTPUT_TOKEN_BUDGET}).` },
     },
     required: ['workspaceId'],
     additionalProperties: false,
@@ -399,6 +591,7 @@ export const workspaceListTool: RegisteredTool = {
     const requestedPath = input.path ?? ''
     const depth = input.depth ?? DEFAULT_DEPTH
     const maxEntries = input.maxEntries ?? DEFAULT_MAX_ENTRIES
+    const maxTokens = parseOutputTokenBudget(input.maxTokens, 'workspace.list')
     if (typeof workspaceId !== 'string' || workspaceId !== context.workspaceId) {
       throw new Error('workspace.list workspaceId must match the active workspace resource')
     }
@@ -414,56 +607,106 @@ export const workspaceListTool: RegisteredTool = {
     const target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
     if (target.kind !== 'directory') throw new Error('workspace.list path must be a directory')
     const rootPath = resolve(context.workspaceRoot, target.relativePath || '.')
-    const entries: WorkspaceListEntry[] = []
-    let truncated = false
-
-    const walk = async (directoryPath: string, relativeDirectory: string, currentDepth: number): Promise<void> => {
-      if (currentDepth > depth || truncated) return
-      if (context.signal.aborted) throw new Error('workspace.list cancelled')
-      const children = await readdir(directoryPath, { withFileTypes: true })
-      children.sort((left, right) => {
-        const leftDirectory = left.isDirectory() ? 0 : 1
-        const rightDirectory = right.isDirectory() ? 0 : 1
-        return leftDirectory - rightDirectory || left.name.localeCompare(right.name)
-      })
-      for (const child of children) {
-        if (context.signal.aborted) throw new Error('workspace.list cancelled')
-        if (child.isSymbolicLink()) continue
-        if (!child.isDirectory() && !child.isFile()) continue
-        const childPath = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name
-        if (isSensitivePath(childPath)) continue
-        entries.push({
-          path: childPath,
-          name: child.name,
-          type: child.isDirectory() ? 'directory' : 'file',
-          depth: currentDepth,
-        })
-        if (entries.length > maxEntries) {
-          truncated = true
-          entries.pop()
-          return
-        }
-        if (child.isDirectory() && currentDepth < depth) {
-          await walk(join(directoryPath, child.name), childPath, currentDepth + 1)
-          if (truncated) return
-        }
-      }
-    }
-
-    await walk(rootPath, target.relativePath, 1)
+    const { entries, truncated: walkTruncated } = await walkWorkspaceTree({
+      rootPath,
+      baseRelative: target.relativePath,
+      depth,
+      maxEntries,
+      signal: context.signal,
+      cancelMessage: 'workspace.list cancelled',
+    })
+    const fitted = fitEntriesToBudget(entries, maxTokens)
+    const truncated = walkTruncated || fitted.budgetTruncated
     return {
       workspaceId,
       path: target.relativePath,
       depth,
-      entries,
+      entries: fitted.entries,
       truncated,
+      ...(truncated && !walkTruncated
+        ? {
+          totalEntries: fitted.totalEntries,
+          totalTokens: fitted.totalTokens,
+          guidance: `Entries exceed maxTokens=${maxTokens} (${fitted.totalTokens} tokens over ${fitted.totalEntries} entries). Re-list with a larger maxTokens, a deeper path, or a smaller maxEntries.`,
+        }
+        : {}),
+      estimatedTokens: estimateOutputTokens(JSON.stringify(fitted.entries)),
+    }
+  },
+}
+
+export const workspaceOverviewTool: RegisteredTool = {
+  name: 'workspace.overview',
+  description: 'Read a shallow bounded tree of an explicitly selected workspace with file sizes, modification times, and a git working-tree summary. Start here when the checkout shape is unknown instead of looping workspace.list.',
+  actionRisk: 'list',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      workspaceId: { type: 'string' },
+      path: { type: 'string' },
+      depth: { type: 'number' },
+      maxEntries: { type: 'number' },
+      maxTokens: { type: 'number', description: `Optional output budget in tokens (1-${MAX_OUTPUT_TOKEN_BUDGET}).` },
+    },
+    required: ['workspaceId'],
+    additionalProperties: false,
+  },
+  execute: async (input, context) => {
+    const workspaceId = input.workspaceId
+    const requestedPath = input.path ?? ''
+    const depth = input.depth ?? DEFAULT_DEPTH
+    const maxEntries = input.maxEntries ?? DEFAULT_OVERVIEW_MAX_ENTRIES
+    const maxTokens = parseOutputTokenBudget(input.maxTokens, 'workspace.overview')
+    if (typeof workspaceId !== 'string' || workspaceId !== context.workspaceId) {
+      throw new Error('workspace.overview workspaceId must match the active workspace resource')
+    }
+    if (typeof requestedPath !== 'string') throw new Error('workspace.overview path must be a string')
+    if (typeof depth !== 'number' || !Number.isSafeInteger(depth) || depth < 0 || depth > MAX_DEPTH) {
+      throw new Error(`workspace.overview depth must be an integer between 0 and ${MAX_DEPTH}`)
+    }
+    if (typeof maxEntries !== 'number' || !Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > MAX_MAX_ENTRIES) {
+      throw new Error(`workspace.overview maxEntries must be an integer between 1 and ${MAX_MAX_ENTRIES}`)
+    }
+    if (context.signal.aborted) throw new Error('workspace.overview cancelled')
+
+    const target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
+    if (target.kind !== 'directory') throw new Error('workspace.overview path must be a directory')
+    const rootPath = resolve(context.workspaceRoot, target.relativePath || '.')
+    const [{ entries, truncated: walkTruncated }, git] = await Promise.all([
+      walkWorkspaceTree({
+        rootPath,
+        baseRelative: target.relativePath,
+        depth,
+        maxEntries,
+        signal: context.signal,
+        cancelMessage: 'workspace.overview cancelled',
+      }),
+      readGitSummary(context.workspaceRoot),
+    ])
+    const fitted = fitEntriesToBudget(entries, maxTokens)
+    const truncated = walkTruncated || fitted.budgetTruncated
+    return {
+      workspaceId,
+      path: target.relativePath,
+      depth,
+      entries: fitted.entries,
+      truncated,
+      ...(git === undefined ? {} : { git }),
+      ...(truncated && !walkTruncated
+        ? {
+          totalEntries: fitted.totalEntries,
+          totalTokens: fitted.totalTokens,
+          guidance: `Entries exceed maxTokens=${maxTokens} (${fitted.totalTokens} tokens over ${fitted.totalEntries} entries). Re-run with a larger maxTokens, a deeper path, or a smaller maxEntries.`,
+        }
+        : {}),
+      estimatedTokens: estimateOutputTokens(JSON.stringify(fitted.entries)),
     }
   },
 }
 
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Find code with bounded ignore-aware search. mode=files searches file paths; mode=content returns matching lines. Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
+  description: 'Find code with bounded ignore-aware search. mode=files searches file paths with recently modified files first; mode=content returns matching lines with ±2 context lines and the file SHA-256 (usable as workspace.edit expectedHash while unchanged). Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -471,6 +714,7 @@ export const workspaceSearchTool: RegisteredTool = {
       workspaceId: { type: 'string' }, query: { type: 'string' }, path: { type: 'string' },
       glob: { type: 'string' }, mode: { type: 'string', enum: ['content', 'files'] },
       regex: { type: 'boolean' }, caseSensitive: { type: 'boolean' }, maxResults: { type: 'number' },
+      maxTokens: { type: 'number', description: `Optional output budget in tokens (1-${MAX_OUTPUT_TOKEN_BUDGET}).` },
     },
     required: ['workspaceId'], additionalProperties: false,
   },
@@ -480,6 +724,7 @@ export const workspaceSearchTool: RegisteredTool = {
     const requestedPath = input.path ?? ''
     const mode = input.mode ?? 'content'
     const maxResults = input.maxResults ?? 30
+    const maxTokens = parseOutputTokenBudget(input.maxTokens, 'workspace.search')
     if (workspaceId !== context.workspaceId) throw new Error('workspace.search workspaceId must match the active workspace resource')
     if (mode !== 'content' && mode !== 'files') throw new Error('workspace.search mode must be content or files')
     if (typeof query !== 'string' || query.length > 256 || (mode === 'content' && !query.trim())) throw new Error('workspace.search query must be 1-256 characters for content search')
@@ -488,7 +733,7 @@ export const workspaceSearchTool: RegisteredTool = {
     for (const key of ['regex', 'caseSensitive']) {
       if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error(`workspace.search ${key} must be a boolean`)
     }
-    if (typeof maxResults !== 'number' || !Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 50) throw new Error('workspace.search maxResults must be an integer between 1 and 50')
+    if (typeof maxResults !== 'number' || !Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 100) throw new Error('workspace.search maxResults must be an integer between 1 and 100')
     if (context.signal.aborted) throw new Error('workspace.search cancelled')
     const target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
     if (isSensitivePath(target.relativePath)) throw new Error('Workspace search denied: sensitive path')
@@ -500,8 +745,29 @@ export const workspaceSearchTool: RegisteredTool = {
       glob: input.glob as string | undefined, regex: input.regex === true,
       caseSensitive: input.caseSensitive === true, signal: context.signal,
     })
+    const totalTokens = estimateOutputTokens(JSON.stringify(result.matches))
+    let matches = result.matches
+    let budgetTruncated = false
+    let totalResults: number | undefined
+    if (maxTokens !== undefined && totalTokens > maxTokens) {
+      const fitted = fitItemsToBudget(matches, (match) => JSON.stringify(match), maxTokens)
+      matches = fitted.items
+      budgetTruncated = fitted.truncated || estimateOutputTokens(JSON.stringify(fitted.items)) > maxTokens
+      totalResults = result.matches.length
+    }
+    const truncated = result.truncated || budgetTruncated
     return {
       workspaceId, query, path, ...result,
+      matches,
+      truncated,
+      ...(truncated && !result.truncated
+        ? {
+          totalResults,
+          totalTokens,
+          guidance: `Matches exceed maxTokens=${maxTokens} (${totalTokens} tokens over ${totalResults} matches). Re-search with a larger maxTokens or a narrower path/glob/query.`,
+        }
+        : {}),
+      estimatedTokens: estimateOutputTokens(JSON.stringify(matches)),
       ...(scopedFile ? { scopedFile, note: `path pointed to a file; the search was scoped to ${scopedFile}. ${result.note ?? ''}`.trim() } : {}),
     }
   },
@@ -511,6 +777,7 @@ export function registerWorkspaceTools(registry: ToolRegistry): void {
   if (registeredRegistries.has(registry)) return
   registry.register(workspaceReadTool)
   registry.register(workspaceListTool)
+  registry.register(workspaceOverviewTool)
   registry.register(workspaceEditTool)
   registry.register(workspaceCreateTool)
   registry.register(workspaceDeleteTool)

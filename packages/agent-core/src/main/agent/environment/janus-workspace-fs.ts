@@ -26,13 +26,19 @@ export interface WorkspaceContextOptions {
 const DEFAULT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.md', '.txt', '.yml', '.yaml', '.toml', '.css', '.html', '.xml'])
 const DEFAULT_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', 'build', 'release', 'coverage', '.cache'])
 
-// Note: line-paged reads keep the model on rails for large files — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
+// Note: adaptive page caps keep small-file evidence in one round trip — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
 /** Full-file ceiling for a paged read; the whole file is hashed for edit safety. */
 export const MAX_PAGED_READ_BYTES = 16 * 1024 * 1024
-/** Pages are bounded here; the context layer preserves their complete contents. */
-export const DEFAULT_PAGE_LINES = 200
+/**
+ * Default page when the caller passes no caps. Files at or below
+ * ADAPTIVE_FULL_FILE_BYTES return whole (bounded by the maxima instead), so
+ * a single default read covers an ordinary source file end to end.
+ */
+export const DEFAULT_PAGE_LINES = 800
 export const MAX_PAGE_LINES = 2000
-export const DEFAULT_PAGE_BYTES = 16 * 1024
+export const DEFAULT_PAGE_BYTES = 48 * 1024
+export const MAX_PAGE_BYTES = 1024 * 1024
+export const ADAPTIVE_FULL_FILE_BYTES = 100 * 1024
 
 export interface WorkspaceTextPage {
   content: Buffer
@@ -54,6 +60,38 @@ export function isTextBuffer(content: Buffer): boolean {
   return isUtf8(content) && !content.some((byte) =>
     byte === 0x7f || (byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d),
   )
+}
+
+/** Count LF bytes; safe on UTF-8 because 0x0A never appears inside a multibyte sequence. */
+function countNewlines(content: Buffer): number {
+  let count = 0
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === 0x0a) count += 1
+  }
+  return count
+}
+
+/**
+ * Byte range of 1-indexed lines [lineStart, lineEnd] without decoding the
+ * file. The walk stops at the first newline past the window (early stop);
+ * totalLines is counted separately by a cheap byte scan. An empty trailing
+ * segment after a final newline counts as a line, matching split('\n'), so
+ * slicing to EOF covers it.
+ */
+function sliceLineRange(content: Buffer, lineStart: number, lineEnd: number): Buffer {
+  let start = 0
+  let end = content.length
+  let line = 1
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] !== 0x0a) continue
+    if (line === lineEnd) {
+      end = index
+      break
+    }
+    line += 1
+    if (line === lineStart) start = index + 1
+  }
+  return content.subarray(start, end)
 }
 
 async function gitIgnoredPaths(root: string, paths: string[]): Promise<Set<string>> {
@@ -190,19 +228,19 @@ export class JanusWorkspaceFs {
     workspaceRoot: string,
     requestedPath: string,
     offset: number,
-    limit: number,
-    maxBytes: number,
+    limit: number | undefined,
+    maxBytes: number | undefined,
     authorize: WorkspaceReadAuthorizer,
   ): Promise<JanusResult<WorkspaceTextPage>> {
     try {
       if (!Number.isSafeInteger(offset) || offset < 0) {
         throw new WorkspacePathGuardError('INVALID_READ_LIMIT', 'Workspace file read offset is invalid')
       }
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_LINES) {
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_LINES)) {
         throw new Error(`workspace.read limit must be an integer between 1 and ${MAX_PAGE_LINES}`)
       }
-      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
-        throw new WorkspacePathGuardError('INVALID_READ_LIMIT', 'Workspace file read limit is invalid')
+      if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_PAGE_BYTES)) {
+        throw new Error(`workspace.read maxBytes must be an integer between 1 and ${MAX_PAGE_BYTES}`)
       }
       // offset 0 is the pre-line-pages default: forgive it as line 1 instead
       // of failing callers that never set the new 1-indexed base.
@@ -220,28 +258,38 @@ export class JanusWorkspaceFs {
         throw error
       }
       if (!isTextBuffer(buffer)) throw new Error('Workspace file is not UTF-8 text')
-      const text = buffer.toString('utf-8')
-      const lines = text.split('\n')
-      const totalLines = lines.length
+      // Small files return whole from the requested offset: one default call
+      // covers the file instead of burning a round trip per page. The hash
+      // still covers the full file, so the page stays edit-compatible.
+      const adaptive = limit === undefined && maxBytes === undefined && buffer.byteLength <= ADAPTIVE_FULL_FILE_BYTES
+      const effectiveLimit = adaptive ? MAX_PAGE_LINES : (limit ?? DEFAULT_PAGE_LINES)
+      const effectiveMaxBytes = adaptive ? MAX_PAGE_BYTES : (maxBytes ?? DEFAULT_PAGE_BYTES)
+      // Line scan stops at the window: only newline positions are counted over
+      // the full buffer (cheap byte scan, no string split), and only the
+      // window bytes are decoded. totalLines keeps the historical split('\n')
+      // shape (a trailing newline leaves a final empty segment).
+      const totalLines = buffer.byteLength === 0 ? 1 : countNewlines(buffer) + 1
       if (lineStart > totalLines) {
         throw new Error(`Offset ${lineStart} is beyond end of file (${totalLines} lines total)`)
       }
-      const endIdx = Math.min(lineStart - 1 + limit, totalLines)
-      const selected = lines.slice(lineStart - 1, endIdx)
+      const windowEnd = Math.min(lineStart - 1 + effectiveLimit, totalLines)
+      const windowBytes = sliceLineRange(buffer, lineStart, windowEnd)
+      const windowText = windowBytes.toString('utf-8')
+      const selected = windowText.split('\n')
       // Byte cap wins over the line cap: take the longest prefix that fits.
       const taken: string[] = []
       let takenBytes = 0
       for (const line of selected) {
         const size = Buffer.byteLength(line, 'utf-8') + (taken.length > 0 ? 1 : 0)
-        if (takenBytes + size > maxBytes) break
+        if (takenBytes + size > effectiveMaxBytes) break
         taken.push(line)
         takenBytes += size
       }
       if (taken.length === 0) {
-        throw new Error(`Line ${lineStart} exceeds ${maxBytes} bytes; re-read with a larger maxBytes (up to 1048576)`)
+        throw new Error(`Line ${lineStart} exceeds ${effectiveMaxBytes} bytes; re-read with a larger maxBytes (up to 1048576)`)
       }
       const lineEnd = lineStart + taken.length - 1
-      const truncated = endIdx < totalLines || taken.length < selected.length
+      const truncated = windowEnd < totalLines || taken.length < selected.length
       const content = Buffer.from(taken.join('\n'), 'utf-8')
       return {
         ok: true,

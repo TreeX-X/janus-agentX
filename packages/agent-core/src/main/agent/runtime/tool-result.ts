@@ -100,6 +100,8 @@ function workspaceReadModelValue(output: Record<string, unknown>): unknown {
     truncated: output.truncated,
     ...(output.nextOffset !== undefined ? { nextOffset: output.nextOffset } : {}),
     ...(typeof output.sha256 === 'string' ? { sha256: output.sha256 } : {}),
+    ...(typeof output.estimatedTokens === 'number' ? { estimatedTokens: output.estimatedTokens } : {}),
+    ...(typeof output.totalTokens === 'number' ? { totalTokens: output.totalTokens } : {}),
   }
   const guidance = typeof output.guidance === 'string' && output.guidance
     ? output.guidance

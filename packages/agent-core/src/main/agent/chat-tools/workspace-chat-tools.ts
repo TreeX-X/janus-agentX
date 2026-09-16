@@ -56,17 +56,29 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
 
   const tools = {
     workspace_list: {
-      description: 'List a bounded file tree in one attached workspace. Use this before reading when the exact path is unknown.',
+      description: 'List a bounded file tree in one attached workspace. Entries carry sizes and modification times with recently modified paths first. Use this before reading when the exact path is unknown.',
       parameters: z.object({
         workspaceId,
         path: z.string().default(''),
         depth: z.number().int().min(0).max(4).default(3),
         maxEntries: z.number().int().min(1).max(600).default(300),
+        maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the entry caps when given.'),
       }),
-      execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number }) => execute('workspace.list', input),
+      execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.list', input),
+    },
+    workspace_overview: {
+      description: 'Read a shallow bounded tree of one attached workspace with file sizes, modification times, and a git working-tree summary. Start here when the checkout shape is unknown instead of looping workspace_list.',
+      parameters: z.object({
+        workspaceId,
+        path: z.string().default(''),
+        depth: z.number().int().min(0).max(4).default(2),
+        maxEntries: z.number().int().min(1).max(600).default(300),
+        maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the entry caps when given.'),
+      }),
+      execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.overview', input),
     },
     workspace_search: {
-      description: 'Search code with path/glob filters and matching line numbers. Use mode=files to locate paths, regex=true for alternative symbols. Default: literal case-insensitive content search.',
+      description: 'Search code with path/glob filters and matching line numbers. mode=files locates paths with recently modified files first; content matches carry ±2 context lines and the file SHA-256. Use mode=files to locate paths, regex=true for alternative symbols. Default: literal case-insensitive content search.',
       parameters: z.object({
         workspaceId,
         query: z.string().max(256).default('').describe('Literal text or regex; optional in files mode.'),
@@ -75,24 +87,26 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         regex: z.boolean().default(false),
         caseSensitive: z.boolean().default(false),
         path: z.string().default(''),
-        maxResults: z.number().int().min(1).max(50).default(30),
+        maxResults: z.number().int().min(1).max(100).default(30),
+        maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the match caps when given.'),
       }),
-      execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean }) => execute('workspace.search', input),
+      execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; maxTokens?: number }) => execute('workspace.search', input),
     },
     workspace_read: {
-      description: 'Read one UTF-8 text file as line pages (default 200 lines or 16KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing; withLineAnchors:true also returns LINE#HASH anchors per line for lineEdits.',
+      description: 'Read one UTF-8 text file as line pages (files ≤100KB return whole from offset, larger files default 800 lines or 48KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing; withLineAnchors:true also returns LINE#HASH anchors per line for lineEdits.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1).describe('Workspace-relative file path, e.g. src/notes/test.md'),
         offset: z.number().int().min(0).default(1).describe('1-indexed line number to start from (default 1).'),
-        limit: z.number().int().min(1).max(2000).default(200).describe('Max lines to return (default 200, max 2000).'),
-        maxBytes: z.number().int().min(1).max(256 * 1024).default(16 * 1024).describe('Max bytes of page content (default 16384). The byte cap wins over limit.'),
+        limit: z.number().int().min(1).max(2000).optional().describe('Max lines to return (default 800; omitted with maxBytes on files ≤100KB returns whole).'),
+        maxBytes: z.number().int().min(1).max(256 * 1024).optional().describe('Max bytes of page content (default 49152). The byte cap wins over limit.'),
+        maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the page caps when given.'),
         withLineAnchors: z.boolean().default(false).describe('Also return a LINE#HASH anchor per line (for workspace_edit lineEdits).'),
       }),
-      execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number; withLineAnchors?: boolean }) => execute('workspace.read', input),
+      execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number; maxTokens?: number; withLineAnchors?: boolean }) => execute('workspace.read', input),
     },
     workspace_edit: {
-      description: 'Edit one existing UTF-8 file with exact, unambiguous replacements, a single-file unified diff, or hash-anchored lineEdits. Requires the SHA-256 returned by workspace_read; the configured Agent permission mode controls approval. lineEdits use LINE#HASH anchors from workspace_read withLineAnchors:true and apply bottom-up; a stale anchor aborts the whole batch and returns fresh anchors to retry with.',
+      description: 'Edit one existing UTF-8 file with exact, unambiguous replacements, a single-file unified diff, or hash-anchored lineEdits. Requires the SHA-256 returned by workspace_read or by a workspace_search content match when the file is unchanged; the configured Agent permission mode controls approval. lineEdits use LINE#HASH anchors from workspace_read withLineAnchors:true and apply bottom-up; a stale anchor aborts the whole batch and returns fresh anchors to retry with.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1),

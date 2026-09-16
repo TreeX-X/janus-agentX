@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { createToolPreview, createWorkspaceChatTools } from '../src/main/agent/chat-tools/workspace-chat-tools'
 
 const ALL_MODEL_TOOLS = [
-  'workspace_list', 'workspace_search', 'workspace_read', 'workspace_edit', 'workspace_create',
+  'workspace_list', 'workspace_overview', 'workspace_search', 'workspace_read', 'workspace_edit', 'workspace_create',
   'workspace_delete',
   'project_detect', 'project_generate_config', 'project_apply_config',
   'project_list_processes', 'project_process_output',
@@ -34,7 +34,7 @@ function buildTools() {
 }
 
 describe('model tool-name contract', () => {
-  it('exposes exactly the 22 documented model tools', () => {
+  it('exposes exactly the 23 documented model tools', () => {
     expect(Object.keys(buildTools()).sort()).toEqual([...ALL_MODEL_TOOLS].sort())
   })
 

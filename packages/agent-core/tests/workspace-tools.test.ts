@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, truncate, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -50,7 +50,7 @@ function autoApprove(runtime: WorkspaceAgentRuntime, approved = true) {
   })
 }
 
-async function executeRead(root: string, path: string, maxBytes?: number, offset?: number, limit?: number) {
+async function executeRead(root: string, path: string, maxBytes?: number, offset?: number, limit?: number, maxTokens?: number) {
   const runtime = new WorkspaceAgentRuntime(async () => root)
   registerWorkspaceTools(runtime.registry)
   const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
@@ -64,6 +64,7 @@ async function executeRead(root: string, path: string, maxBytes?: number, offset
         ...(maxBytes === undefined ? {} : { maxBytes }),
         ...(offset === undefined ? {} : { offset }),
         ...(limit === undefined ? {} : { limit }),
+        ...(maxTokens === undefined ? {} : { maxTokens }),
       },
     },
   })
@@ -969,7 +970,7 @@ describe('workspace.search tool', () => {
     const output = result.output as { matches: unknown[]; truncated: boolean; guidance: string }
     expect(result.status).toBe('completed')
     expect(output.matches.length).toBeGreaterThan(20)
-    expect(JSON.stringify(output.matches).length).toBeLessThan(12500)
+    expect(JSON.stringify(output.matches).length).toBeLessThan(41000)
     expect(output.truncated).toBe(true)
     expect(output.guidance).toContain('Narrow')
   })
@@ -1124,6 +1125,11 @@ describe('workspace.list tool', () => {
     await writeFile(join(root, 'a.txt'), 'a')
     await writeFile(join(root, 'b.txt'), 'b')
     await writeFile(join(root, 'c.txt'), 'c')
+    // Distinct mtimes keep the recency order deterministic across filesystems.
+    const now = Date.now() / 1000
+    await utimes(join(root, 'a.txt'), now - 30, now - 30)
+    await utimes(join(root, 'b.txt'), now - 20, now - 20)
+    await utimes(join(root, 'c.txt'), now - 10, now - 10)
 
     const result = await executeList(root, { workspaceId: 'workspace-1', maxEntries: 2 })
     const invalidDepth = await executeList(root, { workspaceId: 'workspace-1', depth: 5 })
@@ -1132,7 +1138,7 @@ describe('workspace.list tool', () => {
     expect(result).toMatchObject({
       status: 'completed',
       output: {
-        entries: [{ path: 'a.txt' }, { path: 'b.txt' }],
+        entries: [{ path: 'c.txt' }, { path: 'b.txt' }],
         truncated: true,
       },
     })
@@ -1149,5 +1155,289 @@ describe('workspace.list tool', () => {
       { workspaceId: 'workspace-1' },
       { workspaceId: 'workspace-1', workspaceRoot: root, signal: controller.signal },
     )).rejects.toThrow('workspace.list cancelled')
+  })
+
+  it('carries sizes and modification times with recently modified files first', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'old.txt'), 'old-content')
+    await writeFile(join(root, 'new.txt'), 'new-content!')
+    const now = Date.now() / 1000
+    await utimes(join(root, 'old.txt'), now - 60, now - 60)
+    await utimes(join(root, 'new.txt'), now - 5, now - 5)
+
+    const result = await executeList(root, { workspaceId: 'workspace-1' })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: {
+        truncated: false,
+        entries: [
+          { path: 'new.txt', name: 'new.txt', type: 'file', depth: 1, size: 12 },
+          { path: 'old.txt', name: 'old.txt', type: 'file', depth: 1, size: 11 },
+        ],
+      },
+    })
+    const entries = (result.output as { entries: Array<{ mtime: number }> }).entries
+    expect(typeof entries[0].mtime).toBe('number')
+    expect(entries[0].mtime).toBeGreaterThanOrEqual(entries[1].mtime)
+    expect((result.output as { estimatedTokens: number }).estimatedTokens).toBeGreaterThan(0)
+  })
+
+  it('truncates entries under an explicit token budget with counts and guidance', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'a.txt'), 'a'.repeat(2000))
+    await writeFile(join(root, 'b.txt'), 'b'.repeat(2000))
+
+    const result = await executeList(root, { workspaceId: 'workspace-1', maxTokens: 20 })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: {
+        truncated: true,
+        totalEntries: 2,
+        guidance: expect.stringContaining('maxTokens=20'),
+      },
+    })
+    const output = result.output as { entries: unknown[]; totalTokens: number }
+    expect(output.entries.length).toBeLessThan(2)
+    expect(output.totalTokens).toBeGreaterThan(20)
+  })
+})
+
+describe('adaptive workspace.read pages', () => {
+  it('covers a 600-line file in one default read', async () => {
+    const root = await temporaryDirectory()
+    const lines = Array.from({ length: 600 }, (_, index) => `line ${index + 1} with some content`)
+    await writeFile(join(root, 'medium.ts'), lines.join('\n') + '\n', 'utf-8')
+
+    const result = await executeRead(root, 'medium.ts')
+
+    expect(result).toMatchObject({ status: 'completed' })
+    const output = result.output as { content: string; truncated: boolean; lineStart: number; lineEnd: number; totalLines: number; estimatedTokens: number }
+    expect(output.truncated).toBe(false)
+    expect(output.lineStart).toBe(1)
+    expect(output.lineEnd).toBe(601)
+    expect(output.content).toBe(lines.join('\n') + '\n')
+    expect(output.estimatedTokens).toBeGreaterThan(0)
+  })
+
+  it('pages files over 100KB with the 800-line/48KB defaults', async () => {
+    const root = await temporaryDirectory()
+    const lines = Array.from({ length: 2000 }, (_, index) => `line ${String(index + 1).padStart(4, '0')} ${'x'.repeat(95)}`)
+    await writeFile(join(root, 'big.ts'), lines.join('\n') + '\n', 'utf-8')
+
+    const first = await executeRead(root, 'big.ts')
+    expect(first).toMatchObject({ status: 'completed' })
+    const firstOutput = first.output as { truncated: boolean; lineStart: number; lineEnd: number; totalLines: number; nextOffset: number; bytes: number }
+    expect(firstOutput.truncated).toBe(true)
+    expect(firstOutput.lineStart).toBe(1)
+    expect(firstOutput.lineEnd).toBeLessThanOrEqual(800)
+    expect(firstOutput.bytes).toBeLessThanOrEqual(48 * 1024 + 200)
+    expect(firstOutput.nextOffset).toBe(firstOutput.lineEnd + 1)
+
+    const second = await executeRead(root, 'big.ts', undefined, firstOutput.nextOffset)
+    const secondOutput = second.output as { content: string; lineStart: number }
+    expect(second).toMatchObject({ status: 'completed' })
+    expect(secondOutput.lineStart).toBe(firstOutput.nextOffset)
+    expect(secondOutput.content.split('\n')[0]).toBe(lines[firstOutput.nextOffset - 1])
+  })
+
+  it('truncates a page under an explicit token budget with counts and guidance', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'notes.txt'), Array.from({ length: 50 }, (_, index) => `line ${index}`).join('\n'), 'utf-8')
+
+    const result = await executeRead(root, 'notes.txt', undefined, undefined, undefined, 10)
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: {
+        truncated: true,
+        guidance: expect.stringContaining('maxTokens=10'),
+      },
+    })
+    const output = result.output as { totalTokens: number; estimatedTokens: number; content: string }
+    expect(output.totalTokens).toBeGreaterThan(10)
+    expect(output.estimatedTokens).toBeLessThanOrEqual(output.totalTokens)
+    expect(output.content.length).toBeGreaterThan(0)
+  })
+})
+
+describe('workspace.search evidence density', () => {
+  async function executeSearchWithApproval(root: string) {
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    autoApprove(runtime, true)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    return { runtime, session }
+  }
+
+  it('attaches context lines and the file hash to content matches', async () => {
+    const root = await temporaryDirectory()
+    const source = ['first line', 'second has needle', 'third line', 'fourth line'].join('\n') + '\n'
+    await writeFile(join(root, 'code.ts'), source, 'utf-8')
+
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    const result = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle' } },
+    })
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toMatchObject({
+      matches: [{
+        path: 'code.ts',
+        line: 2,
+        text: 'second has needle',
+        contextBefore: ['first line'],
+        contextAfter: ['third line', 'fourth line'],
+        sha256: createHash('sha256').update(source).digest('hex'),
+      }],
+    })
+  })
+
+  it('edits with a search-carried hash and no second read', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'fix.ts'), 'const before = 1\n', 'utf-8')
+    const { runtime, session } = await executeSearchWithApproval(root)
+
+    const found = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'before' } },
+    })
+    expect(found.status).toBe('completed')
+    const match = (found.output as { matches: Array<{ sha256: string }> }).matches[0]
+    expect(typeof match.sha256).toBe('string')
+
+    const edited = await runtime.executeTool({
+      sessionId: session.id,
+      call: {
+        toolName: 'workspace.edit',
+        input: {
+          workspaceId: 'workspace-1',
+          path: 'fix.ts',
+          expectedHash: match.sha256,
+          replacements: [{ oldText: 'const before = 1', newText: 'const before = 2' }],
+        },
+        preview: { summary: 'Edit fix.ts', paths: ['fix.ts'], truncated: false },
+      },
+    })
+    expect(edited.status).toBe('completed')
+    expect(await readFile(join(root, 'fix.ts'), 'utf-8')).toBe('const before = 2\n')
+  })
+
+  it('orders filename hits by recency and accepts up to 100 results', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'old-name.ts'), 'x')
+    await writeFile(join(root, 'new-name.ts'), 'x')
+    const now = Date.now() / 1000
+    await utimes(join(root, 'old-name.ts'), now - 60, now - 60)
+    await utimes(join(root, 'new-name.ts'), now - 5, now - 5)
+
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    const ordered = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', mode: 'files', query: '-name' } },
+    })
+    expect(ordered).toMatchObject({
+      status: 'completed',
+      output: { matches: [{ path: 'new-name.ts' }, { path: 'old-name.ts' }] },
+    })
+
+    const tooMany = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'x', maxResults: 101 } },
+    })
+    expect(tooMany.status).toBe('failed')
+
+    await writeFile(join(root, 'many.txt'), Array.from({ length: 60 }, () => 'hit').join('\n'))
+    const sixty = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'hit', maxResults: 60 } },
+    })
+    expect(sixty).toMatchObject({ status: 'completed' })
+    expect((sixty.output as { matches: unknown[] }).matches).toHaveLength(60)
+  })
+
+  it('truncates matches under an explicit token budget with counts and guidance', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'many.txt'), Array.from({ length: 30 }, () => 'needle here').join('\n'))
+
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    const result = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle', maxTokens: 30 } },
+    })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: {
+        truncated: true,
+        totalResults: 30,
+        guidance: expect.stringContaining('maxTokens=30'),
+      },
+    })
+    const output = result.output as { matches: unknown[]; totalTokens: number }
+    expect(output.matches.length).toBeLessThan(30)
+    expect(output.totalTokens).toBeGreaterThan(30)
+  })
+})
+
+describe('workspace.overview tool', () => {
+  async function executeOverview(root: string, input: Record<string, unknown> = {}) {
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    return runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.overview', input: { workspaceId: 'workspace-1', ...input } },
+    })
+  }
+
+  it('returns a shallow tree with sizes, times, and token counts', async () => {
+    const root = await temporaryDirectory()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'README.md'), '# hello')
+    await writeFile(join(root, 'src', 'index.ts'), 'index')
+
+    const result = await executeOverview(root)
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: {
+        workspaceId: 'workspace-1',
+        path: '',
+        depth: 2,
+        truncated: false,
+        entries: [
+          { path: 'src', type: 'directory', size: 0 },
+          { path: 'src/index.ts', type: 'file', size: 5 },
+          { path: 'README.md', type: 'file', size: 7 },
+        ],
+      },
+    })
+    const output = result.output as { entries: Array<{ mtime: number }>; estimatedTokens: number; git?: unknown }
+    expect(output.entries.every((entry) => typeof entry.mtime === 'number')).toBe(true)
+    expect(output.estimatedTokens).toBeGreaterThan(0)
+    expect(output.git === undefined || typeof (output.git as { branch: string }).branch === 'string').toBe(true)
+  })
+
+  it('reports truncation when entries exceed the caps', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'a.txt'), 'a')
+    await writeFile(join(root, 'b.txt'), 'b')
+
+    const result = await executeOverview(root, { maxEntries: 1 })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      output: { truncated: true },
+    })
+    expect((result.output as { entries: unknown[] }).entries).toHaveLength(1)
   })
 })
