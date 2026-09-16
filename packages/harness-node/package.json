@@ -1,0 +1,31 @@
+{
+  "name": "@janus-agent/harness-node",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Node file adapter for harness notes: repository scan, checkout resolve, transacted writes, journal recovery, watcher, git evidence. No agent-core, no Electron, no LLM.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc && node ../../scripts/fix-dist-extensions.mjs dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@janus-agent/harness-core": "file:../harness-core"
+  }
+}

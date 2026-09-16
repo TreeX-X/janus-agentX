@@ -1,0 +1,27 @@
+{
+  "name": "@janus-agent/notes-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Lightweight offline notes CLI (wfx-notes) over harness-core and harness-node. No agent loop, no LLM SDK, no TUI, no Electron.",
+  "bin": {
+    "wfx-notes": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc && node ../../scripts/fix-dist-extensions.mjs dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@janus-agent/harness-core": "file:../harness-core",
+    "@janus-agent/harness-node": "file:../harness-node"
+  }
+}
