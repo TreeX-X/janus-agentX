@@ -59,6 +59,16 @@ function boundedText(value: string, maxChars: number): string {
 }
 
 /** Compress a runtime tool result into one trace line the next turn can replay. */
+export function countSearchHits(matches: unknown): number {
+  if (!Array.isArray(matches)) return 0
+  return matches.reduce((total: number, match) => {
+    const record = (match ?? {}) as Record<string, unknown>
+    // Content-mode file groups report their hit count; flat files-mode
+    // matches and legacy shapes count one each.
+    if (typeof record.matchCount === 'number') return total + record.matchCount
+    return total + 1
+  }, 0)
+}
 export function toolTraceEntryFromResult(result: ToolResult, turnId?: string): ChatToolTraceEntry {
   const output = result.output as Record<string, unknown> | undefined
   const parts: string[] = []
@@ -68,7 +78,7 @@ export function toolTraceEntryFromResult(result: ToolResult, turnId?: string): C
     if (typeof output.path === 'string') { parts.push(output.path); argsDigest = String(output.path) }
     if (typeof output.sha256 === 'string') parts.push(`sha256=${output.sha256}`)
     if (typeof output.query === 'string') parts.push(`query="${output.query}"`)
-    if (Array.isArray(output.matches)) { parts.push(`${output.matches.length} matches`); resultDigest = `${output.matches.length} matches` }
+    if (Array.isArray(output.matches)) { const hits = countSearchHits(output.matches); parts.push(`${hits} matches`); resultDigest = `${hits} matches` }
     if (Array.isArray(output.entries)) { parts.push(`${output.entries.length} entries`); resultDigest = `${output.entries.length} entries` }
     if (typeof output.checkpointId === 'string') parts.push(`checkpoint=${output.checkpointId}`)
     // workspace.delete: keep kind + blast radius in the trace so the next turn

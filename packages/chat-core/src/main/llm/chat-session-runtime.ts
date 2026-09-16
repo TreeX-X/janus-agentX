@@ -214,6 +214,20 @@ function pruneToolMessage(message: JanusAgentMessage): JanusAgentMessage {
   }
 }
 
+function firstGroupHit(group: Record<string, unknown>): number | undefined {
+  const hunks = group.hunks
+  if (!Array.isArray(hunks)) return undefined
+  for (const hunk of hunks) {
+    const lines = (hunk as Record<string, unknown>)?.lines
+    if (!Array.isArray(lines)) continue
+    for (const entry of lines) {
+      const record = (entry ?? {}) as Record<string, unknown>
+      if (record.hit === true && typeof record.line === 'number') return record.line
+    }
+  }
+  return undefined
+}
+
 function toolDigest(message: JanusAgentMessage): string | undefined {
   if (message.role !== 'tool') return undefined
   const label = message.toolName ?? 'tool'
@@ -233,12 +247,20 @@ function toolDigest(message: JanusAgentMessage): string | undefined {
     }
     if (Array.isArray(parsed.matches)) {
       const query = typeof parsed.query === 'string' ? `"${String(parsed.query).slice(0, 80)}"` : ''
-      const head = (parsed.matches as Array<{ path?: unknown; line?: unknown }>)
+      const head = (parsed.matches as Array<Record<string, unknown>>)
         .slice(0, 5)
-        .map((match) => typeof match.path === 'string' ? `${match.path}${typeof match.line === 'number' ? `#L${match.line}` : ''}` : undefined)
+        .map((match) => {
+          if (typeof match.path !== 'string') return undefined
+          // Content-mode file groups point at their first hit line; flat
+          // files-mode matches and legacy shapes keep path[#Lline].
+          const line = typeof match.line === 'number' ? match.line : firstGroupHit(match)
+          return `${match.path}${typeof line === 'number' ? `#L${line}` : ''}`
+        })
         .filter((item): item is string => !!item)
         .join(', ')
-      return `- ${label} ${scope}${query}: ${String(parsed.matches.length)} matches${head ? ` (${head})` : ''}${parsed.truncated === true ? ' (truncated)' : ''}`
+      const hits = (parsed.matches as Array<Record<string, unknown>>)
+        .reduce((total, match) => total + (typeof match.matchCount === 'number' ? match.matchCount : 1), 0)
+      return `- ${label} ${scope}${query}: ${String(hits)} matches${head ? ` (${head})` : ''}${parsed.truncated === true ? ' (truncated)' : ''}`
     }
     if (typeof parsed.content === 'string' && typeof parsed.path === 'string') {
       const sha = typeof parsed.sha256 === 'string' ? ` sha256=${String(parsed.sha256).slice(0, 12)}…` : ''

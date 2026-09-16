@@ -1,4 +1,4 @@
-import { searchWorkspace } from './workspace-search'
+import { countSearchHits, searchWorkspace } from './workspace-search'
 import { readdir, readFile, stat } from 'fs/promises'
 import { spawn } from 'node:child_process'
 import { isUtf8 } from 'node:buffer'
@@ -706,7 +706,7 @@ export const workspaceOverviewTool: RegisteredTool = {
 
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Find code with bounded ignore-aware search. mode=files searches file paths with recently modified files first; mode=content returns matching lines with ±2 context lines and the file SHA-256 (usable as workspace.edit expectedHash while unchanged). Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
+  description: 'Find code with bounded ignore-aware search. mode=files searches file paths with recently modified files first; mode=content returns one hunk group per file (clustered hits share context, distant hunks carry a skipped-lines gap count) with the file SHA-256 (usable as workspace.edit expectedHash while unchanged). Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -753,7 +753,7 @@ export const workspaceSearchTool: RegisteredTool = {
       const fitted = fitItemsToBudget(matches, (match) => JSON.stringify(match), maxTokens)
       matches = fitted.items
       budgetTruncated = fitted.truncated || estimateOutputTokens(JSON.stringify(fitted.items)) > maxTokens
-      totalResults = result.matches.length
+      totalResults = countSearchHits(result.matches)
     }
     const truncated = result.truncated || budgetTruncated
     return {

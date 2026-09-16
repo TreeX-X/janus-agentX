@@ -920,8 +920,21 @@ describe('workspace.search tool', () => {
     expect(result.output).toMatchObject({
       truncated: false,
       matches: [
-        { path: 'src/main.ts', line: 1, text: 'const Needle = 1' },
-        { path: 'src/main.ts', line: 3, text: 'lower needle here' },
+        {
+          path: 'src/main.ts',
+          matchCount: 2,
+          hunks: [
+            {
+              start: 1,
+              end: 3,
+              lines: [
+                { line: 1, text: 'const Needle = 1', hit: true },
+                { line: 2, text: 'other', hit: false },
+                { line: 3, text: 'lower needle here', hit: true },
+              ],
+            },
+          ],
+        },
       ],
     })
   })
@@ -933,7 +946,9 @@ describe('workspace.search tool', () => {
     const result = await executeSearch(root, { query: 'match', maxResults: 3 })
 
     expect(result.status).toBe('completed')
-    expect((result.output as { matches: unknown[] }).matches).toHaveLength(3)
+    const capped = result.output as { matches: Array<{ matchCount: number }> }
+    expect(capped.matches).toHaveLength(1)
+    expect(capped.matches[0].matchCount).toBe(3)
     expect(result.output).toMatchObject({ truncated: true })
   })
 
@@ -960,16 +975,19 @@ describe('workspace.search tool', () => {
       expect(result.error).toContain('requires ripgrep')
       return
     }
-    expect((result.output as { matches: unknown[] }).matches).toHaveLength(2)
+    const groups = (result.output as { matches: Array<{ matchCount: number }> }).matches
+    expect(groups).toHaveLength(1)
+    expect(groups[0].matchCount).toBe(2)
   })
 
   it('bounds complete match records and preserves truncation guidance', async () => {
     const root = await temporaryDirectory()
     await writeFile(join(root, 'many.ts'), Array.from({ length: 100 }, () => 'needle ' + 'x'.repeat(500)).join('\n'))
     const result = await executeSearch(root, { query: 'needle', maxResults: 50 })
-    const output = result.output as { matches: unknown[]; truncated: boolean; guidance: string }
+    const output = result.output as { matches: Array<{ matchCount: number }>; truncated: boolean; guidance: string }
     expect(result.status).toBe('completed')
-    expect(output.matches.length).toBeGreaterThan(20)
+    const hits = output.matches.reduce((total, group) => total + group.matchCount, 0)
+    expect(hits).toBeGreaterThan(20)
     expect(JSON.stringify(output.matches).length).toBeLessThan(41000)
     expect(output.truncated).toBe(true)
     expect(output.guidance).toContain('Narrow')
@@ -982,7 +1000,13 @@ describe('workspace.search tool', () => {
     try {
       const result = await executeSearch(root, { query: 'needle', glob: '**/*.ts' })
       expect(result.status).toBe('completed')
-      expect(result.output).toMatchObject({ backend: 'node', matches: [{ path: 'code.ts', line: 1, text: 'needle' }], note: expect.stringContaining('ignore files are not applied') })
+      expect(result.output).toMatchObject({
+        backend: 'node',
+        matches: [{ path: 'code.ts', matchCount: 1 }],
+        note: expect.stringContaining('ignore files are not applied'),
+      })
+      const hunk = (result.output as { matches: Array<{ hunks: Array<{ lines: Array<{ line: number; text: string; hit: boolean }> }> }> }).matches[0].hunks[0]
+      expect(hunk.lines).toEqual([{ line: 1, text: 'needle', hit: true }])
     } finally { vi.unstubAllEnvs() }
   })
 
@@ -1010,7 +1034,7 @@ describe('workspace.search tool', () => {
     expect(result.output).toMatchObject({
       path: 'src',
       scopedFile: 'src/main.ts',
-      matches: [{ path: 'src/main.ts', line: 1, text: 'needle here' }],
+      matches: [{ path: 'src/main.ts', matchCount: 1 }],
       note: expect.stringContaining('scoped'),
     })
   })
@@ -1271,7 +1295,7 @@ describe('workspace.search evidence density', () => {
     return { runtime, session }
   }
 
-  it('attaches context lines and the file hash to content matches', async () => {
+  it('groups clustered hits into one hunk with a shared file hash', async () => {
     const root = await temporaryDirectory()
     const source = ['first line', 'second has needle', 'third line', 'fourth line'].join('\n') + '\n'
     await writeFile(join(root, 'code.ts'), source, 'utf-8')
@@ -1288,13 +1312,46 @@ describe('workspace.search evidence density', () => {
     expect(result.output).toMatchObject({
       matches: [{
         path: 'code.ts',
-        line: 2,
-        text: 'second has needle',
-        contextBefore: ['first line'],
-        contextAfter: ['third line', 'fourth line'],
+        matchCount: 1,
         sha256: createHash('sha256').update(source).digest('hex'),
+        hunks: [{
+          start: 1,
+          end: 4,
+          lines: [
+            { line: 1, text: 'first line', hit: false },
+            { line: 2, text: 'second has needle', hit: true },
+            { line: 3, text: 'third line', hit: false },
+            { line: 4, text: 'fourth line', hit: false },
+          ],
+        }],
       }],
     })
+  })
+
+  it('marks skipped lines between distant hunks instead of repeating context', async () => {
+    const root = await temporaryDirectory()
+    const lines = ['needle top', ...Array.from({ length: 20 }, (_, index) => `filler ${index}`), 'needle bottom']
+    await writeFile(join(root, 'split.ts'), lines.join('\n') + '\n', 'utf-8')
+
+    const runtime = new WorkspaceAgentRuntime(async () => root)
+    registerWorkspaceTools(runtime.registry)
+    const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
+    const result = await runtime.executeTool({
+      sessionId: session.id,
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle' } },
+    })
+
+    expect(result.status).toBe('completed')
+    const group = (result.output as { matches: Array<{ matchCount: number; hunks: Array<{ start: number; end: number; gapBefore?: number; lines: Array<{ line: number; hit: boolean }> }> }> }).matches[0]
+    expect(group.matchCount).toBe(2)
+    expect(group.hunks).toHaveLength(2)
+    // First hunk covers lines 1-3, second covers 20-22 with an 16-line gap.
+    expect(group.hunks[0].start).toBe(1)
+    expect(group.hunks[1].gapBefore).toBe(16)
+    expect(group.hunks[1].lines.filter((line) => line.hit).map((line) => line.line)).toEqual([22])
+    // No line repeats across hunks: the shared context lands exactly once.
+    const shown = group.hunks.flatMap((hunk) => hunk.lines.map((line) => line.line))
+    expect(new Set(shown).size).toBe(shown.length)
   })
 
   it('edits with a search-carried hash and no second read', async () => {
@@ -1359,7 +1416,11 @@ describe('workspace.search evidence density', () => {
       call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'hit', maxResults: 60 } },
     })
     expect(sixty).toMatchObject({ status: 'completed' })
-    expect((sixty.output as { matches: unknown[] }).matches).toHaveLength(60)
+    const groups = (sixty.output as { matches: Array<{ path: string; matchCount: number; hunks: unknown[] }> }).matches
+    expect(groups).toHaveLength(1)
+    expect(groups[0].path).toBe('many.txt')
+    expect(groups[0].matchCount).toBe(60)
+    expect(groups[0].hunks.length).toBe(1)
   })
 
   it('truncates matches under an explicit token budget with counts and guidance', async () => {

@@ -22,7 +22,7 @@ Status: implemented
 
 每个输出带 token 计数与可选预算：`workspace.read`、`workspace.search`、`workspace.list`、`workspace.overview` 统一报告 `estimatedTokens`（ASCII 约 4 字符/token，非 ASCII 保守按 1 字符/token，与 chat-core 的 `estimateContextTokens` 同式，agent-core 内聚一份实现以避免反向依赖）。`maxTokens`（1 至 100000）在页上限之外进一步收紧，超限输出截断并返回原文 token 数、原文条数与缩小指引。预算默认不强制：页上限本身已有界，10K 默认强制会把自适应整文件读重新切碎，与本 Note 的首要目标冲突。长命令复用既有 `background:true` 加 `project_process_output(offsetLines)` 轮询，不新增后台机制。
 
-搜索信号密度：`workspace.search` 内容命中携带上下各两行（单行 300 字符截断）与该文件的全文 SHA-256；哈希与 `workspace.read` 同函数计算，未变更时与 `workspace.edit` 的 `expectedHash` 等效，定位到修复无需二读（超过 1MB 的文件只给上下文不给哈希，此类文件显式重读）。`mode=files` 先收集全部命名命中再按修改时间倒序取 `maxResults`，字母序只做并列决胜，避免字母截断藏起最近改动的文件。`maxResults` 默认 30 不变、上限放宽到 100；记录预算 12000 字符放宽到 40000 字符（约 10K token），富化后复检保证单次输出不超预算。
+搜索信号密度：`workspace.search` 内容命中按文件分组为 hunk（聚簇窗口合并，远距 hunk 记跳过行数，单行 300 字符截断，形状见[搜索 hunk 分组](./2026-09-16-search-hunk-groups.md)）并携带该文件的全文 SHA-256；哈希与 `workspace.read` 同函数计算，未变更时与 `workspace.edit` 的 `expectedHash` 等效，定位到修复无需二读（超过 1MB 的文件只给上下文不给哈希，此类文件显式重读）。`mode=files` 先收集全部命名命中再按修改时间倒序取 `maxResults`，字母序只做并列决胜，避免字母截断藏起最近改动的文件。`maxResults` 默认 30 不变、上限放宽到 100；记录预算 12000 字符放宽到 40000 字符（约 10K token），富化后复检保证单次输出不超预算。构建产物目录（`release` 等）退出搜索枚举。
 
 列表与总览：`workspace.list` 条目携带文件大小与秒级修改时间戳，目录优先分组保留，组内按修改时间倒序。新增只读 `workspace.overview`：一次返回浅树（默认深度 2、300 条目）、文件大小、修改时间与 git 摘要（分支、HEAD、staged/unstaged/untracked 计数，10 秒超时失败即省略，非仓库目录无此段），替代诊断开头的盲 `list` 循环。`workspace_overview` 是第 23 个模型工具，契约测试已同步；JanusX 壳侧 `BLUEPRINT_READ_ONLY_MODEL_TOOLS` 白名单同步待定，白名单本身未动。
 

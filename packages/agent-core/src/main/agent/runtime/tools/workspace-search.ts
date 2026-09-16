@@ -7,7 +7,7 @@ import { readWorkspaceFile, readWorkspaceFileRange } from '../path-guard'
 import { DEFAULT_OUTPUT_TOKEN_BUDGET } from './output-budget'
 import { isTextBuffer } from '../../environment/janus-workspace-fs'
 
-const SKIP = ['node_modules', 'dist', 'out', 'build', 'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.janusX']
+const SKIP = ['node_modules', 'dist', 'out', 'build', 'release', 'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.janusX']
 const MAX_FILES = 20_000
 const MAX_BYTES = 512 * 1024
 /** Record budget ≈ the default output token budget; matches carry ±2 context lines plus a file hash. */
@@ -71,14 +71,25 @@ function runRg(args: string[], root: string, signal: AbortSignal, delimiter: str
   })
 }
 
-export interface ContentSearchMatch {
-  path: string
+export interface SearchHunkLine {
   line: number
   text: string
-  /** Up to two lines above the hit, truncated like match text; empty at file start. */
-  contextBefore: string[]
-  /** Up to two lines below the hit, truncated like match text; empty at file end. */
-  contextAfter: string[]
+  hit: boolean
+}
+
+export interface SearchHunk {
+  start: number
+  end: number
+  /** Elided lines between this hunk and the previous one; omitted on the first hunk. */
+  gapBefore?: number
+  lines: SearchHunkLine[]
+}
+
+export interface ContentFileGroup {
+  path: string
+  /** Hits shown in this file; hunks merge their overlapping context windows. */
+  matchCount: number
+  hunks: SearchHunk[]
   /**
    * Full-file SHA-256, identical to the hash workspace.read returns. Valid as
    * workspace.edit expectedHash while the file is unchanged, so a located
@@ -88,10 +99,25 @@ export interface ContentSearchMatch {
   sha256?: string
 }
 
-export type SearchMatch = { path: string; line?: number; text?: string } | ContentSearchMatch
+export type SearchMatch = { path: string; line?: number; text?: string } | ContentFileGroup
 
-export function isContentMatch(match: SearchMatch): match is ContentSearchMatch {
-  return typeof (match as ContentSearchMatch).line === 'number'
+export function isContentMatch(match: SearchMatch): match is ContentFileGroup {
+  return Array.isArray((match as ContentFileGroup).hunks)
+}
+
+/** Hits shown across file groups (flat files-mode matches count one each). */
+export function countSearchHits(matches: SearchMatch[]): number {
+  return matches.reduce((total, match) => total + (isContentMatch(match) ? match.matchCount : 1), 0)
+}
+
+/** First hit line of a group for one-line digests; undefined when hunks are empty. */
+export function firstGroupHitLine(group: ContentFileGroup): number | undefined {
+  for (const hunk of group.hunks) {
+    for (const line of hunk.lines) {
+      if (line.hit) return line.line
+    }
+  }
+  return undefined
 }
 
 function clipLine(text: string): string {
@@ -99,13 +125,11 @@ function clipLine(text: string): string {
 }
 
 /**
- * Surrounding lines plus an edit-compatible hash for one matched file. One
- * bounded read (≤1MB) serves the context; the same buffer serves the hash
- * when it holds the whole file. Larger files fall back to a 1MB head read
- * for context only.
+ * One bounded read per matched file. The same buffer serves hunk context and
+ * the edit-compatible hash when it holds the whole file (≤1MB); larger files
+ * fall back to a 1MB head read for context only.
  */
-async function enrichContentFile(root: string, relativePath: string, lines: number[]): Promise<{ context: Map<number, { before: string[]; after: string[] }>; sha256?: string }> {
-  const context = new Map<number, { before: string[]; after: string[] }>()
+async function readContentFile(root: string, relativePath: string): Promise<{ lines: string[]; sha256?: string } | undefined> {
   let full: Buffer | undefined
   try {
     full = await readWorkspaceFile(root, relativePath, HASHABLE_BYTES, evaluateWorkspaceReadPolicy)
@@ -118,26 +142,66 @@ async function enrichContentFile(root: string, relativePath: string, lines: numb
       const range = await readWorkspaceFileRange(root, relativePath, 0, CONTEXT_READ_BYTES, evaluateWorkspaceReadPolicy)
       head = range.content
     } catch {
-      return { context }
+      return undefined
     }
   }
-  if (!isTextBuffer(head)) return { context }
-  const split = head.toString('utf8').split('\n')
-  for (const line of lines) {
-    const before: string[] = []
-    const after: string[] = []
-    for (let delta = CONTEXT_LINES; delta >= 1; delta -= 1) {
-      const text = split[line - 1 - delta]
-      if (text !== undefined) before.push(clipLine(text.replace(/\r$/, '')))
+  if (!isTextBuffer(head)) return undefined
+  const lines = head.toString('utf8').split('\n')
+  if (full) return { lines, sha256: createHash('sha256').update(full).digest('hex') }
+  return { lines }
+}
+
+/** Gaps of at most this many unseen lines absorb into the hunk instead of a marker. */
+const HUNK_ABSORB_GAP = 2
+
+/**
+ * Merge per-hit ±2-line windows into hunks. Overlapping or touching windows
+ * join silently; tiny gaps absorb as plain context; larger skips become an
+ * explicit gapBefore count so the model sees the discontinuity without
+ * paying for the elided lines.
+ */
+function buildHunks(fileLines: string[], hits: Array<{ line: number; text: string }>): SearchHunk[] {
+  const sorted = [...hits].sort((a, b) => a.line - b.line)
+  const ranges: Array<{ start: number; end: number; hitText: Map<number, string> }> = []
+  for (const hit of sorted) {
+    const start = Math.max(1, hit.line - CONTEXT_LINES)
+    const end = hit.line + CONTEXT_LINES
+    const current = ranges[ranges.length - 1]
+    if (current && start <= current.end + 1 + HUNK_ABSORB_GAP) {
+      current.end = Math.max(current.end, end)
+      if (!current.hitText.has(hit.line)) current.hitText.set(hit.line, hit.text)
+    } else {
+      ranges.push({ start, end, hitText: new Map([[hit.line, hit.text]]) })
     }
-    for (let delta = 1; delta <= CONTEXT_LINES; delta += 1) {
-      const text = split[line - 1 + delta]
-      if (text !== undefined) after.push(clipLine(text.replace(/\r$/, '')))
-    }
-    context.set(line, { before, after })
   }
-  if (full) return { context, sha256: createHash('sha256').update(full).digest('hex') }
-  return { context }
+  let previousEnd = 0
+  const hunks: SearchHunk[] = []
+  for (const range of ranges) {
+    const gapBefore = previousEnd === 0 ? undefined : range.start - previousEnd - 1
+    const lines: SearchHunkLine[] = []
+    for (let line = range.start; ; line += 1) {
+      const raw = fileLines[line - 1]
+      const hitText = range.hitText.get(line)
+      // The file shifted between the rg scan and this read: keep the hit
+      // text the scanner saw instead of dropping the evidence.
+      if (raw === undefined && hitText === undefined) break
+      // A trailing newline leaves a final empty segment; as context it is
+      // noise, so the hunk ends before it (hits there stay, see above).
+      if (raw === '' && hitText === undefined && line === fileLines.length && line > 1) break
+      lines.push({ line, text: clipLine(((hitText ?? raw ?? '').replace(/\r$/, ''))), hit: hitText !== undefined })
+      if (line >= range.end && raw !== undefined) break
+    }
+    if (lines.length > 0) {
+      hunks.push({
+        start: lines[0]!.line,
+        end: lines[lines.length - 1]!.line,
+        ...(gapBefore === undefined || gapBefore <= 0 ? {} : { gapBefore }),
+        lines,
+      })
+      previousEnd = lines[lines.length - 1]!.line
+    }
+  }
+  return hunks
 }
 
 /** Recently modified files first; alphabetical order breaks ties. */
@@ -268,29 +332,53 @@ export async function searchWorkspace(options: SearchOptions) {
     }
   }
   if (mode === 'content') {
-    // One enrichment read per matched file: context lines plus the file hash
-    // the model can edit against directly.
-    const byFile = new Map<string, number[]>()
+    // Group hits per file and merge overlapping context windows into hunks:
+    // clustered hits share one context copy plus one file hash instead of
+    // repeating both per hit, and distant hunks carry an explicit gap count.
+    const hitsByFile = new Map<string, Array<{ line: number; text: string }>>()
     for (const match of matches) {
-      if (!isContentMatch(match)) continue
-      const lines = byFile.get(match.path) ?? []
-      lines.push(match.line)
-      byFile.set(match.path, lines)
+      // Collection-phase hits are flat {path, line, text}; groups only exist
+      // after this block runs.
+      if (isContentMatch(match) || typeof match.line !== 'number' || typeof match.text !== 'string') continue
+      const hits = hitsByFile.get(match.path) ?? []
+      hits.push({ line: match.line, text: match.text })
+      hitsByFile.set(match.path, hits)
     }
-    const enriched = await Promise.all([...byFile].map(async ([path, lines]) => enrichContentFile(root, path, lines)))
-    const enrichment = new Map([...byFile.keys()].map((path, index) => [path, enriched[index]!]))
-    for (const match of matches) {
-      if (!isContentMatch(match)) continue
-      const entry = enrichment.get(match.path)
-      const seen = entry?.context.get(match.line)
-      match.contextBefore = seen?.before ?? []
-      match.contextAfter = seen?.after ?? []
-      if (entry?.sha256) match.sha256 = entry.sha256
+    const contents = await Promise.all([...hitsByFile].map(async ([path]) => readContentFile(root, path)))
+    const grouped: SearchMatch[] = []
+    for (const [index, [path, hits]] of [...hitsByFile].entries()) {
+      const content = contents[index]
+      if (!content) continue
+      const hunks = buildHunks(content.lines, hits)
+      if (hunks.length === 0) continue
+      grouped.push({
+        path,
+        matchCount: hunks.reduce((total, hunk) => total + hunk.lines.filter((line) => line.hit).length, 0),
+        hunks,
+        ...(content.sha256 === undefined ? {} : { sha256: content.sha256 }),
+      })
     }
-    // Context and hashes land after the pre-cap: trim back into budget so one
-    // call never exceeds MAX_RESULT_CHARS regardless of line lengths.
-    while (matches.length > 1 && JSON.stringify(matches).length > MAX_RESULT_CHARS) {
-      matches.pop()
+    matches.length = 0
+    matches.push(...grouped)
+    // Hunks land after the flat pre-cap: trim trailing hunks back into
+    // budget so one call never exceeds MAX_RESULT_CHARS. Match counts follow
+    // the shown hunks; emptied groups drop.
+    while (countSearchHits(matches) > 0 && JSON.stringify(matches).length > MAX_RESULT_CHARS) {
+      const last = matches[matches.length - 1]!
+      if (!isContentMatch(last)) {
+        if (matches.length <= 1) break
+        matches.pop()
+        truncated = true
+        continue
+      }
+      if (last.hunks.length <= 1) {
+        if (matches.length <= 1) break
+        matches.pop()
+        truncated = true
+        continue
+      }
+      last.hunks.pop()
+      last.matchCount = last.hunks.reduce((total, hunk) => total + hunk.lines.filter((line) => line.hit).length, 0)
       truncated = true
     }
   }

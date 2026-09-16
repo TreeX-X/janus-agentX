@@ -78,7 +78,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.overview', input),
     },
     workspace_search: {
-      description: 'Search code with path/glob filters and matching line numbers. mode=files locates paths with recently modified files first; content matches carry ±2 context lines and the file SHA-256. Use mode=files to locate paths, regex=true for alternative symbols. Default: literal case-insensitive content search.',
+      description: 'Search code with path/glob filters and matching line numbers. mode=files locates paths with recently modified files first; content matches group per file into hunks with skipped-lines gap counts plus the file SHA-256. Use mode=files to locate paths, regex=true for alternative symbols. Default: literal case-insensitive content search.',
       parameters: z.object({
         workspaceId,
         query: z.string().max(256).default('').describe('Literal text or regex; optional in files mode.'),
