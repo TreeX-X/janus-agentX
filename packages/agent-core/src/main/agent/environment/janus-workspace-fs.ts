@@ -29,10 +29,10 @@ const DEFAULT_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'o
 // Note: line-paged reads keep the model on rails for large files — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
 /** Full-file ceiling for a paged read; the whole file is hashed for edit safety. */
 export const MAX_PAGED_READ_BYTES = 16 * 1024 * 1024
-/** Default page: small enough to survive the 6K context cap without a second cut. */
+/** Pages are bounded here; the context layer preserves their complete contents. */
 export const DEFAULT_PAGE_LINES = 200
 export const MAX_PAGE_LINES = 2000
-export const DEFAULT_PAGE_BYTES = 50 * 1024
+export const DEFAULT_PAGE_BYTES = 16 * 1024
 
 export interface WorkspaceTextPage {
   content: Buffer

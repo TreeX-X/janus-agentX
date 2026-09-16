@@ -14,6 +14,8 @@
  * - empty-response fallback mirrored as a text_delta event
  * - observation capture skipped when aborted
  */
+import type { ZodType } from 'zod/v3'
+import { zodToJsonSchema } from 'zod-to-json-schema'
 import {
   AgentSteeringPort,
   createJanusRuntimeToolsForResources,
@@ -31,6 +33,7 @@ import {
 import {
   ASK_MAX_CALLS_PER_TURN,
   ChatSessionRuntime,
+  estimateContextTokens,
   buildChatSystemPrompt,
   cloneAskRequest,
   cloneTodos,
@@ -244,13 +247,15 @@ export async function runChatTurn(
 
   const userRequestedMutation = hasExplicitWorkspaceMutationIntent(latestUserQuery(promptMessages))
   let recoveryIssued = false
-  // Todo resume nudge is continuous (not one-shot): every no-tool-call round
-  // with open items re-injects the prompt. Upper bound is CHAT_MAX_STEPS via
-  // maxTurns; a concrete blocker statement is the legitimate exit.
+  // Open todos get one reminder per progress state, then return control.
   // One-shot failure-repair nudge: fires once per turn when the loop ends a
   // round without tool calls while fixable tool errors are still unaddressed.
   // Denied/cancelled outcomes are excluded — retrying those burns turns.
   let failureRepairIssued = false
+  let lastTodoNudgeState: string | undefined
+  let latestFailedTools: string[] = []
+  const failedCalls = new Map<string, number>()
+  const callKey = (call: { name: string; arguments: unknown }) => JSON.stringify([call.name, call.arguments])
   const modelMessages: JanusAgentMessage[] = promptMessages.map((message) => ({
     role: message.role,
     content: message.content,
@@ -317,29 +322,46 @@ export async function runChatTurn(
     if (tool.name === ASKUSER_TOOL_NAME) tool.runLast = true
   }
 
+  // Count the actual schema shape, not Zod internals (whose shape is a function).
+  const toolTokens = estimateContextTokens(JSON.stringify(Object.entries(modelTools).map(([name, tool]) => ({
+    name, description: tool.description,
+    parameters: zodToJsonSchema(tool.parameters as unknown as ZodType),
+  }))))
+  const contextOptions = {
+    model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+    toolTokens,
+  }
+
+  let resumeMessages = modelMessages
   const loopConfig: Parameters<typeof runJanusAgentLoop>[1] = {
     tools: loopTools,
     stream: createVercelStream({ model: endpoint.model, tools: modelTools, streamTextFn: ports.streamTextFn, ...(endpoint.effort ? { effort: endpoint.effort } : {}) }),
     transformContext: async (context, signal) => {
+      resumeMessages = context
       // Single-summary compaction absorbs newly evicted turns; the head
       // fingerprint inside skips already-covered content, so repeat calls
       // stay cheap. Never throws: failure keeps deterministic pruning.
       if (request.compactionSummarizer) {
         try {
           if (await chatSession.maybeCompact(context, {
-            model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+            ...contextOptions,
           }, request.compactionSummarizer, signal)) compacted = true
         } catch {
           // Fall through to the deterministic view below.
         }
       }
       return chatSession.buildContext(context, {
-        model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+        ...contextOptions,
       })
     },
     maxTurns,
     steeringPort: request.steeringPort,
     beforeToolCall: async ({ call }) => {
+      const failures = failedCalls.get(callKey(call))
+      if (failures !== undefined) {
+        failedCalls.set(callKey(call), failures + 1)
+        return { block: true, terminate: failures >= 2, reason: 'An identical call already failed. Correct its parameters or explain the blocker; do not repeat this call.' }
+      }
       if (call.name === ASKUSER_TOOL_NAME && askCallsThisTurn >= ASK_MAX_CALLS_PER_TURN) {
         return { block: true, reason: `ask_user budget exhausted (max ${ASK_MAX_CALLS_PER_TURN} calls per turn). Proceed with the answers so far and state assumptions.` }
       }
@@ -347,6 +369,12 @@ export async function runChatTurn(
     },
     afterToolCall: async ({ call, result }) => {
       const runtimeResult = result.details as ToolResult | undefined
+      // A successful mutation can repair the precondition of an identical
+      // command/read (e.g. edit code, then rerun the same failing test).
+      if (runtimeResult?.status === 'completed'
+        && (WORKSPACE_MUTATION_TOOLS.has(runtimeResult.toolName) || runtimeResult.toolName === 'command.run')) failedCalls.clear()
+      if (result.isError && runtimeResult?.reasonCode !== 'TARGET_CHANGED') failedCalls.set(callKey(call), 1)
+      else if (!result.isError) failedCalls.delete(callKey(call))
       if (runtimeResult?.toolName) {
         chatSession.recordToolResult(runtimeResult)
         executedToolTraces.push(toolTraceEntryFromResult(runtimeResult, requestId))
@@ -381,55 +409,47 @@ export async function runChatTurn(
           content: workspaceRecoveryPrompt(userRequestedMutation && !mutationAttempted),
         })
       }
-      // Note: todo list drives continuous execution — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
-      // Continuous resume nudge: the loop only consults follow-ups on
-      // no-tool-call rounds, so each pure-text round with open items costs
-      // one more model round until a tool call, a blocker statement, or
-      // maxTurns. Closed lists (completed/cancelled only) never nudge.
+      // One reminder per progress state; text-only answers cannot spend the turn cap.
       const openTodos = chatSession.getTodos().filter(
         (todo) => todo.status === 'pending' || todo.status === 'in_progress',
       )
-      if (openTodos.length > 0) {
+      const todoProgress = JSON.stringify([chatSession.getTodos(), executedToolTraces.filter((entry) => entry.status === 'completed').length])
+      if (openTodos.length > 0 && todoProgress !== lastTodoNudgeState) {
+        lastTodoNudgeState = todoProgress
         followUps.push({ role: 'system', content: todoResumePrompt(openTodos.length) })
       }
-      // Note: failure-repair nudge — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
-      // Tool errors already carry actionable text (C1回灌 + self-heal); without a
-      // nudge the model re-reads the 2k error blob and blind-retries the identical
-      // call. One explicit repair prompt per turn breaks that loop.
-      if (!failureRepairIssued) {
-        const fixable = executedToolTraces.filter((entry) =>
-          entry.status !== 'completed'
-          && entry.status !== 'cancelled'
-          && !/denied|cancelled/i.test(`${entry.status} ${entry.summary}`))
-        if (fixable.length > 0) {
-          failureRepairIssued = true
-          const names = [...new Set(fixable.map((entry) => entry.toolName))].slice(0, 4).join(', ')
-          followUps.push({
-            role: 'system',
-            content: `Tool repair (${names}): read the error text in the last tool result, fix the parameters or paths it names, then retry once with a corrected call. Do not repeat the identical failing call. When the error says approval was denied, stop that action and explain instead. When it says timed-out, rerun via background execution and poll.`,
-          })
-        }
+      // Only the latest tool batch can need repair. A later successful batch
+      // consumes the earlier failure; historical traces are not a work queue.
+      if (!failureRepairIssued && latestFailedTools.length > 0) {
+        failureRepairIssued = true
+        const names = [...new Set(latestFailedTools)].slice(0, 4).join(', ')
+        followUps.push({
+          role: 'system',
+          content: `Tool repair (${names}): read the error text in the last tool result, fix the parameters or paths it names, then retry once with a corrected call. Do not repeat the identical failing call. When the error says approval was denied, stop that action and explain instead. When it says timed-out, rerun via background execution and poll.`,
+        })
       }
       return followUps
     },
-    shouldStopAfterTurn: async ({ messages }) => {
+    shouldStopAfterTurn: async () => {
       // C2: stop immediately after abort — the loop top-break covers the
       // next iteration, this covers the tail awaits of the current one.
       if (signal?.aborted) return true
-      if (!workspaceTools) return false
-      try {
-        chatSession.buildContext(messages, {
-          model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
-        })
-        return false
-      } catch {
-        return true
-      }
+      return false
     },
     onEvent: (loopEvent) => {
       if (signal?.aborted) return
       if (loopEvent.type === 'turn_start') turnStarts += 1
-      if (loopEvent.type === 'turn_end') lastTurnToolResults = loopEvent.toolResults.length
+      if (loopEvent.type === 'turn_end') {
+        lastTurnToolResults = loopEvent.toolResults.length
+        if (loopEvent.toolResults.length > 0) {
+          latestFailedTools = loopEvent.toolResults.filter((message) => {
+            try {
+              const value = JSON.parse(message.content)
+              return value.status && value.status !== 'completed' && !/denied|cancelled/i.test(message.content)
+            } catch { return /error|invalid|failed/i.test(message.content) && !/denied|cancelled/i.test(message.content) }
+          }).map((message) => message.toolName ?? 'tool')
+        }
+      }
       const streamEvent = toAgentStreamEvent(requestId, loopEvent)
       if (streamEvent) {
         onEvent(toChatAgentEvent(streamEvent))
@@ -442,8 +462,8 @@ export async function runChatTurn(
   }
 
   // Provider overflow recovery: one forced compact plus a single retry of the
-  // same turn. A second overflow surfaces as the turn error. The retry reuses
-  // the initial messages because the loop never mutates its input array.
+  // failed model boundary. A second overflow surfaces as the turn error.
+  // Completed tool calls survive recovery and must never be replayed.
   // C2: a user abort is a cancellation, not a failure — transports that
   // reject on abort (SDK AbortError) must not surface as "chat turn failed".
   const resetTurnTracking = () => { turnStarts = 0; lastTurnToolResults = 0 }
@@ -458,9 +478,9 @@ export async function runChatTurn(
     if (!isContextOverflowError(error) || !request.compactionSummarizer) throw error
     try {
       if (await chatSession.maybeCompact(
-        modelMessages,
+        resumeMessages,
         {
-          model: { contextWindow: endpoint.contextWindow, maxOutputTokens: endpoint.maxOutputTokens },
+          ...contextOptions,
           force: true,
         },
         request.compactionSummarizer,
@@ -470,7 +490,7 @@ export async function runChatTurn(
       // Fall through to the single retry below.
     }
     resetTurnTracking()
-    await runJanusAgentLoop(modelMessages, loopConfig, signal ?? new AbortController().signal)
+    await runJanusAgentLoop(resumeMessages, loopConfig, signal ?? new AbortController().signal)
   }
 
   // C2: max-turns exhaustion is an explicit outcome, not a silent truncation.

@@ -10,7 +10,7 @@ import { memoryConversationStore } from '../src/conversations.js'
 import type { CliDisplayEvent } from '../src/tool-display.js'
 
 const finish = { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: {
-  inputTokens: { total: 12, noCache: 12, cacheRead: 0, cacheWrite: 0 },
+  inputTokens: { total: 12, noCache: 6, cacheRead: 6, cacheWrite: 0 },
   outputTokens: { total: 8, text: 4, reasoning: 4 },
 } } as const
 
@@ -82,6 +82,7 @@ describe('CLI model stream', () => {
     ])
     expect(parts.find((part) => part.type === 'reasoning-delta')?.textDelta).toBe('check the file')
     expect(parts.find((part) => part.type === 'tool-call')).toMatchObject({ args: { path: 'a.ts' } })
+    expect(parts.at(-1)).toMatchObject({ usage: { cachedInputTokens: 6 } })
     expect(parts.at(-1)).toMatchObject({ type: 'finish', usage: { promptTokens: 12, completionTokens: 8 } })
     model.doStream = async (options) => {
       expect(options.prompt[0]).toMatchObject({ role: 'assistant', content: [{

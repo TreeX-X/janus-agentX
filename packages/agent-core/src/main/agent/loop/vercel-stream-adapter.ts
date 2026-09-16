@@ -29,7 +29,7 @@ interface VercelStreamPart {
   argsTextDelta?: string
   args?: unknown
   finishReason?: unknown
-  usage?: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number; inputTokens?: number; outputTokens?: number }
+  usage?: { promptTokens?: number; completionTokens?: number; cachedInputTokens?: number; reasoningTokens?: number; inputTokens?: number; outputTokens?: number }
   error?: unknown
 }
 
@@ -141,6 +141,7 @@ function usage(value: VercelStreamPart['usage']): AgentUsage | undefined {
     promptTokens: value.promptTokens ?? value.inputTokens ?? 0,
     completionTokens: value.completionTokens ?? value.outputTokens ?? 0,
   }
+  if (typeof value.cachedInputTokens === 'number') result.cachedInputTokens = value.cachedInputTokens
   if (typeof value.reasoningTokens === 'number' && value.reasoningTokens > 0) {
     result.reasoningTokens = value.reasoningTokens
   }

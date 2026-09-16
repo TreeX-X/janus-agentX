@@ -233,3 +233,21 @@ describe('reduceTuiState timeline', () => {
     expect(state.awaitingApproval).toBeNull()
   })
 })
+
+
+describe('cached input usage', () => {
+  it('accumulates provider cache reads separately and resets turn totals', () => {
+    let state = createInitialState()
+    state = reduceTuiState(state, { type: 'usage', promptTokens: 1000, completionTokens: 20, cachedInputTokens: 800 })
+    state = reduceTuiState(state, { type: 'usage', promptTokens: 1000, completionTokens: 20, cachedInputTokens: 900 })
+    expect(state.promptTokens).toBe(2000)
+    expect(state.cachedInputTokens).toBe(1700)
+    expect(formatTokenUsage(2000, 40, 1700)).toContain('cached')
+    state = reduceTuiState(state, { type: 'turn-start' })
+    expect(state.cachedInputTokens).toBeUndefined()
+    expect(state.sessionCachedInputTokens).toBe(1700)
+    expect(formatTokenUsage(100, 20)).not.toContain('cached')
+    state = reduceTuiState(state, { type: 'clear' })
+    expect(state.sessionCachedInputTokens).toBeUndefined()
+  })
+})

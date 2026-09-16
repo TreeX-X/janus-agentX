@@ -658,7 +658,7 @@ describe('App', () => {
       await waitForFrame(() => (lastFrame() ?? '').includes('✔ workspace_create'))
       const frame = lastFrame() ?? ''
       // Outcome caption plus new-file content preview, inline under the card.
-      expect(frame).toContain('└ new.txt, sha256=')
+      expect(frame).toContain('new.txt · (+1 -0) · checkpoint')
       expect(frame).toContain('+hello preview')
     } finally {
       unmount()

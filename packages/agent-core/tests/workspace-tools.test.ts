@@ -936,6 +936,61 @@ describe('workspace.search tool', () => {
     expect(result.output).toMatchObject({ truncated: true })
   })
 
+  it('finds filenames with glob and respects ignore files in native search', async () => {
+    const root = await temporaryDirectory()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, '.gitignore'), 'ignored.ts\n')
+    await writeFile(join(root, 'ignored.ts'), 'needle')
+    await writeFile(join(root, 'src', 'auth.ts'), 'needle')
+    await writeFile(join(root, 'src', 'auth.md'), 'needle')
+    const result = await executeSearch(root, { mode: 'files', glob: '**/*.ts' })
+    expect(result.status).toBe('completed')
+    const output = result.output as { backend: string; matches: Array<{ path: string }> }
+    expect(output.matches).toContainEqual({ path: 'src/auth.ts' })
+    expect(output.matches).not.toContainEqual({ path: 'src/auth.md' })
+    if (output.backend === 'ripgrep') expect(output.matches).not.toContainEqual({ path: 'ignored.ts' })
+  })
+
+  it('supports regex alternatives and case-sensitive search', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'code.ts'), 'function Foo() {}\nfunction Bar() {}\nfunction foo() {}')
+    const result = await executeSearch(root, { query: 'Foo|Bar', regex: true, caseSensitive: true })
+    if (result.status !== 'completed') {
+      expect(result.error).toContain('requires ripgrep')
+      return
+    }
+    expect((result.output as { matches: unknown[] }).matches).toHaveLength(2)
+  })
+
+  it('bounds complete match records and preserves truncation guidance', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'many.ts'), Array.from({ length: 100 }, () => 'needle ' + 'x'.repeat(500)).join('\n'))
+    const result = await executeSearch(root, { query: 'needle', maxResults: 50 })
+    const output = result.output as { matches: unknown[]; truncated: boolean; guidance: string }
+    expect(result.status).toBe('completed')
+    expect(output.matches.length).toBeGreaterThan(20)
+    expect(JSON.stringify(output.matches).length).toBeLessThan(12500)
+    expect(output.truncated).toBe(true)
+    expect(output.guidance).toContain('Narrow')
+  })
+
+  it('provides a truthful bounded fallback without ripgrep', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'code.ts'), 'needle')
+    vi.stubEnv('PATH', '')
+    try {
+      const result = await executeSearch(root, { query: 'needle', glob: '**/*.ts' })
+      expect(result.status).toBe('completed')
+      expect(result.output).toMatchObject({ backend: 'node', matches: [{ path: 'code.ts', line: 1, text: 'needle' }], note: expect.stringContaining('ignore files are not applied') })
+    } finally { vi.unstubAllEnvs() }
+  })
+
+  it('rejects explicitly scoped sensitive paths', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, '.env'), 'needle')
+    expect((await executeSearch(root, { query: 'needle', path: '.env' })).status).not.toBe('completed')
+  })
+
   it('rejects blank or oversized queries', async () => {
     const root = await temporaryDirectory()
     expect((await executeSearch(root, { query: '   ' })).status).toBe('failed')

@@ -355,4 +355,98 @@ describe('runChatTurn', () => {
     expect(streams.count).toBe(2)
     expect(result.text).toContain('stuck')
   })
+  it('does not reopen a failure after a corrected tool batch succeeds', async () => {
+    const count = { count: 0 }
+    const ports = failurePorts({ status: 'failed', error: 'file not found' }, count)
+    let executions = 0
+    ports.model.getMaxTurns = () => 8
+    ports.tools.executeFunctionCall = async (input) => ({
+      status: ++executions === 1 ? 'failed' : 'completed', toolName: input.call.toolName,
+      ...(executions === 1 ? { error: 'file not found' } : {}), output: { path: 'a.ts' },
+    }) as never
+    ports.streamTextFn = async () => {
+      count.count++
+      if (count.count <= 2) return {
+        fullStream: (async function* () {
+          yield { type: 'tool-call', toolCallId: 'c' + count.count, toolName: 'workspace_read', args: { workspaceId: 'w', path: count.count === 1 ? 'wrong.ts' : 'a.ts' } }
+          yield { type: 'finish', finishReason: 'tool-calls' }
+        })(), textStream: (async function* () {})(),
+      }
+      return { textStream: (async function* () { yield 'done' })() }
+    }
+    await runChatTurn(failureRequest('repaired'), ports)
+    expect(executions).toBe(2)
+    expect(count.count).toBe(3)
+  })
+
+  it('keeps completed tools in context when a later model request overflows', async () => {
+    const count = { count: 0 }
+    const ports = failurePorts({ status: 'completed' }, count)
+    let executions = 0
+    ports.tools.executeFunctionCall = async (input) => {
+      executions++
+      return { status: 'completed', toolName: input.call.toolName, output: { path: 'a.ts', content: 'verified marker' } } as never
+    }
+    ports.streamTextFn = async (options) => {
+      count.count++
+      if (count.count === 2) throw new Error('context window exceeded')
+      const hasTool = (options.messages as Array<{ role: string }>).some((message) => message.role === 'tool')
+      if (!hasTool) return {
+        fullStream: (async function* () {
+          yield { type: 'tool-call', toolCallId: 'read-once', toolName: 'workspace_read', args: { workspaceId: 'w', path: 'a.ts' } }
+          yield { type: 'finish', finishReason: 'tool-calls' }
+        })(), textStream: (async function* () {})(),
+      }
+      return { textStream: (async function* () { yield 'done' })() }
+    }
+    await runChatTurn({ ...failureRequest('overflow-after-tool'), compactionSummarizer: async () => '## Goal\nInspect\n## Progress\nRead\n## Next Steps\nAnswer' }, ports)
+    expect(count.count).toBe(3)
+    expect(executions).toBe(1)
+  })
+
+  it('blocks repeated identical failing calls instead of spending the turn cap', async () => {
+    const count = { count: 0 }
+    const ports = failurePorts({ status: 'failed', error: 'missing file' }, count)
+    let executions = 0
+    const execute = ports.tools.executeFunctionCall
+    ports.tools.executeFunctionCall = async (...args) => { executions++; return execute(...args) }
+    ports.model.getMaxTurns = () => 20
+    ports.streamTextFn = async () => {
+      count.count++
+      return {
+        fullStream: (async function* () {
+          yield { type: 'tool-call', toolCallId: 'c' + count.count, toolName: 'workspace_read', args: { workspaceId: 'w', path: 'missing.ts' } }
+          yield { type: 'finish', finishReason: 'tool-calls' }
+        })(), textStream: (async function* () {})(),
+      }
+    }
+    await runChatTurn(failureRequest('repeat-failure'), ports)
+    expect(executions).toBe(1)
+    expect(count.count).toBe(3)
+  })
+
+  it('allows the same read after a successful mutation repairs its precondition', async () => {
+    const count = { count: 0 }
+    const ports = failurePorts({ status: 'completed' }, count)
+    ports.model.getMaxTurns = () => 8
+    ports.tools.registry.list = () => ['workspace.read', 'workspace.create'].map((name) => ({ name, description: name, inputSchema: { type: 'object' }, actionRisk: name.endsWith('read') ? 'read' : 'write' })) as never
+    const calls: string[] = []
+    ports.tools.executeFunctionCall = async (input) => {
+      calls.push(input.call.toolName)
+      return { toolName: input.call.toolName, status: calls.length === 1 ? 'failed' : 'completed', ...(calls.length === 1 ? { error: 'missing file' } : {}), output: { path: 'a.ts' } } as never
+    }
+    ports.streamTextFn = async () => {
+      count.count++
+      if (count.count > 3) return { textStream: (async function* () { yield 'done' })() }
+      const creating = count.count === 2
+      return { fullStream: (async function* () {
+        yield { type: 'tool-call', toolCallId: 'c' + count.count, toolName: creating ? 'workspace_create' : 'workspace_read', args: { workspaceId: 'w', path: 'a.ts', ...(creating ? { content: 'fixed' } : {}) } }
+        yield { type: 'finish', finishReason: 'tool-calls' }
+      })(), textStream: (async function* () {})() }
+    }
+    await runChatTurn(failureRequest('repaired-precondition'), ports)
+    expect(calls).toEqual(['workspace.read', 'workspace.create', 'workspace.read'])
+    expect(count.count).toBe(4)
+  })
+
 })

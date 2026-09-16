@@ -98,8 +98,8 @@ export function formatTokenCount(value: number): string {
 }
 
 /** `12 in / 8 out` segment shared by the footer and the turn-done caption. */
-export function formatTokenUsage(promptTokens: number, completionTokens: number): string {
-  return `${formatTokenCount(promptTokens)} in / ${formatTokenCount(completionTokens)} out`
+export function formatTokenUsage(promptTokens: number, completionTokens: number, cachedInputTokens?: number): string {
+  return `${formatTokenCount(promptTokens)} in / ${formatTokenCount(completionTokens)} out${cachedInputTokens !== undefined ? ` · ${formatTokenCount(cachedInputTokens)} cached` : ''}`
 }
 
 export interface FooterSegments {
@@ -144,11 +144,14 @@ export interface TuiState extends TuiContextLabels {
   /** Current-turn tokens (reset on turn-start; shown in the turn-done caption). */
   promptTokens: number
   completionTokens: number
-  /** Reasoning share of completion when the provider reports it (budget honesty; display still in/out). */
+  /** Cached share of input when the provider reports it. */
+  cachedInputTokens?: number
+  /** Reasoning share of completion when the provider reports it. */
   reasoningTokens: number
   /** Session totals (opencode bottom-bar shape; survive across turns). */
   sessionPromptTokens: number
   sessionCompletionTokens: number
+  sessionCachedInputTokens?: number
   sessionReasoningTokens: number
   status: TuiStatus
   statusText: string
@@ -422,7 +425,7 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
     case 'turn-start':
       return { ...state, status: 'thinking', statusText: 'thinking…', activeBlockId: undefined,
-        turnStartedAt: Date.now(), turnEndedAt: undefined, promptTokens: 0, completionTokens: 0, reasoningTokens: 0 }
+        turnStartedAt: Date.now(), turnEndedAt: undefined, promptTokens: 0, completionTokens: 0, reasoningTokens: 0, cachedInputTokens: undefined }
     case 'agent-event':
       return reduceAgentEvent(state, action.event)
     case 'turn-done': {
@@ -473,6 +476,8 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         ...state,
         promptTokens: state.promptTokens + action.promptTokens,
         completionTokens: state.completionTokens + action.completionTokens,
+        cachedInputTokens: action.cachedInputTokens !== undefined ? (state.cachedInputTokens ?? 0) + action.cachedInputTokens : state.cachedInputTokens,
+        sessionCachedInputTokens: action.cachedInputTokens !== undefined ? (state.sessionCachedInputTokens ?? 0) + action.cachedInputTokens : state.sessionCachedInputTokens,
         reasoningTokens: state.reasoningTokens + (action.reasoningTokens ?? 0),
         sessionPromptTokens: state.sessionPromptTokens + action.promptTokens,
         sessionCompletionTokens: state.sessionCompletionTokens + action.completionTokens,
@@ -505,6 +510,8 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         promptTokens: 0,
         completionTokens: 0,
         reasoningTokens: 0,
+        cachedInputTokens: undefined,
+        sessionCachedInputTokens: undefined,
         sessionPromptTokens: 0,
         sessionCompletionTokens: 0,
         sessionReasoningTokens: 0,
@@ -526,6 +533,8 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         promptTokens: 0,
         completionTokens: 0,
         reasoningTokens: 0,
+        cachedInputTokens: undefined,
+        sessionCachedInputTokens: undefined,
         sessionPromptTokens: 0,
         sessionCompletionTokens: 0,
         sessionReasoningTokens: 0,

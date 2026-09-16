@@ -1,3 +1,4 @@
+import { searchWorkspace } from './workspace-search'
 import { readdir, readFile, stat } from 'fs/promises'
 import { isUtf8 } from 'node:buffer'
 import { dirname, join, resolve } from 'path'
@@ -106,7 +107,7 @@ function lineEditsDiffPreview(path: string, value: unknown): CallDiffPreview | u
 // Note: line-paged reads keep large-file evidence reachable without re-reading the head — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
-  description: 'Read one UTF-8 text file as line pages (default 200 lines or 50KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits; withLineAnchors:true also returns a LINE#HASH anchor per line for hash-anchored lineEdits in workspace.edit.',
+  description: 'Read one UTF-8 text file as line pages (default 200 lines or 16KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits; withLineAnchors:true also returns a LINE#HASH anchor per line for hash-anchored lineEdits in workspace.edit.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -115,7 +116,7 @@ export const workspaceReadTool: RegisteredTool = {
       path: { type: 'string', description: 'Workspace-relative file path, e.g. src/notes/test.md.' },
       offset: { type: 'number', description: '1-indexed line number to start from (default 1).' },
       limit: { type: 'number', description: 'Max lines to return (default 200, max 2000).' },
-      maxBytes: { type: 'number', description: 'Max bytes of page content (default 51200, max 1048576). The byte cap wins over limit.' },
+      maxBytes: { type: 'number', description: 'Max bytes of page content (default 16384, max 1048576). The byte cap wins over limit.' },
       withLineAnchors: { type: 'boolean', description: 'Also return a LINE#HASH anchor array for this page (for workspace.edit lineEdits).' },
     },
     required: ['workspaceId', 'path'],
@@ -460,124 +461,48 @@ export const workspaceListTool: RegisteredTool = {
   },
 }
 
-const SEARCH_MAX_QUERY_CHARS = 256
-const SEARCH_MAX_RESULTS = 50
-const SEARCH_MAX_FILES = 2_000
-const SEARCH_MAX_FILE_BYTES = 512 * 1024
-const SEARCH_MAX_LINE_CHARS = 300
-const SEARCH_MAX_DEPTH = 8
-const SEARCH_SKIPPED_DIRECTORIES = new Set([
-  'node_modules', 'dist', 'out', 'build', 'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv',
-  // P4: command.run logs live under .janusX/logs (read them via the logPath
-  // from the tool result, not via search) — keep build output out of code search.
-  '.janusX',
-])
-
-type WorkspaceSearchMatch = {
-  path: string
-  line: number
-  text: string
-}
-
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Search UTF-8 text files in the workspace for a literal substring and return matching lines. The path must be a directory; a file path scopes the search to that file and the result carries a note',
+  description: 'Find code with bounded ignore-aware search. mode=files searches file paths; mode=content returns matching lines. Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
     properties: {
-      workspaceId: { type: 'string' },
-      query: { type: 'string' },
-      path: { type: 'string' },
-      maxResults: { type: 'number' },
+      workspaceId: { type: 'string' }, query: { type: 'string' }, path: { type: 'string' },
+      glob: { type: 'string' }, mode: { type: 'string', enum: ['content', 'files'] },
+      regex: { type: 'boolean' }, caseSensitive: { type: 'boolean' }, maxResults: { type: 'number' },
     },
-    required: ['workspaceId', 'query'],
-    additionalProperties: false,
+    required: ['workspaceId'], additionalProperties: false,
   },
   execute: async (input, context) => {
-    const workspaceId = input.workspaceId
-    const query = input.query
+    const { workspaceId } = input
+    const query = input.query ?? ''
     const requestedPath = input.path ?? ''
-    const maxResults = input.maxResults ?? SEARCH_MAX_RESULTS
-    if (typeof workspaceId !== 'string' || workspaceId !== context.workspaceId) {
-      throw new Error('workspace.search workspaceId must match the active workspace resource')
-    }
-    if (typeof query !== 'string' || !query.trim() || query.length > SEARCH_MAX_QUERY_CHARS) {
-      throw new Error(`workspace.search query must be 1-${SEARCH_MAX_QUERY_CHARS} characters`)
-    }
+    const mode = input.mode ?? 'content'
+    const maxResults = input.maxResults ?? 30
+    if (workspaceId !== context.workspaceId) throw new Error('workspace.search workspaceId must match the active workspace resource')
+    if (mode !== 'content' && mode !== 'files') throw new Error('workspace.search mode must be content or files')
+    if (typeof query !== 'string' || query.length > 256 || (mode === 'content' && !query.trim())) throw new Error('workspace.search query must be 1-256 characters for content search')
     if (typeof requestedPath !== 'string') throw new Error('workspace.search path must be a string')
-    if (typeof maxResults !== 'number' || !Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > SEARCH_MAX_RESULTS) {
-      throw new Error(`workspace.search maxResults must be an integer between 1 and ${SEARCH_MAX_RESULTS}`)
+    if (input.glob !== undefined && (typeof input.glob !== 'string' || input.glob.length > 256)) throw new Error('workspace.search glob must be at most 256 characters')
+    for (const key of ['regex', 'caseSensitive']) {
+      if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error(`workspace.search ${key} must be a boolean`)
     }
+    if (typeof maxResults !== 'number' || !Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 50) throw new Error('workspace.search maxResults must be an integer between 1 and 50')
     if (context.signal.aborted) throw new Error('workspace.search cancelled')
-
-    // Note: a file path scopes the search to that file instead of failing — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
-    let target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
-    let scopedFile: string | undefined
-    if (target.kind === 'file') {
-      scopedFile = target.relativePath
-      const parent = dirname(scopedFile)
-      target = await resolveWorkspaceTarget(context.workspaceRoot, parent === '.' ? '' : parent)
-    }
-    const rootPath = resolve(context.workspaceRoot, target.relativePath || '.')
-    const needle = query.toLowerCase()
-    const matches: WorkspaceSearchMatch[] = []
-    let scannedFiles = 0
-    let truncated = false
-
-    const walk = async (directoryPath: string, relativeDirectory: string, depth: number): Promise<void> => {
-      if (truncated || depth > SEARCH_MAX_DEPTH) return
-      if (context.signal.aborted) throw new Error('workspace.search cancelled')
-      const children = await readdir(directoryPath, { withFileTypes: true })
-      children.sort((left, right) => left.name.localeCompare(right.name))
-      for (const child of children) {
-        if (truncated) return
-        if (context.signal.aborted) throw new Error('workspace.search cancelled')
-        if (child.isSymbolicLink()) continue
-        const childRelative = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name
-        if (isSensitivePath(childRelative)) continue
-        if (scopedFile !== undefined && childRelative !== scopedFile && !scopedFile.startsWith(`${childRelative}/`)) continue
-        if (child.isDirectory()) {
-          if (SEARCH_SKIPPED_DIRECTORIES.has(child.name)) continue
-          await walk(join(directoryPath, child.name), childRelative, depth + 1)
-          continue
-        }
-        if (!child.isFile()) continue
-        if (scannedFiles >= SEARCH_MAX_FILES) { truncated = true; return }
-        scannedFiles++
-        const filePath = join(directoryPath, child.name)
-        try {
-          if ((await stat(filePath)).size > SEARCH_MAX_FILE_BYTES) continue
-          const content = await readFile(filePath)
-          if (!isTextBuffer(content)) continue
-          const lines = content.toString('utf-8').split('\n')
-          for (const [index, line] of lines.entries()) {
-            if (!line.toLowerCase().includes(needle)) continue
-            matches.push({
-              path: childRelative,
-              line: index + 1,
-              text: line.length > SEARCH_MAX_LINE_CHARS ? `${line.slice(0, SEARCH_MAX_LINE_CHARS)}…` : line,
-            })
-            if (matches.length >= maxResults) { truncated = true; break }
-          }
-        } catch {
-          // Unreadable files are skipped, not fatal to the search.
-        }
-      }
-    }
-
-    await walk(rootPath, target.relativePath, 1)
+    const target = await resolveWorkspaceTarget(context.workspaceRoot, requestedPath)
+    if (isSensitivePath(target.relativePath)) throw new Error('Workspace search denied: sensitive path')
+    const scopedFile = target.kind === 'file' ? target.relativePath : undefined
+    const parent = scopedFile ? dirname(scopedFile).replaceAll('\\', '/') : target.relativePath
+    const path = parent === '.' ? '' : parent
+    const result = await searchWorkspace({
+      root: context.workspaceRoot, path, scopedFile, query, mode, maxResults,
+      glob: input.glob as string | undefined, regex: input.regex === true,
+      caseSensitive: input.caseSensitive === true, signal: context.signal,
+    })
     return {
-      workspaceId,
-      query,
-      path: target.relativePath,
-      matches,
-      scannedFiles,
-      truncated,
-      ...(scopedFile === undefined ? {} : {
-        scopedFile,
-        note: `path pointed to a file; the search was scoped to ${scopedFile}`,
-      }),
+      workspaceId, query, path, ...result,
+      ...(scopedFile ? { scopedFile, note: `path pointed to a file; the search was scoped to ${scopedFile}. ${result.note ?? ''}`.trim() } : {}),
     }
   },
 }

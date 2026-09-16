@@ -10,10 +10,6 @@ const SAFETY_MARGIN_TOKENS = 512
 /** User tuning may only move the trigger earlier, never past this share of the window. */
 const MAX_COMPACTION_THRESHOLD_RATIO = 0.9
 const MAX_LOADED_FILES = 3
-const MAX_LOADED_FILE_CHARS = 4_000
-/** Tail truncation is uniform: every tool preview entering context is capped here. */
-const MAX_TOOL_CONTENT_CHARS = 2_000
-const MAX_TOOL_MESSAGE_CHARS = 2_000
 /** Tool output is truncated per result before it enters a summary call. */
 const COMPACTION_TOOL_OUTPUT_MAX_CHARS = 2_000
 /** Head text is capped so the summary call itself cannot overflow. */
@@ -92,9 +88,7 @@ interface LoadedContextEntry {
   nextOffset?: number
   truncated: boolean
   sha256: string
-  content: string
   size: number
-  loadedAt: number
   stale: boolean
 }
 
@@ -113,8 +107,17 @@ interface ToolOutput {
   changedPaths?: unknown
 }
 
-function estimateTokens(value: string): number {
-  return Math.ceil(value.length / 4)
+/** Conservative estimate until provider usage is available; CJK is not four chars/token. */
+export function estimateContextTokens(value: string): number {
+  const nonAscii = value.match(/[^\x00-\x7f]/gu)?.length ?? 0
+  return Math.ceil((value.length - nonAscii) / 4 + nonAscii)
+}
+const estimateTokens = estimateContextTokens
+
+function messageTokens(message: JanusAgentMessage): number {
+  return 4 + estimateTokens(message.content)
+    + (message.toolCalls ? estimateTokens(JSON.stringify(message.toolCalls)) : 0)
+    + estimateTokens(message.toolName ?? '')
 }
 
 function bounded(value: string, maxChars: number): { value: string; truncated: boolean } {
@@ -139,13 +142,16 @@ export class LoadedContextIndex {
     if (result.toolName === 'workspace.read' && result.status === 'completed'
       && typeof output.workspaceId === 'string' && typeof output.path === 'string'
       && typeof output.sha256 === 'string' && typeof output.content === 'string') {
-      const content = bounded(output.content, MAX_LOADED_FILE_CHARS)
       const offset = typeof output.offset === 'number' ? output.offset : 1
       const bytes = typeof output.bytes === 'number' ? output.bytes : output.content.length
       const lineEnd = typeof output.lineEnd === 'number' ? output.lineEnd : undefined
       const totalLines = typeof output.totalLines === 'number' ? output.totalLines : undefined
       const nextOffset = typeof output.nextOffset === 'number' ? output.nextOffset : undefined
       const key = `${output.workspaceId}:${output.path}:${offset}`
+      for (const entry of this.entries.values()) {
+        if (entry.workspaceId === output.workspaceId && entry.path === output.path && entry.sha256 !== output.sha256) entry.stale = true
+      }
+      this.entries.delete(key)
       this.entries.set(key, {
         workspaceId: output.workspaceId,
         path: output.path,
@@ -154,13 +160,12 @@ export class LoadedContextIndex {
         lineEnd,
         totalLines,
         nextOffset,
-        truncated: output.truncated === true || content.truncated,
+        truncated: output.truncated === true,
         sha256: output.sha256,
-        content: content.value,
         size: typeof output.size === 'number' ? output.size : output.content.length,
-        loadedAt: Date.now(),
         stale: false,
       })
+      while (this.entries.size > 100) this.entries.delete(this.entries.keys().next().value!)
       return
     }
 
@@ -175,67 +180,20 @@ export class LoadedContextIndex {
     }
   }
 
-  asSystemMessage(remainingTokens: number): JanusAgentMessage | undefined {
-    const eligible = [...this.entries.values()]
-      .filter((entry) => !entry.stale)
-      .sort((left, right) => right.loadedAt - left.loadedAt)
-      .slice(0, MAX_LOADED_FILES)
-    if (eligible.length === 0 || remainingTokens < 64) return undefined
-
-    const sections: string[] = []
-    let usedTokens = 0
-    for (const entry of eligible) {
-      const range = entry.totalLines !== undefined && entry.lineEnd !== undefined
-        ? `lines=${entry.offset}-${entry.lineEnd}/${entry.totalLines}`
-        : `range=${entry.offset}-${entry.offset + entry.bytes}`
-      const paging = entry.nextOffset !== undefined
-        ? ` continue with offset=${entry.nextOffset} when more is needed.`
-        : ' read again when a newer range is needed.'
-      const header = [
-        `Loaded workspace evidence: ${entry.workspaceId}/${entry.path}`,
-        `${range}; sha256=${entry.sha256}; size=${entry.size};${entry.truncated ? ' truncated;' : ''}${paging}`,
-      ].join('\n')
-      const availableChars = Math.max(0, (remainingTokens - usedTokens) * 4 - header.length - 1)
-      if (availableChars < 128) continue
-      const content = bounded(entry.content, Math.min(MAX_LOADED_FILE_CHARS, availableChars)).value
-      const section = `${header}\n${content}`
-      const cost = estimateTokens(section)
-      if (usedTokens + cost > remainingTokens) continue
-      sections.push(section)
-      usedTokens += cost
+  /** Metadata only: file bodies belong to their tool messages, never a moving prefix. */
+  asSystemMessage(remainingTokens: number, visible: string = ''): JanusAgentMessage | undefined {
+    const lines = [...this.entries.values()].filter((entry) => !entry.stale && !visible.includes(JSON.stringify(entry.sha256))).slice(-MAX_LOADED_FILES)
+      .map((entry) => `Loaded workspace evidence: ${entry.workspaceId}/${entry.path}; sha256=${entry.sha256}; lines=${entry.offset}-${entry.lineEnd ?? '?'}/${entry.totalLines ?? '?'};${entry.nextOffset ? ` next offset=${entry.nextOffset};` : ''} re-read the needed range if its tool result is absent.`)
+    const selected: string[] = []
+    for (const line of lines) {
+      if (estimateTokens([...selected, line].join('\n')) + 4 > remainingTokens) break
+      selected.push(line)
     }
-    return sections.length ? { role: 'system', content: sections.join('\n\n') } : undefined
+    return selected.length ? { role: 'system', content: selected.join('\n') } : undefined
   }
+
 }
 
-function compactToolMessage(message: JanusAgentMessage): JanusAgentMessage {
-  if (message.role !== 'tool') return message
-  try {
-    const value = JSON.parse(message.content) as unknown
-    const output = asRecord(value)
-    if (output && typeof output.content === 'string') {
-      const content = bounded(output.content, MAX_TOOL_CONTENT_CHARS)
-      const nextOffset = typeof output.nextOffset === 'number' ? output.nextOffset : undefined
-      const pagingGuidance = nextOffset !== undefined
-        ? `Showing lines ${String(output.lineStart ?? output.offset ?? 1)}-${String(output.lineEnd ?? '?')} of ${String(output.totalLines ?? '?')}. Use workspace_read with offset=${nextOffset} to continue.`
-        : 'Use workspace_read again for another range.'
-      const existingGuidance = typeof output.guidance === 'string' && output.guidance ? output.guidance : undefined
-      return {
-        ...message,
-        content: JSON.stringify({
-          ...output,
-          content: content.value,
-          ...(content.truncated || output.truncated === true
-            ? { truncated: true, guidance: existingGuidance ?? pagingGuidance }
-            : {}),
-        }),
-      }
-    }
-  } catch {
-    // Non-JSON tool output is still bounded below.
-  }
-  return { ...message, content: bounded(message.content, MAX_TOOL_MESSAGE_CHARS).value }
-}
 
 /**
  * opencode-style prune: the assistant tool_call is always retained, but a
@@ -287,7 +245,7 @@ function toolDigest(message: JanusAgentMessage): string | undefined {
       const range = typeof parsed.lineStart === 'number' && typeof parsed.lineEnd === 'number'
         ? ` L${String(parsed.lineStart)}-${String(parsed.lineEnd)}${typeof parsed.totalLines === 'number' ? `/${String(parsed.totalLines)}` : ''}`
         : ''
-      return `- ${label} ${scope}${String(parsed.path)}${range}${sha} (content retained in loaded evidence when available)`
+      return `- ${label} ${scope}${String(parsed.path)}${range}${sha} (re-read this range if needed)`
     }
     // workspace.delete results carry path + kind/entryCount instead of content:
     // keep a one-line digest so pruned turns still show what was removed.
@@ -500,45 +458,66 @@ interface ContextLayout {
   window: number
 }
 
+// Note: preserve current evidence and prune before summarizing — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
 function layoutContext(
   runtime: LoadedContextIndex,
   messages: JanusAgentMessage[],
   options: ChatContextBuildOptions,
   reservedTokens = 0,
 ): ContextLayout {
-  const window = budgetFor(options.model, options.bufferTokens)
+  const window = budgetFor(options.model, options.bufferTokens) - (options.toolTokens ?? 0)
   const systems = messages.filter((message) => message.role === 'system')
-  const systemTokens = systems.reduce((total, message) => total + estimateTokens(message.content), 0)
+  const systemTokens = systems.reduce((total, message) => total + messageTokens(message), 0)
   if (systemTokens >= window) throw new Error('SYSTEM_CONTEXT_EXCEEDS_BUDGET')
-
-  // Evidence and tail fill the window MINUS the stored summary: the summary
-  // rides on top, so without this reservation the rendered view exceeds the
-  // window by exactly the summary size on strict providers.
   const budget = Math.max(0, window - reservedTokens)
-  let usedTokens = systemTokens
-  const evidence = runtime.asSystemMessage(Math.max(0, budget - usedTokens))
-  if (evidence) usedTokens += estimateTokens(evidence.content)
-
-  const units = agentTurnUnits(messages.filter((message) => message.role !== 'system'))
-  const dropped: JanusAgentMessage[][] = []
-  for (const unit of units) {
-    const compacted = unit.map(compactToolMessage)
-    const unitTokens = compacted.reduce((total, message) => total + estimateTokens(message.content), 0)
-    if (usedTokens + unitTokens > budget) {
-      // An oversized single turn joins the dropped head instead of throwing:
-      // the digest path (or a forced summary) still represents it, so one
-      // huge tool dump never kills the session. Only unrepresentable system
-      // content throws above.
-      dropped.push(unit)
-      continue
-    }
-    usedTokens += unitTokens
+  const original = agentTurnUnits(messages.filter((message) => message.role !== 'system'))
+  const newestUser = original.findIndex((unit) => unit.some((message) => message.role === 'user'))
+  const pruneKeep = Math.max(MIN_PRUNE_KEEP_TOKENS, options.pruneKeepTokens ?? DEFAULT_PRUNE_KEEP_TOKENS)
+  let tailTokens = 0
+  const units = original.map((unit, index) => {
+    const keep = index === 0 || tailTokens < pruneKeep
+    tailTokens += unit.reduce((sum, message) => sum + messageTokens(message), 0)
+    return keep ? unit : unit.map(pruneToolMessage)
+  })
+  const cost = (unit: JanusAgentMessage[]) => unit.reduce((sum, message) => sum + messageTokens(message), 0)
+  let usedTokens = systemTokens + units.reduce((sum, unit) => sum + cost(unit), 0)
+  // Under pressure, prune old tool bodies before evicting any conversation.
+  for (let index = units.length - 1; index > 0 && usedTokens > budget; index -= 1) {
+    const pruned = units[index].map(pruneToolMessage)
+    const saved = cost(units[index]) - cost(pruned)
+    if (saved > 0) { usedTokens -= saved; units[index] = pruned }
   }
+  const dropped: JanusAgentMessage[][] = []
+  for (let index = units.length - 1; index >= 0 && usedTokens > budget; index -= 1) {
+    if (index === 0 || index === newestUser) continue
+    dropped.unshift(units[index])
+    usedTokens -= cost(units[index])
+  }
+  if (usedTokens > budget && units[0]?.some((message) => message.role === 'tool')) {
+    const originalCost = cost(units[0])
+    units[0] = units[0].map((message) => message.role !== 'tool' ? message : {
+      ...message,
+      content: JSON.stringify({
+        outputOmitted: true, digest: toolDigest(message),
+        guidance: 'This result exceeds the available context budget. Its body is NOT visible. Repeat with a smaller limit/maxBytes/maxResults and the SAME start offset; do not advance to nextOffset.',
+      }),
+    })
+    usedTokens += cost(units[0]) - originalCost
+  }
+  if (usedTokens > budget) {
+    throw new Error('CURRENT_CONTEXT_EXCEEDS_BUDGET: narrow the read/search range or increase the model context window; current user and latest tool evidence cannot be discarded')
+  }
+  // Optional metadata goes after history and cannot evict useful evidence.
+  const visible = units.filter((unit) => !dropped.includes(unit)).flat().filter((message) => message.role === 'tool').map((message) => message.content).join('\n')
+  const evidence = runtime.asSystemMessage(Math.max(0, budget - usedTokens), visible)
+  if (evidence) usedTokens += messageTokens(evidence)
   return { systems, evidence, units, dropped, usedTokens, budget, window }
 }
 
 export interface ChatContextBuildOptions {
   model?: Pick<ModelInfo, 'contextWindow' | 'maxOutputTokens'>
+  /** Serialized tool schema/description estimate, reserved alongside messages. */
+  toolTokens?: number
   /** Safety reserve below the window; clamped to 0..10% so callers tune early only. */
   bufferTokens?: number
   /**
@@ -619,7 +598,7 @@ export class ChatSessionRuntime {
   }
 
   private summaryCost(): number {
-    return this.summary ? estimateTokens(this.summaryMessage().content) : 0
+    return this.summary ? messageTokens(this.summaryMessage()) : 0
   }
 
   /**
@@ -706,38 +685,17 @@ export class ChatSessionRuntime {
     const keptChrono = layout.units.filter((unit) => !droppedSet.has(unit)).reverse()
 
     const context = [...layout.systems]
-    if (layout.evidence) context.push(layout.evidence)
     if (this.summary) context.push(this.summaryMessage())
-    // Prune tier (newest-first tail budget): the newest ~pruneKeep tokens keep
-    // verbatim tool outputs; older kept units keep the assistant tool_call and
-    // carry only a digest placeholder for the output. Dropped units are still
-    // represented by the deterministic handoff below.
-    const pruneKeep = Math.max(
-      MIN_PRUNE_KEEP_TOKENS,
-      Math.floor(options.pruneKeepTokens ?? DEFAULT_PRUNE_KEEP_TOKENS),
-    )
-    let tailTokens = 0
-    const renderedChrono: JanusAgentMessage[][] = []
-    for (let index = keptChrono.length - 1; index >= 0; index -= 1) {
-      const compacted = keptChrono[index].map(compactToolMessage)
-      const unitTokens = compacted.reduce((total, message) => total + estimateTokens(message.content), 0)
-      if (tailTokens < pruneKeep) {
-        tailTokens += unitTokens
-        renderedChrono.unshift(compacted)
-      } else {
-        renderedChrono.unshift(keptChrono[index].map((message) =>
-          message.role === 'tool' ? pruneToolMessage(message) : message))
-      }
-    }
-    for (const unit of renderedChrono) context.push(...unit)
+    for (const unit of keptChrono) context.push(...unit)
+    if (layout.evidence) context.push(layout.evidence)
     let usedTokens = layout.usedTokens + this.summaryCost()
     // Summarize everything pruned so exploration is not silently lost.
     // pi uses an LLM summary here; we use exact digests to keep sha256 usable.
     if (layout.dropped.length > 0) {
       const handoff = droppedTurnsHandoffMessage(layout.dropped)
       if (handoff) {
-        const handoffTokens = estimateTokens(handoff.content)
-        const at = layout.systems.length + (layout.evidence ? 1 : 0) + (this.summary ? 1 : 0)
+        const handoffTokens = messageTokens(handoff)
+        const at = layout.systems.length + (this.summary ? 1 : 0)
         // Total view is usedTokens (systems+evidence+kept+summary) + handoff
         // and must fit window, not budget: budget already subtracted the
         // summary once, so checking against budget would charge it twice.
@@ -748,7 +706,7 @@ export class ChatSessionRuntime {
           // Budget too tight for the full digest: keep a truncated head note
           // rather than dropping exploration entirely.
           const head = bounded(handoff.content, Math.max(256, (layout.window - usedTokens) * 4 - 64))
-          if (usedTokens + estimateTokens(head.value) <= layout.window) {
+          if (usedTokens + estimateTokens(head.value) + 4 <= layout.window) {
             context.splice(at, 0, { role: 'system', content: head.value })
           }
         }

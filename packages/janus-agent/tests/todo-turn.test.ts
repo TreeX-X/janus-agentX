@@ -122,7 +122,7 @@ describe('todo_write loop tool', () => {
     expect(todoMessages).toHaveLength(1)
   })
 
-  it('injects a continuous resume nudge while open todos remain', async () => {
+  it('stops text-only continuation after one reminder without progress', async () => {
     const seen: unknown[] = []
     const chatSession = new ChatSessionRuntime()
     chatSession.setTodos([
@@ -139,10 +139,8 @@ describe('todo_write loop tool', () => {
       { requestId: 'todo-4', messages: [{ role: 'user', content: 'continue' }], providerId: 'p', chatSession },
       ports,
     )
-    // Note: continuous execution — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
-    // Text-only rounds with open todos re-nudge every round, so the stream
-    // runs to the maxTurns bound (3 in this stub), not just one extra round.
-    expect(seen).toHaveLength(3)
+    // A reminder permits recovery; unchanged state then yields to the user.
+    expect(seen).toHaveLength(2)
     for (const round of seen.slice(1)) {
       const messages = (round as { messages: Array<{ role: string; content: string }> }).messages
       const nudge = messages.find((m) => m.role === 'system' && m.content.includes('ended without a tool call'))

@@ -201,7 +201,7 @@ describe('lightweight hardening: ceiling, oversized survival, file ledger', () =
     expect(early.at(-1)?.content).toContain('now')
   })
 
-  it('survives an oversized single turn through the digest instead of throwing', () => {
+  it('returns an explicit omitted-body result for an oversized current tool batch', () => {
     const runtime = new ChatSessionRuntime()
     const huge = toolUnit('big', `dump ${'z'.repeat(8_000)}`)
     const context = runtime.buildContext(
@@ -209,8 +209,10 @@ describe('lightweight hardening: ceiling, oversized survival, file ledger', () =
       { model: MODEL },
     )
     expect(context.map((m) => m.role)).toContain('system')
-    // The evicted tool pair is still represented exactly, never paraphrased.
-    expect(context.some((m) => m.content.includes('workspace_read'))).toBe(true)
+    const result = JSON.parse(context.find((m) => m.role === 'tool')!.content)
+    expect(result.outputOmitted).toBe(true)
+    expect(result.guidance).toContain('SAME start offset')
+    expect(context.some((m) => m.toolCalls?.[0]?.id === 'big')).toBe(true)
   })
 
   it('force-summarizes an oversized single turn and appends exact file refs', async () => {

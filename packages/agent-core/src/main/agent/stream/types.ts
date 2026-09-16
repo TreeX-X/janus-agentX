@@ -19,6 +19,8 @@ export interface AgentUsage {
    * Kept explicit so budgets stop under-counting thinking models; absent = provider did not report.
    */
   reasoningTokens?: number
+  /** Cached share of promptTokens; absent means unreported, not zero. */
+  cachedInputTokens?: number
 }
 
 export interface NormalizedProviderError {

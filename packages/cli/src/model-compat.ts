@@ -168,12 +168,14 @@ function tokenTotal(value: unknown): number {
   return 0
 }
 
-function normalizeUsage(usage: any): { promptTokens: number; completionTokens: number; reasoningTokens?: number } {
-  const result: { promptTokens: number; completionTokens: number; reasoningTokens?: number } = {
+function normalizeUsage(usage: any): { promptTokens: number; completionTokens: number; cachedInputTokens?: number; reasoningTokens?: number } {
+  const result: { promptTokens: number; completionTokens: number; cachedInputTokens?: number; reasoningTokens?: number } = {
     promptTokens: tokenTotal(usage?.promptTokens ?? usage?.inputTokens),
     completionTokens: tokenTotal(usage?.completionTokens ?? usage?.outputTokens)
   }
   // Note: reasoning tokens kept explicit for real-budget accounting — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+  const cached = usage?.cachedInputTokens ?? usage?.inputTokens?.cacheRead ?? usage?.inputTokenDetails?.cacheReadTokens ?? usage?.inputTokensDetails?.cacheReadTokens
+  if (typeof cached === 'number') result.cachedInputTokens = cached
   const reasoning = tokenTotal(usage?.reasoningTokens)
   if (reasoning > 0) result.reasoningTokens = reasoning
   return result

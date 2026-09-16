@@ -1041,7 +1041,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
           <Box ref={contentRef} flexDirection="column" flexShrink={0} marginTop={-visibleTop}>
             {visibleBlocks.map((block) => <TimelineRow key={block.id} block={block} width={discW} live={block.id === liveId} thinkingExpanded={state.thinkingExpanded} toolsExpanded={state.toolsExpanded} />)}
             {busy ? <Activity text={approval ? `awaiting approval · ${approval.toolName}` : state.statusText || 'working…'} startedAt={state.turnStartedAt} />
-              : state.turnEndedAt && state.turnStartedAt ? <Text color={THEME.muted}>{state.statusText || 'done'} · {duration(state.turnEndedAt - state.turnStartedAt)}{state.promptTokens || state.completionTokens ? ` · ${formatTokenUsage(state.promptTokens, state.completionTokens)}` : ''}</Text> : null}
+              : state.turnEndedAt && state.turnStartedAt ? <Text color={THEME.muted}>{state.statusText || 'done'} · {duration(state.turnEndedAt - state.turnStartedAt)}{state.promptTokens || state.completionTokens ? ` · ${formatTokenUsage(state.promptTokens, state.completionTokens, state.cachedInputTokens)}` : ''}</Text> : null}
           </Box>
         )}
       </Box>

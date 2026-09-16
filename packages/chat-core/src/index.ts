@@ -1,7 +1,7 @@
 /**
  * @file Public barrel for @janus-agent/chat-core
  */
-export { ChatSessionRuntime, LoadedContextIndex } from './main/llm/chat-session-runtime'
+export { ChatSessionRuntime, LoadedContextIndex, estimateContextTokens } from './main/llm/chat-session-runtime'
 export type { ChatContextBuildOptions, CompactionFileRefs, CompactionOptions, CompactionSummarizer } from './main/llm/chat-session-runtime'
 export {
   REQUIRED_SUMMARY_HEADINGS,

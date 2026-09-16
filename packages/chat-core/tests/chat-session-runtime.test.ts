@@ -53,7 +53,7 @@ describe('ChatSessionRuntime', () => {
     ])
   })
 
-  it('keeps a tool call and its result together while bounding large output', () => {
+  it('keeps a tool call and its complete result together when they fit', () => {
     const runtime = new ChatSessionRuntime()
     const context = runtime.buildContext([
       { role: 'system', content: 'policy' },
@@ -66,11 +66,10 @@ describe('ChatSessionRuntime', () => {
     const tool = context.find((message) => message.role === 'tool')
     expect(assistant?.toolCalls?.[0]?.id).toBe('call-1')
     expect(tool?.toolCallId).toBe('call-1')
-    expect(tool?.content).toContain('[truncated]')
-    expect(tool?.content).not.toContain('x'.repeat(7_000))
+    expect(JSON.parse(tool!.content).content).toBe('x'.repeat(8_000))
   })
 
-  it('unifies the tail truncation at 2000 chars for tool previews', () => {
+  it('preserves a fresh read beyond the former 2000 character cut', () => {
     const runtime = new ChatSessionRuntime()
     const context = runtime.buildContext([
       { role: 'system', content: 'policy' },
@@ -80,8 +79,7 @@ describe('ChatSessionRuntime', () => {
     ], { model: { contextWindow: 4_000, maxOutputTokens: 100 } })
 
     const tool = context.find((message) => message.role === 'tool')
-    expect(tool?.content).toContain('[truncated]')
-    expect(tool?.content).not.toContain('y'.repeat(2_500))
+    expect(JSON.parse(tool!.content).content).toBe('y'.repeat(3_000))
   })
 
   it('prunes stale tool outputs to digests while retaining the calls', () => {
@@ -208,10 +206,63 @@ describe('ChatSessionRuntime', () => {
       { role: 'user', content: 'current request '.repeat(40) },
     ], { model: { contextWindow: 1000, maxOutputTokens: 100 } })
 
-    const handoff = context.find((message) => message.role === 'system' && message.content.includes('was pruned'))
-    expect(handoff?.content).toContain('"flip"')
+    const handoff = context.find((message) => message.content.includes('was pruned') || message.content.includes('\"pruned\":true'))
+    expect(handoff?.content).toContain('flip')
     expect(handoff?.content).toContain('src/file0.tsx#L1')
     expect(context.at(-1)?.content).toContain('current request')
+  })
+})
+
+describe('context efficiency regressions', () => {
+  it('keeps all 200 visible lines, correct continuation, and only one copy of the body', () => {
+    const runtime = new ChatSessionRuntime()
+    const content = Array.from({ length: 200 }, (_, i) => `line ${i + 1}: ${'x'.repeat(65)}`).join('\n')
+    const output = { workspaceId: 'w', path: 'a.ts', sha256: 'abc123', content, offset: 1, lineStart: 1, lineEnd: 200, nextOffset: 201, totalLines: 400, truncated: true }
+    runtime.recordToolResult(toolResult({ output }))
+    const context = runtime.buildContext([
+      { role: 'system', content: 'policy' }, { role: 'user', content: 'fix line 150' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'r', name: 'workspace_read', arguments: { path: 'a.ts' } }] },
+      { role: 'tool', toolCallId: 'r', toolName: 'workspace_read', content: JSON.stringify(output) },
+    ], { model: { contextWindow: 32000, maxOutputTokens: 2000 } })
+    const result = JSON.parse(context.find((message) => message.role === 'tool')!.content)
+    expect(result.content).toBe(content)
+    expect(result.nextOffset).toBe(201)
+    expect(context.filter((message) => message.content.includes('line 150:'))).toHaveLength(1)
+    expect(context.filter((message) => message.role === 'system')).toHaveLength(1)
+  })
+
+  it('preserves search JSON and coverage metadata beyond 2000 characters', () => {
+    const output = { matches: Array.from({ length: 30 }, (_, i) => ({ path: `src/${i}.ts`, line: 1, text: 'match '.repeat(30) })), scannedFiles: 99, truncated: true }
+    const context = new ChatSessionRuntime().buildContext([
+      { role: 'user', content: 'find match' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 's', name: 'workspace_search', arguments: { query: 'match' } }] },
+      { role: 'tool', toolCallId: 's', toolName: 'workspace_search', content: JSON.stringify(output) },
+    ])
+    expect(JSON.parse(context.at(-1)!.content)).toEqual(output)
+  })
+
+  it('prunes old bodies before paying for an LLM summary', async () => {
+    const runtime = new ChatSessionRuntime()
+    let summaryCalls = 0
+    const messages = [
+      { role: 'user' as const, content: 'old task' },
+      { role: 'assistant' as const, content: '', toolCalls: [{ id: 'r', name: 'workspace_read', arguments: { path: 'old.ts' } }] },
+      { role: 'tool' as const, toolName: 'workspace_read', toolCallId: 'r', content: JSON.stringify({ path: 'old.ts', content: 'x'.repeat(20000) }) },
+      { role: 'user' as const, content: 'current task' },
+    ]
+    await runtime.maybeCompact(messages, { model: { contextWindow: 4000, maxOutputTokens: 100 } }, async () => { summaryCalls++; return '' })
+    expect(summaryCalls).toBe(0)
+    expect(runtime.buildContext(messages, { model: { contextWindow: 4000, maxOutputTokens: 100 } }).some((message) => message.content.includes('"pruned":true'))).toBe(true)
+  })
+
+  it('reserves tools and counts large edit arguments rather than silently dropping the user', () => {
+    const runtime = new ChatSessionRuntime()
+    expect(() => runtime.buildContext([{ role: 'user', content: 'current' }], { model: { contextWindow: 1000, maxOutputTokens: 100 }, toolTokens: 900 })).toThrow('SYSTEM_CONTEXT')
+    expect(() => runtime.buildContext([
+      { role: 'user', content: 'current' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'edit', name: 'workspace_edit', arguments: { content: 'x'.repeat(10000) } }] },
+      { role: 'tool', content: 'ok', toolCallId: 'edit' },
+    ], { model: { contextWindow: 1000, maxOutputTokens: 100 } })).toThrow('CURRENT_CONTEXT')
   })
 })
 
@@ -237,8 +288,8 @@ describe('SystemPromptBuilder', () => {
     expect(prompt).toContain('You are JanusX, a workspace agent')
     expect(prompt).toContain('not the filesystem, shell, or approval system')
     expect(prompt).not.toContain('System Contract v2')
-    expect(prompt).toContain('workspace_read [read]: Read a UTF-8 text file')
-    expect(prompt).toContain('workspace_edit [write]: Apply bounded exact replacements')
+    expect(prompt).toContain('workspace_read [read]')
+    expect(prompt).toContain('workspace_edit [write]')
     expect(prompt).not.toContain('command_run')
     expect(prompt).toContain('workspaceId=workspace-1')
     expect(prompt).not.toContain('C:/project')
@@ -272,11 +323,11 @@ describe('SystemPromptBuilder', () => {
       toolManifests: [manifest('workspace_search'), manifest('command_run'), manifest('workspace_read')],
     })
 
-    const lines = prompt.split('\n').filter((line) => line.includes('[read]: desc'))
+    const lines = prompt.split('\n').filter((line) => line.endsWith('[read]'))
     expect(lines).toEqual([
-      '- command_run [read]: desc command_run',
-      '- workspace_read [read]: desc workspace_read',
-      '- workspace_search [read]: desc workspace_search',
+      '- command_run [read]',
+      '- workspace_read [read]',
+      '- workspace_search [read]',
     ])
   })
 })

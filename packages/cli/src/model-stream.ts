@@ -68,11 +68,14 @@ export const streamChatModel: ChatTurnPorts['streamTextFn'] = async (options) =>
             const reasoningTokens = typeof totalUsage.reasoningTokens === 'number' && totalUsage.reasoningTokens > 0
               ? { reasoningTokens: totalUsage.reasoningTokens }
               : {}
+            const details = totalUsage.inputTokenDetails as { cacheReadTokens?: number } | undefined
+            const cached = totalUsage.cachedInputTokens ?? details?.cacheReadTokens
             yield { type: 'finish', finishReason: part.finishReason, usage: {
               promptTokens: part.totalUsage.inputTokens,
               completionTokens: part.totalUsage.outputTokens,
               // Note: reasoning tokens kept explicit for real-budget accounting — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
               ...reasoningTokens,
+              ...(typeof cached === 'number' ? { cachedInputTokens: cached } : {}),
             } }
             break
           }

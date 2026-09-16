@@ -8,12 +8,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 /**
  * P4 preview-only: command.run sync stdout/stderr are already 8KB tail
- * previews with the full log at logPath. Refs are ordered BEFORE the preview
- * blobs because compactToolMessage cuts tool messages at 4k chars: a cut must
- * keep logPath/totalBytes/guidance, never silently drop them.
+ * previews with the full log at logPath. References precede preview bodies
+ * so readers can find the complete artifact and its coverage directly.
  */
 function commandRunModelValue(output: Record<string, unknown>): unknown {
-  // 引用键按固定顺序前置（compactToolMessage 按 4k 裁剪时引用存活），blob 放最后。
+  // Stable references first, bounded preview bodies last.
   const refs: Record<string, unknown> = {}
   for (
     const key of [
