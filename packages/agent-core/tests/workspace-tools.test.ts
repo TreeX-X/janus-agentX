@@ -1346,7 +1346,7 @@ describe('adaptive workspace.read pages', () => {
     expect(output.estimatedTokens).toBeGreaterThan(0)
   })
 
-  it('pages files over 100KB with the 800-line/48KB defaults', async () => {
+  it('pages files over 40KB with the 300-line/20KB defaults', async () => {
     const root = await temporaryDirectory()
     const lines = Array.from({ length: 2000 }, (_, index) => `line ${String(index + 1).padStart(4, '0')} ${'x'.repeat(95)}`)
     await writeFile(join(root, 'big.ts'), lines.join('\n') + '\n', 'utf-8')
@@ -1356,8 +1356,8 @@ describe('adaptive workspace.read pages', () => {
     const firstOutput = first.output as { truncated: boolean; lineStart: number; lineEnd: number; totalLines: number; nextOffset: number; bytes: number }
     expect(firstOutput.truncated).toBe(true)
     expect(firstOutput.lineStart).toBe(1)
-    expect(firstOutput.lineEnd).toBeLessThanOrEqual(800)
-    expect(firstOutput.bytes).toBeLessThanOrEqual(48 * 1024 + 200)
+    expect(firstOutput.lineEnd).toBeLessThanOrEqual(300)
+    expect(firstOutput.bytes).toBeLessThanOrEqual(20 * 1024 + 200)
     expect(firstOutput.nextOffset).toBe(firstOutput.lineEnd + 1)
 
     const second = await executeRead(root, 'big.ts', undefined, firstOutput.nextOffset)

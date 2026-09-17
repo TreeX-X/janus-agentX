@@ -504,6 +504,15 @@ const DISPOSABLE_TOOL_NAMES = new Set([
 /** Disposable units keep verbatim bodies only within this many newest turns. */
 const DISPOSABLE_VERBATIM_TURNS = 2
 
+/** Reads are pricier to re-run than search, cheaper than losing the answer: newest reads stay verbatim. */
+const READ_TOOL_NAMES = new Set(['workspace_read', 'workspace.read'])
+
+/** Read-only units keep verbatim bodies only within this many newest kept reads. */
+const READ_VERBATIM_TURNS = 3
+
+/** Assistant prose around tool calls stays verbatim only this many newest back. */
+const ASSISTANT_CHATTER_VERBATIM = 2
+
 function unitIsDisposable(unit: JanusAgentMessage[]): boolean {
   let sawTool = false
   for (const message of unit) {
@@ -514,6 +523,22 @@ function unitIsDisposable(unit: JanusAgentMessage[]): boolean {
     for (const call of message.toolCalls ?? []) {
       sawTool = true
       if (!DISPOSABLE_TOOL_NAMES.has(call.name)) return false
+    }
+  }
+  return sawTool
+}
+
+/** True when every tool call/result in the unit is a file read (mixed repair units stay on the byte tail). */
+function unitIsReadOnly(unit: JanusAgentMessage[]): boolean {
+  let sawTool = false
+  for (const message of unit) {
+    if (message.role === 'tool') {
+      sawTool = true
+      if (!READ_TOOL_NAMES.has(message.toolName ?? '')) return false
+    }
+    for (const call of message.toolCalls ?? []) {
+      sawTool = true
+      if (!READ_TOOL_NAMES.has(call.name)) return false
     }
   }
   return sawTool
@@ -534,13 +559,43 @@ function layoutContext(
   const newestUser = original.findIndex((unit) => unit.some((message) => message.role === 'user'))
   const pruneKeep = Math.max(MIN_PRUNE_KEEP_TOKENS, options.pruneKeepTokens ?? DEFAULT_PRUNE_KEEP_TOKENS)
   let tailTokens = 0
+  let readsKept = 0
   const units = original.map((unit, index) => {
     const disposable = unitIsDisposable(unit)
-    const keep = index === 0
-      || (tailTokens < pruneKeep && (!disposable || index < DISPOSABLE_VERBATIM_TURNS))
+    const readOnly = !disposable && unitIsReadOnly(unit)
+    let keep = index === 0 || tailTokens < pruneKeep
+    // Graded prune: re-runnable outputs leave the verbatim tail early so one
+    // 16k tail is not spent replaying four old searches while fresh evidence
+    // waits. Digests keep paths/ranges/hashes, so nothing hash-addressable
+    // is lost — only the bulky verbatim blob goes.
+    if (keep && index > 0 && disposable && index >= DISPOSABLE_VERBATIM_TURNS) keep = false
+    if (keep && readOnly && readsKept >= READ_VERBATIM_TURNS) keep = false
     tailTokens += unit.reduce((sum, message) => sum + messageTokens(message), 0)
+    if (keep && readOnly) readsKept += 1
     return keep ? unit : unit.map(pruneToolMessage)
   })
+  // Note: tool-loop chatter cap (opencode cost parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Assistant prose around tool calls ("I'll read X now") replays every turn
+  // but restates what the calls+results already show. Only the newest two
+  // such messages keep their text; older ones keep toolCalls (pairing
+  // intact) with the prose dropped. Pure-text answers carry no calls and
+  // may hold conclusions, so they are never touched here. Spread-copied:
+  // kept units share object identity with persisted history.
+  let chatterKept = 0
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index]
+    let changed = false
+    const next = unit.map((message) => {
+      if (message.role !== 'assistant' || !message.content || (message.toolCalls ?? []).length === 0) return message
+      if (chatterKept < ASSISTANT_CHATTER_VERBATIM) {
+        chatterKept += 1
+        return message
+      }
+      changed = true
+      return { ...message, content: '' }
+    })
+    if (changed) units[index] = next
+  }
   const cost = (unit: JanusAgentMessage[]) => unit.reduce((sum, message) => sum + messageTokens(message), 0)
   let usedTokens = systemTokens + units.reduce((sum, unit) => sum + cost(unit), 0)
   // Under pressure, prune old tool bodies before evicting any conversation.

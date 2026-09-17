@@ -27,6 +27,11 @@ const DEFAULT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.md'
 const DEFAULT_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', 'build', 'release', 'coverage', '.cache'])
 
 // Note: adaptive page caps keep small-file evidence in one round trip — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
+// Note: smaller locate-first defaults (opencode cost parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Large-file default pages are locate-first (300 lines/20KB): enough to land
+// on the right region, cheap to replay every turn. Continuation via
+// offset=nextOffset stays one cheap round trip, so narrower defaults trade a
+// rare extra turn for a ~60% smaller blob on every turn.
 /** Full-file ceiling for a paged read; the whole file is hashed for edit safety. */
 export const MAX_PAGED_READ_BYTES = 16 * 1024 * 1024
 /**
@@ -34,11 +39,11 @@ export const MAX_PAGED_READ_BYTES = 16 * 1024 * 1024
  * ADAPTIVE_FULL_FILE_BYTES return whole (bounded by the maxima instead), so
  * a single default read covers an ordinary source file end to end.
  */
-export const DEFAULT_PAGE_LINES = 800
+export const DEFAULT_PAGE_LINES = 300
 export const MAX_PAGE_LINES = 2000
-export const DEFAULT_PAGE_BYTES = 48 * 1024
+export const DEFAULT_PAGE_BYTES = 20 * 1024
 export const MAX_PAGE_BYTES = 1024 * 1024
-export const ADAPTIVE_FULL_FILE_BYTES = 100 * 1024
+export const ADAPTIVE_FULL_FILE_BYTES = 40 * 1024
 
 export interface WorkspaceTextPage {
   content: Buffer

@@ -143,6 +143,85 @@ describe('ChatSessionRuntime', () => {
     expect(oldRead?.content).toContain('hello')
   })
 
+  // Note: graded read prune — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  it('keeps the newest three reads verbatim and digests older ones within budget', () => {
+    const runtime = new ChatSessionRuntime()
+    const readUnit = (id: string, marker: string) => ([
+      { role: 'assistant' as const, content: '', toolCalls: [{ id, name: 'workspace_read', arguments: { path: `${marker}.ts` } }] },
+      { role: 'tool' as const, toolCallId: id, toolName: 'workspace_read', content: `<path>${marker}.ts</path> lines 1-10/100\n<content>\n1: ${marker}\n</content>` },
+    ])
+    const messages = [
+      { role: 'system' as const, content: 'policy' },
+      { role: 'user' as const, content: 'first' },
+      ...readUnit('call-r1', 'alpha'),
+      { role: 'user' as const, content: 'second' },
+      ...readUnit('call-r2', 'beta'),
+      { role: 'user' as const, content: 'third' },
+      ...readUnit('call-r3', 'gamma'),
+      { role: 'user' as const, content: 'fourth' },
+      ...readUnit('call-r4', 'delta'),
+      { role: 'user' as const, content: 'current request' },
+    ]
+    const context = runtime.buildContext(messages, {
+      model: { contextWindow: 200_000, maxOutputTokens: 100 },
+    })
+    expect(context.find((m) => m.role === 'tool' && m.toolCallId === 'call-r1')?.content).toContain('"pruned":true')
+    for (const id of ['call-r2', 'call-r3', 'call-r4']) {
+      const tool = context.find((m) => m.role === 'tool' && m.toolCallId === id)
+      expect(tool?.content).not.toContain('"pruned":true')
+    }
+  })
+
+  it('leaves mixed read-plus-edit units on the byte tail instead of the read cap', () => {
+    const runtime = new ChatSessionRuntime()
+    const mixedUnit = (id: string) => ([
+      { role: 'assistant' as const, content: '', toolCalls: [
+        { id: `${id}-read`, name: 'workspace_read', arguments: { path: 'a.ts' } },
+        { id, name: 'workspace_edit', arguments: { path: 'a.ts' } },
+      ] },
+      { role: 'tool' as const, toolCallId: `${id}-read`, toolName: 'workspace_read', content: '<path>a.ts</path> lines 1-2/10\n<content>\n1: x\n</content>' },
+      { role: 'tool' as const, toolCallId: id, toolName: 'workspace_edit', content: `Edited a.ts sha=${'d'.repeat(64)}` },
+    ])
+    const messages = [
+      { role: 'system' as const, content: 'policy' },
+      { role: 'user' as const, content: 'fix' },
+      ...mixedUnit('call-m1'),
+      { role: 'user' as const, content: 'current request' },
+    ]
+    const context = runtime.buildContext(messages, {
+      model: { contextWindow: 200_000, maxOutputTokens: 100 },
+    })
+    expect(context.find((m) => m.role === 'tool' && m.toolCallId === 'call-m1-read')?.content).toContain('1: x')
+  })
+
+  // Note: tool-loop chatter cap — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  it('drops old assistant chatter around tool calls but keeps the calls and pure answers', () => {
+    const runtime = new ChatSessionRuntime()
+    const chatterUnit = (id: string, text: string) => ([
+      { role: 'assistant' as const, content: text, toolCalls: [{ id, name: 'workspace_search', arguments: { query: text } }] },
+      { role: 'tool' as const, toolCallId: id, toolName: 'workspace_search', content: `Found 1 match for "${text}"\n\na.ts:\n Line 1: ${text}` },
+    ])
+    const messages = [
+      { role: 'system' as const, content: 'policy' },
+      { role: 'user' as const, content: 'first' },
+      ...chatterUnit('call-c1', 'old chatter'),
+      { role: 'user' as const, content: 'second' },
+      ...chatterUnit('call-c2', 'mid chatter'),
+      { role: 'user' as const, content: 'third' },
+      ...chatterUnit('call-c3', 'new chatter'),
+      { role: 'assistant' as const, content: 'an old conclusion without calls' },
+      { role: 'user' as const, content: 'current request' },
+    ]
+    const context = runtime.buildContext(messages, {
+      model: { contextWindow: 200_000, maxOutputTokens: 100 },
+    })
+    const oldChatter = context.find((m) => m.role === 'assistant' && m.toolCalls?.some((c) => c.id === 'call-c1'))
+    expect(oldChatter?.content).toBe('')
+    expect(oldChatter?.toolCalls).toHaveLength(1)
+    // Pure-text answers are never chatter-capped.
+    expect(context.some((m) => m.role === 'assistant' && m.content === 'an old conclusion without calls')).toBe(true)
+  })
+
   it('keeps short sessions fully verbatim without pruning', () => {
     const runtime = new ChatSessionRuntime()
     const context = runtime.buildContext([

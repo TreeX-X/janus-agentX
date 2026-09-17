@@ -110,7 +110,7 @@ function lineEditsDiffPreview(path: string, value: unknown): CallDiffPreview | u
 // Note: adaptive pages, token budgets, and search-carried hashes cut diagnostic round trips — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
-  description: 'Read one UTF-8 file as line pages (≤100KB whole; larger default 800 lines/48KB). Continue with offset=nextOffset while truncated. Returns the full-file SHA-256 for edits; withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
+  description: 'Read one UTF-8 file as line pages (≤40KB whole; larger default 300 lines/20KB). Continue with offset=nextOffset while truncated. Returns the full-file SHA-256 for edits; withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -118,8 +118,8 @@ export const workspaceReadTool: RegisteredTool = {
       workspaceId: { type: 'string', description: 'The exact workspaceId from the attached workspace list.' },
       path: { type: 'string', description: 'Workspace-relative file path, e.g. src/notes/test.md.' },
       offset: { type: 'number', description: '1-indexed line number to start from (default 1).' },
-      limit: { type: 'number', description: 'Max lines to return (default 800, max 2000; omitted with maxBytes on files ≤100KB returns whole).' },
-      maxBytes: { type: 'number', description: 'Max bytes of page content (default 49152, max 1048576). The byte cap wins over limit.' },
+      limit: { type: 'number', description: 'Max lines to return (default 300, max 2000; omitted with maxBytes on files ≤40KB returns whole).' },
+      maxBytes: { type: 'number', description: 'Max bytes of page content (default 20480, max 1048576). The byte cap wins over limit.' },
       maxTokens: { type: 'number', description: `Optional output budget in tokens (1-${MAX_OUTPUT_TOKEN_BUDGET}); tighter than the page caps when given.` },
       withLineAnchors: { type: 'boolean', description: 'Also return a LINE#HASH anchor array for this page (for workspace.edit lineEdits).' },
     },
@@ -130,7 +130,7 @@ export const workspaceReadTool: RegisteredTool = {
     const workspaceId = input.workspaceId
     const requestedPath = input.path
     const offset = input.offset ?? 1
-    // Omitted caps resolve adaptively inside readWorkspaceTextPage (≤100KB
+    // Omitted caps resolve adaptively inside readWorkspaceTextPage (≤40KB
     // returns whole); explicit values are validated there.
     const limit = input.limit
     const maxBytes = input.maxBytes

@@ -94,13 +94,13 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; withContext?: boolean; maxTokens?: number }) => execute('workspace.search', input),
     },
     workspace_read: {
-      description: 'Read one UTF-8 file as line pages (≤100KB whole; larger default 800 lines/48KB). Continue with offset=nextOffset while truncated. withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
+      description: 'Read one UTF-8 file as line pages (≤40KB whole; larger default 300 lines/20KB). Continue with offset=nextOffset while truncated. withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1).describe('Workspace-relative file path, e.g. src/notes/test.md'),
         offset: z.number().int().min(0).default(1).describe('1-indexed line number to start from (default 1).'),
-        limit: z.number().int().min(1).max(2000).optional().describe('Max lines (default 800, max 2000).'),
-        maxBytes: z.number().int().min(1).max(256 * 1024).optional().describe('Max page bytes (default 49152); wins over limit.'),
+        limit: z.number().int().min(1).max(2000).optional().describe('Max lines (default 300, max 2000).'),
+        maxBytes: z.number().int().min(1).max(256 * 1024).optional().describe('Max page bytes (default 20480); wins over limit.'),
         maxTokens: z.number().int().min(1).max(100000).optional().describe('Output budget in tokens; tighter than the page caps.'),
         withLineAnchors: z.boolean().default(false).describe('LINE#HASH anchors per line for lineEdits.'),
       }),
