@@ -9,8 +9,8 @@
  * (opencode-style responsive): the visible window shrinks on tiny terminals
  * and every resize re-renders via `useTerminalSize`. Enter submits,
  * Shift+Enter inserts a newline (kitty `return+shift`, legacy ConPTY LF),
- * and a leading `/` opens command completion (Up/Down navigate, Tab apply,
- * Esc dismiss, Enter submits). At the first/last line, Up/Down recalls
+ * and a leading `/` opens command completion (Up/Down navigate, Tab/Enter
+ * apply, Esc dismiss, second Enter submits; exact commands submit directly). At the first/last line, Up/Down recalls
  * submitted-input history shell-style (draft preserved, Down past newest
  * restores it); inner lines still move the cursor. The caret is the REAL terminal block
  * (opencode-style, `useSyncedCaret` + `measureElement`): the OS IME follows
@@ -56,6 +56,7 @@ import {
   rowSelectionSpan,
   selectedText,
   selectionRange,
+  shouldConfirmCompletion,
   sliceAroundCursor,
   sliceAroundCursorEx,
   splitSelectedText,
@@ -295,6 +296,18 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
         return
       }
       if (key.tab) {
+        const picked = candidates[highlight] ?? candidates[0]
+        if (picked) {
+          const applied = applyCompletion(value, picked)
+          onChange(applied.value)
+          setCursor(applied.cursor)
+          clearSelection()
+        }
+        return
+      }
+      // Two-stage Enter: an incomplete `/` token confirms the highlight
+      // in place (second Enter submits); exact commands fall through.
+      if (key.return && !key.shift && input.length <= 1 && shouldConfirmCompletion(token, candidates)) {
         const picked = candidates[highlight] ?? candidates[0]
         if (picked) {
           const applied = applyCompletion(value, picked)

@@ -446,6 +446,52 @@ describe('App', () => {
     }
   })
 
+  it('confirms an incomplete slash token on Enter instead of submitting it', async () => {
+    const session = await openSession()
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeText(stdin, '/sta')
+      await waitForFrame(() => (lastFrame() ?? '').includes('/status'))
+      await press(stdin, '\r')
+      // First Enter only completes in place: no submit, so no error and no status card yet.
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      expect(lastFrame() ?? '').not.toContain('unknown command')
+      expect(lastFrame() ?? '').not.toContain('provider:')
+      // Second Enter submits the completed `/status ` command.
+      await press(stdin, '\r')
+      await waitForFrame(() => (lastFrame() ?? '').includes('provider:'))
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
+  it('submits an exact slash command on Enter directly', async () => {
+    const session = await openSession()
+    const { lastFrame, stdin, unmount } = render(
+      <App
+        initialSession={session}
+        host={{ createSession: async () => ({ error: 'unavailable in tests' }) }}
+        onExit={() => {}}
+      />,
+    )
+    try {
+      await typeText(stdin, '/status')
+      await waitForFrame(() => (lastFrame() ?? '').includes('/status'))
+      await press(stdin, '\r')
+      await waitForFrame(() => (lastFrame() ?? '').includes('provider:'))
+    } finally {
+      unmount()
+      await session.close()
+    }
+  })
+
   it('shows a tool card row when the turn calls tools', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'janus-app-tools-'))
     writeFileSync(join(dir, 'hello.txt'), 'tool-content-here')

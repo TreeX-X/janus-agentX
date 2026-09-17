@@ -79,6 +79,21 @@ export function applyCompletion(value: string, item: CompletionItem): { value: s
   return { value: next, cursor: completed.length + 1 }
 }
 
+/**
+ * Enter confirms the highlighted completion instead of submitting when the
+ * first token is an incomplete `/` command. Exact known commands (including
+ * case-insensitive matches) and a bare `/` still submit directly, so fully
+ * typed commands keep their one-key send path. The caller gates on the
+ * visible list (non-dismissed, non-busy), so `Esc` keeps its submit-raw
+ * escape hatch.
+ */
+// Note: two-stage Enter (confirm-then-send) keeps partial slash input from surfacing as `unknown command` — see .agents/notes/implemented/feature/2026-09-17-slash-enter-confirm.md
+export function shouldConfirmCompletion(token: string, candidates: readonly CompletionItem[]): boolean {
+  if (token === '/' || token === '') return false
+  if (candidates.length === 0) return false
+  return !isKnownCommand(token.slice(1))
+}
+
 /** Max retained input-history entries for ↑/↓ recall (bounds memory). */
 export const INPUT_HISTORY_LIMIT = 200
 

@@ -26,6 +26,7 @@ import {
   offsetOfLine,
   padToWidth,
   resolveComposerWindow,
+  shouldConfirmCompletion,
   sliceAroundCursor,
   truncateToWidth,
   visibleStart,
@@ -70,6 +71,20 @@ describe('applyCompletion', () => {
   it('keeps existing args after the token', () => {
     const model = COMMAND_COMPLETIONS.find((item) => item.name === 'model')!
     expect(applyCompletion('/mo  m2', model)).toEqual({ value: '/model m2', cursor: 7 })
+  })
+})
+
+describe('shouldConfirmCompletion', () => {
+  it('confirms incomplete slash tokens instead of submitting', () => {
+    expect(shouldConfirmCompletion('/mo', filterCompletions('/mo', 3))).toBe(true)
+    expect(shouldConfirmCompletion('/e', filterCompletions('/e', 2))).toBe(true)
+  })
+
+  it('submits exact known commands and bare slash directly', () => {
+    expect(shouldConfirmCompletion('/model', filterCompletions('/model', 6))).toBe(false)
+    expect(shouldConfirmCompletion('/MODEL', filterCompletions('/MODEL', 6))).toBe(false)
+    expect(shouldConfirmCompletion('/', filterCompletions('/', 1))).toBe(false)
+    expect(shouldConfirmCompletion('/x', filterCompletions('/x', 2))).toBe(false)
   })
 })
 
