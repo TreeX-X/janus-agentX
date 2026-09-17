@@ -32,7 +32,7 @@ const TRACE_PROVENANCE_MAX_REFS = 3
 const KNOWLEDGE_CONTEXT_OPEN = '<janus-knowledge-context trust="untrusted" usage="reference-only">'
 const KNOWLEDGE_CONTEXT_CLOSE = '</janus-knowledge-context>'
 
-export const TOOL_TRACE_MAX_ENTRIES = 24
+export const TOOL_TRACE_MAX_ENTRIES = 12
 const TOOL_TRACE_SUMMARY_MAX_CHARS = 300
 /** P6：默认 40（P6 前硬编码 20），经 agentMaxSteps 配置可调，仅 janus-chat 通道。 */
 export const CHAT_MAX_STEPS = 40

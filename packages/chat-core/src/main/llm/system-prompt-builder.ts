@@ -56,7 +56,7 @@ export function buildChatSystemPrompt(input: SystemPromptBuilderInput): string {
     ...resources.map((resource) => `- ${resource}`),
     'Enabled tools:',
     ...tools,
-    'Every tool call must use an attached workspaceId. Tool schemas define the required parameters.',
+    'Omit workspaceId when a single workspace is attached; with several attached, every tool call must name one. Tool schemas define the required parameters.',
     'Use tools only for attached-workspace evidence or the user-requested action. Do not preload or vectorize the workspace.',
     'Route by query kind: error text, symbol, or content queries go straight to flat workspace_search content with path/glob filters; use mode=files and glob only for filename queries, and workspace_overview only when the checkout shape itself is the question. Pass withContext:true only when surrounding lines are needed for an edit; the first hit per file already carries the file hash. Batch independent lookups. Prefer search over walking the tree when looking for code, symbols, or text. Read only needed line ranges, and treat returned content plus its hash as current evidence. When workspace_read returns truncated:true, continue with offset=nextOffset until the needed lines are covered; never re-read offset=1 to guess later content.',
     'For an existing-file change: read the target first; use the latest expectedHash with the smallest exact replacement or single-file unified diff; then verify. If approval is denied or required but not granted, stop that action and explain. Do not retry a denied action.',

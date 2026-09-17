@@ -33,8 +33,20 @@ function withManifestDescriptions<T extends Record<string, { description: string
  */
 export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
   const execute = async (toolName: string, input: Record<string, unknown>) => {
-    const workspaceId = typeof input.workspaceId === 'string' ? input.workspaceId : ''
-    const resource = options.resources.get(workspaceId)
+    // Note: single-workspace omission (output-token parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+    // workspaceId is optional in every schema so the model can omit ~10
+    // argument tokens per call. Resolution is fail-closed: an explicit id
+    // always resolves exactly (unknown ids error even with one workspace, so
+    // typos never route silently); only a missing id falls back, and only to
+    // a sole attached workspace. Multi-workspace omission errors the same way.
+    const rawId = typeof input.workspaceId === 'string' ? input.workspaceId : ''
+    let workspaceId = rawId
+    let resource = options.resources.get(workspaceId)
+    if (!resource && !rawId && options.resources.size === 1) {
+      const sole = [...options.resources.entries()][0]
+      workspaceId = sole[0]
+      resource = sole[1]
+    }
     if (!resource) {
       return { ok: false, status: 'failed', error: `Workspace "${workspaceId}" is not attached to this Chat` }
     }
@@ -52,7 +64,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
     return toolResultToModelValue(result)
   }
 
-  const workspaceId = z.string().min(1).describe('The exact workspaceId from the attached workspace list.')
+  const workspaceId = z.string().min(1).optional().describe('Attached workspace id. Omit when a single workspace is attached.')
 
   const tools = {
     workspace_list: {
@@ -64,7 +76,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         maxEntries: z.number().int().min(1).max(600).default(300),
         maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the entry caps when given.'),
       }),
-      execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.list', input),
+      execute: (input: { workspaceId?: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.list', input),
     },
     workspace_overview: {
       description: 'Shallow bounded tree with sizes, mtimes, and a git summary. Start here when the checkout shape itself is unknown, not for code search.',
@@ -75,7 +87,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         maxEntries: z.number().int().min(1).max(600).default(100),
         maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the entry caps when given.'),
       }),
-      execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.overview', input),
+      execute: (input: { workspaceId?: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.overview', input),
     },
     workspace_search: {
       description: 'Bounded code search with path/glob filters. Flat hits newest-first; the first hit per file carries the SHA-256 for edits. mode=files locates paths; withContext:true groups hunks (one bounded read per file). Literal case-insensitive by default.',
@@ -91,7 +103,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         maxResults: z.number().int().min(1).max(100).default(30),
         maxTokens: z.number().int().min(1).max(100000).optional().describe('Output budget in tokens; tighter than the match caps.'),
       }),
-      execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; withContext?: boolean; maxTokens?: number }) => execute('workspace.search', input),
+      execute: (input: { workspaceId?: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; withContext?: boolean; maxTokens?: number }) => execute('workspace.search', input),
     },
     workspace_read: {
       description: 'Read one UTF-8 file as line pages (≤40KB whole; larger default 300 lines/20KB). Continue with offset=nextOffset while truncated. withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
@@ -104,7 +116,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         maxTokens: z.number().int().min(1).max(100000).optional().describe('Output budget in tokens; tighter than the page caps.'),
         withLineAnchors: z.boolean().default(false).describe('LINE#HASH anchors per line for lineEdits.'),
       }),
-      execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number; maxTokens?: number; withLineAnchors?: boolean }) => execute('workspace.read', input),
+      execute: (input: { workspaceId?: string; path: string; offset?: number; limit?: number; maxBytes?: number; maxTokens?: number; withLineAnchors?: boolean }) => execute('workspace.read', input),
     },
     workspace_edit: {
       description: 'Edit one file with exact replacements, a unified diff, or hash-anchored lineEdits. Needs the SHA-256 from workspace_read or a workspace_search hit; the Agent permission mode controls approval. A stale anchor aborts the batch with fresh anchors.',
@@ -143,7 +155,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().min(1).describe('Workspace-relative path of the new file, e.g. src/notes/test.md'),
         content: z.string().max(1024 * 1024),
       }),
-      execute: (input: { workspaceId: string; path: string; content: string }) => execute('workspace.create', input),
+      execute: (input: { workspaceId?: string; path: string; content: string }) => execute('workspace.create', input),
     },
     workspace_delete: {
       description: 'Delete one file, symlink, or directory after approval. Non-empty directories need recursive:true. Prefer this over shell rm: previewed, audited, checkpointed.',
@@ -152,7 +164,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().min(1).describe('Workspace-relative path of the target, e.g. src/notes/old.md'),
         recursive: z.boolean().default(false).describe('Required to delete a directory that still has entries.'),
       }),
-      execute: (input: { workspaceId: string; path: string; recursive: boolean }) => execute('workspace.delete', input),
+      execute: (input: { workspaceId?: string; path: string; recursive: boolean }) => execute('workspace.delete', input),
     },
     project_detect: {
       description: 'Detect project types, scripts and candidate project directories in the attached workspace.',
@@ -162,7 +174,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         depth: z.number().int().min(0).max(3).default(3),
         maxDirectories: z.number().int().min(1).max(100).default(80),
       }),
-      execute: (input: { workspaceId: string; path: string; depth: number; maxDirectories: number }) => execute('project.detect', input),
+      execute: (input: { workspaceId?: string; path: string; depth: number; maxDirectories: number }) => execute('project.detect', input),
     },
     project_generate_config: {
       description: 'Generate and validate a JanusX launch configuration proposal without writing it. Explicit user launch intent may override detected project type; use launch for an external script or custom executable.',
@@ -192,12 +204,12 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().default(''),
         config: z.record(z.unknown()),
       }),
-      execute: (input: { workspaceId: string; path: string; config: Record<string, unknown> }) => execute('project.apply-config', input),
+      execute: (input: { workspaceId?: string; path: string; config: Record<string, unknown> }) => execute('project.apply-config', input),
     },
     project_list_processes: {
       description: 'List project processes started and tracked by JanusX in one attached workspace.',
       parameters: z.object({ workspaceId }),
-      execute: (input: { workspaceId: string }) => execute('project.list-processes', input),
+      execute: (input: { workspaceId?: string }) => execute('project.list-processes', input),
     },
     project_process_output: {
       description: 'Read recent bounded output from one JanusX-managed project process (supports offsetLines pagination for background command.run jobs).',
@@ -207,7 +219,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         maxLines: z.number().int().min(1).max(1000).default(100),
         offsetLines: z.number().int().min(0).max(1000).default(0),
       }),
-      execute: (input: { workspaceId: string; projectId: string; maxLines: number; offsetLines: number }) => execute('project.process-output', input),
+      execute: (input: { workspaceId?: string; projectId: string; maxLines: number; offsetLines: number }) => execute('project.process-output', input),
     },
     project_start_process: {
       description: 'Start a saved JanusX launch configuration after user approval.',
@@ -216,7 +228,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().default(''),
         configName: z.string().min(1).default('dev'),
       }),
-      execute: (input: { workspaceId: string; path: string; configName: string }) => execute('project.start-process', input),
+      execute: (input: { workspaceId?: string; path: string; configName: string }) => execute('project.start-process', input),
     },
     project_stop_process: {
       description: 'Stop one JanusX-managed project process after user approval. Obtain projectId from project_list_processes.',
@@ -224,12 +236,12 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         workspaceId,
         projectId: z.string().min(1),
       }),
-      execute: (input: { workspaceId: string; projectId: string }) => execute('project.stop-process', input),
+      execute: (input: { workspaceId?: string; projectId: string }) => execute('project.stop-process', input),
     },
     git_status: {
       description: 'Read the branch and working tree status for a Git repository in an attached workspace.',
       parameters: z.object({ workspaceId, path: z.string().default('') }),
-      execute: (input: { workspaceId: string; path: string }) => execute('git.status', input),
+      execute: (input: { workspaceId?: string; path: string }) => execute('git.status', input),
     },
     git_log: {
       description: 'Read recent commits for a Git repository in an attached workspace.',
@@ -238,7 +250,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().default(''),
         maxCount: z.number().int().min(1).max(100).default(20),
       }),
-      execute: (input: { workspaceId: string; path: string; maxCount: number }) => execute('git.log', input),
+      execute: (input: { workspaceId?: string; path: string; maxCount: number }) => execute('git.log', input),
     },
     git_diff: {
       description: 'Read a bounded unstaged or staged Git diff, optionally limited to one repository-relative file.',
@@ -249,7 +261,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         staged: z.boolean().default(false),
         maxBytes: z.number().int().min(1).max(256 * 1024).default(128 * 1024),
       }),
-      execute: (input: { workspaceId: string; path: string; file?: string; staged: boolean; maxBytes: number }) => execute('git.diff', input),
+      execute: (input: { workspaceId?: string; path: string; file?: string; staged: boolean; maxBytes: number }) => execute('git.diff', input),
     },
     git_stage: {
       description: 'Stage selected repository-relative paths after user approval.',
@@ -258,7 +270,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().default(''),
         paths: z.array(z.string().min(1)).min(1).max(100),
       }),
-      execute: (input: { workspaceId: string; path: string; paths: string[] }) => execute('git.stage', input),
+      execute: (input: { workspaceId?: string; path: string; paths: string[] }) => execute('git.stage', input),
     },
     git_unstage: {
       description: 'Unstage selected repository-relative paths after user approval.',
@@ -267,7 +279,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().default(''),
         paths: z.array(z.string().min(1)).min(1).max(100),
       }),
-      execute: (input: { workspaceId: string; path: string; paths: string[] }) => execute('git.unstage', input),
+      execute: (input: { workspaceId?: string; path: string; paths: string[] }) => execute('git.unstage', input),
     },
     git_commit: {
       description: 'Commit staged changes with the exact message supplied or approved by the user.',
@@ -276,17 +288,17 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         path: z.string().default(''),
         message: z.string().min(1).max(500),
       }),
-      execute: (input: { workspaceId: string; path: string; message: string }) => execute('git.commit', input),
+      execute: (input: { workspaceId?: string; path: string; message: string }) => execute('git.commit', input),
     },
     git_pull: {
       description: 'Pull from the configured Git remote after user approval.',
       parameters: z.object({ workspaceId, path: z.string().default('') }),
-      execute: (input: { workspaceId: string; path: string }) => execute('git.pull', input),
+      execute: (input: { workspaceId?: string; path: string }) => execute('git.pull', input),
     },
     git_push: {
       description: 'Push to the configured Git remote after user approval.',
       parameters: z.object({ workspaceId, path: z.string().default('') }),
-      execute: (input: { workspaceId: string; path: string }) => execute('git.push', input),
+      execute: (input: { workspaceId?: string; path: string }) => execute('git.push', input),
     },
     command_run: {
       description: 'Run one program with args in a workspace. No shell syntax. Jobs over 60s must use background:true and poll project_process_output. Sync output is an 8KB tail; page the full log at logPath with workspace_read.',
@@ -299,7 +311,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         background: z.boolean().default(false),
         env: z.record(z.string()).default({}),
       }),
-      execute: (input: { workspaceId: string; cwd: string; program: string; args: string[]; timeoutMs: number; background: boolean; env: Record<string, string> }) => execute('command.run', input),
+      execute: (input: { workspaceId?: string; cwd: string; program: string; args: string[]; timeoutMs: number; background: boolean; env: Record<string, string> }) => execute('command.run', input),
     },
   }
   return withManifestDescriptions(tools, options.toolManifests)

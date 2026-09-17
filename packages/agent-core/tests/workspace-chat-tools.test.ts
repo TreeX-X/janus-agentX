@@ -85,6 +85,52 @@ describe('workspace chat tools', () => {
     }, 'renderer:7')
   })
 
+  // Note: single-workspace omission — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  it('fills an omitted workspaceId from the sole attached workspace', async () => {
+    const executeFunctionCall = vi.fn().mockResolvedValue(result())
+    const tools = createWorkspaceChatTools({
+      runtime: { executeFunctionCall },
+      resources: new Map([['workspace-1', { sessionId: 'session-1', workspaceRoot: 'C:/one', workspaceName: 'One' }]]),
+      callerId: 'renderer:7',
+    })
+
+    await tools.workspace_read.execute({ path: 'src/main.ts' })
+    expect(executeFunctionCall).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      call: {
+        toolName: 'workspace.read',
+        input: { path: 'src/main.ts', workspaceId: 'workspace-1' },
+        evidenceConfidence: 'medium',
+      },
+    }, 'renderer:7')
+  })
+
+  it('rejects an omitted workspaceId when several workspaces are attached', async () => {
+    const executeFunctionCall = vi.fn().mockResolvedValue(result())
+    const tools = createWorkspaceChatTools({
+      runtime: { executeFunctionCall },
+      resources,
+      callerId: 'renderer:7',
+    })
+
+    await expect(tools.workspace_read.execute({ path: 'src/main.ts' }))
+      .resolves.toMatchObject({ ok: false, status: 'failed' })
+    expect(executeFunctionCall).not.toHaveBeenCalled()
+  })
+
+  it('rejects an explicit unknown workspaceId even with a sole workspace', async () => {
+    const executeFunctionCall = vi.fn().mockResolvedValue(result())
+    const tools = createWorkspaceChatTools({
+      runtime: { executeFunctionCall },
+      resources: new Map([['workspace-1', { sessionId: 'session-1', workspaceRoot: 'C:/one', workspaceName: 'One' }]]),
+      callerId: 'renderer:7',
+    })
+
+    await expect(tools.workspace_read.execute({ workspaceId: 'workspace-9', path: 'src/main.ts' }))
+      .resolves.toMatchObject({ ok: false, status: 'failed' })
+    expect(executeFunctionCall).not.toHaveBeenCalled()
+  })
+
   it('returns failed runtime results as structured data instead of throwing', async () => {
     // Throwing here would abort the whole streamText call and cut the reply off.
     const tools = createWorkspaceChatTools({
