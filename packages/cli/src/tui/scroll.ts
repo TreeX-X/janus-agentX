@@ -33,6 +33,15 @@ const SGR_MOUSE_RE = /\[<(\d+);(\d+);(\d+)([mM])/g
 const X10_MOUSE_RE = /\[M([\s\S]{3})/g
 /** Trailing fragment of a sequence split across stdin chunks (`[<65;1`). */
 const SGR_LEAD_FRAGMENT_RE = /\[<\d{1,3}(;\d{0,4}){0,2}$/
+/**
+ * SGR prefix from the start of a reassembled chunk: the withheld lead plus
+ * whatever the next chunk continues with (`[<0;50`, `[<0;50;20`, …). The
+ * terminator (`M`/`m`) is deliberately excluded — a completed sequence must
+ * fall through to the normal parsers, never linger in the buffer.
+ */
+const SGR_HEAD_PREFIX_RE = /^\x1b?\[<\d{0,3}(;\d{0,4}){0,2}/
+/** Withholdable tail: an SGR prefix (optional unstripped ESC) at chunk end. */
+const SGR_TAIL_PREFIX_RE = /(\x1b?\[<\d{1,3}(;\d{0,4}){0,2})$/
 
 /**
  * SGR mouse enable/disable (pi read-mode shape): button tracking (clicks +
@@ -225,6 +234,67 @@ export function containsMouseSequence(input: string): boolean {
   X10_MOUSE_RE.lastIndex = 0
   if (X10_MOUSE_RE.test(input)) return true
   return SGR_LEAD_FRAGMENT_RE.test(input)
+}
+
+/** Per-input-hook reassembly buffer for SGR sequences split across chunks. */
+export interface SgrChunkBuffer {
+  pending: string
+}
+
+/** Fresh reassembly buffer (one per `useInput` subscriber, reset on focus loss). */
+export function createSgrChunkBuffer(): SgrChunkBuffer {
+  return { pending: '' }
+}
+
+export interface JoinedSgrChunk {
+  /** Bytes to parse in place of the raw chunk (withheld lead excluded). */
+  text: string
+  /** True when this chunk carries (a part of) an SGR sequence: route it to
+   * the mouse path even when no complete sequence parses yet, so a withheld
+   * lead can never leak into the input as text or arm Esc-abort. */
+  mouse: boolean
+}
+
+function stashSgrTail(buffer: SgrChunkBuffer, text: string): JoinedSgrChunk {
+  const tail = SGR_TAIL_PREFIX_RE.exec(text)?.[1] ?? ''
+  buffer.pending = tail
+  if (!tail) return { text, mouse: false }
+  return { text: text.slice(0, text.length - tail.length), mouse: true }
+}
+
+/**
+ * Reassemble an SGR mouse sequence split across stdin chunks (ConPTY under
+ * streaming load delivers `\x1b[<0;50` + `;20M` as two reads: without this
+ * the press never parses, the drag selects nothing, and the orphaned tail
+ * falls through to text insertion).
+ *
+ * Only SGR (`[<…`) is reassembled: CPR-shaped text (`[12…`) is common in
+ * pastes, while `[<` plus digits inside one chunk is already treated as
+ * mouse-shaped by `containsMouseSequence`, so no new loss class is added.
+ * A withheld lead that the next chunk does not continue (stale) is dropped —
+ * matching the previous swallow — and the current chunk is processed alone,
+ * so literal typing can never be eaten or re-emitted.
+ */
+export function joinSgrChunk(buffer: SgrChunkBuffer, chunk: string): JoinedSgrChunk {
+  const prev = buffer.pending
+  buffer.pending = ''
+  if (!prev) return stashSgrTail(buffer, chunk)
+  const joined = prev + chunk
+  const head = SGR_HEAD_PREFIX_RE.exec(joined)?.[0] ?? ''
+  if (head.length >= prev.length && head.startsWith(prev)) {
+    const rest = joined.slice(head.length)
+    // Still open (`[<0;50`) or just completed (`[<0;50;20M…`): keep routing
+    // to the mouse path; re-withhold any new trailing lead.
+    if (rest === '' || rest[0] === 'M' || rest[0] === 'm') {
+      const tail = SGR_TAIL_PREFIX_RE.exec(joined)?.[1] ?? ''
+      buffer.pending = tail
+      if (!tail) return { text: joined, mouse: true }
+      return { text: joined.slice(0, joined.length - tail.length), mouse: true }
+    }
+  }
+  // Stale lead (next bytes cannot continue an SGR sequence): drop it exactly
+  // as the old swallow did, and assess the current chunk on its own.
+  return stashSgrTail(buffer, chunk)
 }
 
 /** Chop one paragraph into `width`-sized visual lines (CJK-aware). */

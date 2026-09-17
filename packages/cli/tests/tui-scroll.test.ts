@@ -7,8 +7,10 @@ import {
   clampScrollOffset,
   containsMouseSequence,
   CPR_QUERY,
+  createSgrChunkBuffer,
   estimateViewportRows,
   isMouseCaptureDisabled,
+  joinSgrChunk,
   LINE_SCROLL_LINES,
   MOUSE_DISABLE,
   MOUSE_ENABLE,
@@ -75,6 +77,54 @@ describe('containsMouseSequence', () => {
     expect(containsMouseSequence('[hello')).toBe(false)
     expect(containsMouseSequence('<')).toBe(false)
     expect(containsMouseSequence('a[<b')).toBe(false)
+  })
+})
+
+describe('joinSgrChunk', () => {
+  it('passes whole chunks through untouched', () => {
+    const buffer = createSgrChunkBuffer()
+    expect(joinSgrChunk(buffer, 'hello')).toEqual({ text: 'hello', mouse: false })
+    expect(joinSgrChunk(buffer, '[<0;10;20M')).toEqual({ text: '[<0;10;20M', mouse: false })
+    expect(joinSgrChunk(buffer, '\x03')).toEqual({ text: '\x03', mouse: false })
+    expect(joinSgrChunk(buffer, '\x1b[1;2D')).toEqual({ text: '\x1b[1;2D', mouse: false })
+    expect(buffer.pending).toBe('')
+  })
+
+  it('reassembles a press split across two chunks', () => {
+    const buffer = createSgrChunkBuffer()
+    const press = '[<0;10;20M'
+    const first = joinSgrChunk(buffer, press.slice(0, press.length - 4))
+    expect(first).toEqual({ text: '', mouse: true })
+    const second = joinSgrChunk(buffer, press.slice(press.length - 4))
+    expect(second).toEqual({ text: press, mouse: true })
+    expect(buffer.pending).toBe('')
+    expect(parseSgrMouseEvents(second.text)).toMatchObject([{ kind: 'press', x: 10, y: 20 }])
+  })
+
+  it('reassembles a press split across three chunks', () => {
+    const buffer = createSgrChunkBuffer()
+    const press = '[<0;10;20M'
+    expect(joinSgrChunk(buffer, press.slice(0, 4))).toEqual({ text: '', mouse: true })
+    expect(joinSgrChunk(buffer, press.slice(4, 7))).toEqual({ text: '', mouse: true })
+    const last = joinSgrChunk(buffer, press.slice(7))
+    expect(last).toEqual({ text: press, mouse: true })
+    expect(parseSgrMouseEvents(last.text)).toMatchObject([{ kind: 'press' }])
+  })
+
+  it('drops a stale lead instead of leaking it as text', () => {
+    const buffer = createSgrChunkBuffer()
+    expect(joinSgrChunk(buffer, '[<1')).toEqual({ text: '', mouse: true })
+    // `\r` cannot continue an SGR sequence: the lead is dropped (as before)
+    // and the chunk is processed alone so Enter still submits.
+    expect(joinSgrChunk(buffer, '\r')).toEqual({ text: '\r', mouse: false })
+    expect(buffer.pending).toBe('')
+  })
+
+  it('keeps typed text before a fresh lead', () => {
+    const buffer = createSgrChunkBuffer()
+    expect(joinSgrChunk(buffer, 'ab[<1')).toEqual({ text: 'ab', mouse: true })
+    expect(joinSgrChunk(buffer, '0;20M')).toEqual({ text: '[<10;20M', mouse: true })
+    expect(buffer.pending).toBe('')
   })
 })
 

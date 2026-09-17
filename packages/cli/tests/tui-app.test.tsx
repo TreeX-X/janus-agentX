@@ -54,11 +54,12 @@ async function press(stdin: { write: (data: string) => void }, key: string): Pro
 }
 
 describe('App', () => {
-  it('clears the draft on Ctrl+C and exits only on a consecutive second press', async () => {
+  it('clears the draft on Ctrl+C first and exits only on two consecutive empty presses', async () => {
     const session = await openSession()
     const onExit = vi.fn()
     const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={onExit} />)
     try {
+      // Non-empty draft: first press only clears, never arms the exit window.
       await typeText(app.stdin, 'unsent draft')
       await press(app.stdin, '\x03')
       expect(app.lastFrame()).not.toContain('unsent draft')
@@ -67,9 +68,85 @@ describe('App', () => {
       await press(app.stdin, '\x03')
       expect(app.lastFrame()).not.toContain('another draft')
       expect(onExit).not.toHaveBeenCalled()
+      // Empty input: first press arms, second consecutive press exits.
+      await press(app.stdin, '\x03')
+      expect(onExit).not.toHaveBeenCalled()
       await press(app.stdin, '\x03')
       expect(onExit).toHaveBeenCalledExactlyOnceWith(0)
     } finally {
+      app.unmount()
+      await session.close()
+    }
+  })
+
+  it('keeps a running turn on the first Ctrl+C with a draft and aborts only once empty', async () => {
+    const session = await openSession()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const original = session.sendTurn.bind(session)
+    const send = vi.spyOn(session, 'sendTurn').mockImplementation(async (...args) => {
+      await gate
+      return original(...args)
+    })
+    const onExit = vi.fn()
+    const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={onExit} />)
+    try {
+      await typeLine(app.stdin, 'long task')
+      await waitForFrame(() => send.mock.calls.length === 1)
+      await typeText(app.stdin, 'follow-up draft')
+      expect(app.lastFrame()).toContain('follow-up draft')
+      // First Ctrl+C clears the draft but keeps the turn running.
+      await press(app.stdin, '\x03')
+      expect(app.lastFrame()).not.toContain('follow-up draft')
+      expect(onExit).not.toHaveBeenCalled()
+      expect(send.mock.calls.length).toBe(1)
+      // Second Ctrl+C (now empty) aborts the turn without exiting.
+      await press(app.stdin, '\x03')
+      release()
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('cancelled — history kept'))
+      expect(onExit).not.toHaveBeenCalled()
+    } finally {
+      release()
+      app.unmount()
+      await session.close()
+    }
+  })
+
+  it('copies a keyboard selection on Ctrl+C mid-turn without clearing or aborting', async () => {
+    const session = await openSession()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const original = session.sendTurn.bind(session)
+    const send = vi.spyOn(session, 'sendTurn').mockImplementation(async (...args) => {
+      await gate
+      return original(...args)
+    })
+    const onExit = vi.fn()
+    const app = render(<App initialSession={session} host={{ createSession: async () => ({ error: 'test' }) }} onExit={onExit} />)
+    try {
+      await typeLine(app.stdin, 'long task')
+      await waitForFrame(() => send.mock.calls.length === 1)
+      await typeText(app.stdin, 'hello')
+      // Shift+Left x2 selects the 'lo' tail; a selected Ctrl+C must copy,
+      // keep the draft, and keep the turn running — never clear/abort.
+      await press(app.stdin, '\x1b[1;2D')
+      await press(app.stdin, '\x1b[1;2D')
+      await press(app.stdin, '\x03')
+      expect(app.lastFrame()).toContain('hello')
+      expect(onExit).not.toHaveBeenCalled()
+      expect(send.mock.calls.length).toBe(1)
+      // Prove the copy landed: select-all, replace with X, paste appends 'lo'.
+      await press(app.stdin, '\x01')
+      await press(app.stdin, 'X')
+      await waitForFrame(() => !(app.lastFrame() ?? '').includes('hello'))
+      await press(app.stdin, '\x16')
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('Xlo'))
+      expect(send.mock.calls.length).toBe(1)
+      release()
+      await waitForFrame(() => (app.lastFrame() ?? '').includes('stub-answer'))
+      expect(onExit).not.toHaveBeenCalled()
+    } finally {
+      release()
       app.unmount()
       await session.close()
     }
@@ -195,7 +272,13 @@ describe('App', () => {
       await waitForFrame(() => send.mock.calls.length === 1)
       await typeLine(app.stdin, 'pending text')
       await typeText(app.stdin, 'draft text')
-      if (outcome === 'cancel') await press(app.stdin, '\x03')
+      // Cancel is two-step now: first Ctrl+C only clears the unsent draft and
+      // keeps the turn; the second (empty) press aborts it.
+      if (outcome === 'cancel') {
+        await press(app.stdin, '\x03')
+        expect(app.lastFrame()).not.toContain('draft text')
+        await press(app.stdin, '\x03')
+      }
       release()
       await waitForFrame(() => (app.lastFrame() ?? '').includes('Pending messages restored'))
       expect(app.lastFrame()).toContain('pending text')

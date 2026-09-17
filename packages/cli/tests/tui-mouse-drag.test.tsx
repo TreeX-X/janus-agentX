@@ -150,6 +150,70 @@ describe('constrained mouse drag', () => {
     expect(MOUSE_DISABLE).toContain('?1002l')
   })
 
+  it('selects input when the press arrives split across chunks mid-stream', async () => {
+    // ConPTY under streaming load can deliver one press as two reads
+    // (`[<0;…` + `;…M`): without reassembly the press never parses, the drag
+    // selects nothing, and the orphaned tail leaks into the input as text.
+    cursorIntents.length = 0
+    const streaming = await CliSession.create({
+      workspace: mkdtempSync(join(tmpdir(), 'janus-drag-stream-')),
+      model: 'm',
+      apiKey: 'k',
+      store: memoryConversationStore(),
+      streamTextFn: (async () => ({
+        fullStream: (async function* () {
+          for (let i = 0; i < 40; i += 1) {
+            yield { type: 'text-delta', textDelta: `stream-chunk-${i} ` }
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          }
+          yield { type: 'finish', finishReason: 'stop' }
+        })(),
+        textStream: (async function* () {})(),
+      })) as unknown as ChatTurnPorts['streamTextFn'],
+      env: {} as NodeJS.ProcessEnv,
+    })
+    if (isSessionValidationError(streaming)) throw new Error(streaming.message)
+    const rig = await mountApp(streaming)
+    try {
+      rig.stdin.write('long task')
+      await tick()
+      rig.stdin.write('\r')
+      await waitForFrame(() => rig.latestPaint().includes('stream-chunk-2'))
+      rig.stdin.write('test')
+      await waitForFrame(() => rig.latestPaint().includes('test'))
+      await tick()
+      const caret = lastCaret()
+      const reply = { row: caret.y + 1, col: caret.x + 1 }
+      const toTerm = (inkX: number, inkY: number): [number, number] => [inkX + 1, inkY + 1]
+      const [pressX, pressY] = toTerm(caret.x - 4, caret.y)
+      const queriesBefore = rig.writes.join('').split(CPR_QUERY).length - 1
+      // Split press: the CPR query must still go out for the joined sequence.
+      const press = `\x1b[<0;${pressX};${pressY}M`
+      const cut = press.length - 4
+      rig.stdin.write(press.slice(0, cut))
+      await tick(50)
+      rig.stdin.write(press.slice(cut))
+      await waitForFrame(() => rig.writes.join('').split(CPR_QUERY).length - 1 > queriesBefore)
+      rig.stdin.write(`\x1b[${reply.row};${reply.col}R`)
+      await tick(150)
+      const [dragX, dragY] = toTerm(caret.x + 10, caret.y + 3)
+      rig.stdin.write(`\x1b[<32;${dragX};${dragY}M`)
+      await tick()
+      rig.stdin.write(`\x1b[<3;${dragX};${dragY}m`)
+      await waitForFrame(() => rig.writes.join('').includes('52;c;dGVzdA=='))
+      const copies = [...rig.writes.join('').matchAll(/\x1b\]52;c;([^\x07]*)\x07/g)]
+        .map((match) => Buffer.from(match[1]!, 'base64').toString('utf8'))
+      expect(copies).toEqual(['test'])
+      // The orphaned tail must not leak into the draft as text.
+      expect(rig.latestPaint()).toContain('test')
+      expect(rig.latestPaint()).not.toContain(';20M')
+      expect(rig.latestPaint()).not.toContain('[<')
+    } finally {
+      await rig.done()
+      await streaming.close()
+    }
+  }, 20000)
+
   it.each(['JANUS_NO_MOUSE', 'JANUS_MOUSE'])('respects the %s opt-out with no query and no copy', async (flag) => {
     vi.stubEnv(flag, flag === 'JANUS_NO_MOUSE' ? '1' : '0')
     cursorIntents.length = 0

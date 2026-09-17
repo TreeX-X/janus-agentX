@@ -43,6 +43,8 @@ import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
 import {
   clampScrollOffset,
   containsMouseSequence,
+  createSgrChunkBuffer,
+  joinSgrChunk,
   maintainMouseReporting,
   CPR_QUERY,
   LINE_SCROLL_LINES,
@@ -346,6 +348,10 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   >(null)
   const exitRef = useRef(onExit)
   const lastInterruptRef = useRef<number | null>(null)
+  // Fresh input snapshot for `handleInterrupt`: the callback must know whether
+  // the composer holds a draft without re-closing over stale state.
+  const inputRef = useRef(input)
+  inputRef.current = input
   exitRef.current = onExit
   const noticesRef = useRef<string[]>(initialNotices)
   noticesRef.current = initialNotices
@@ -640,11 +646,23 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     setHistoryDraft(next.draft)
   }, [])
 
-  // Ctrl+C while the composer owns focus (clear input / abort turn /
-  // double-press exit). The active composer calls this only with no text
-  // selected — a selection copies instead — so this handler skips while the
-  // composer is active and the composer alone decides copy-vs-interrupt.
+  // Ctrl+C priority while the composer owns focus: draft first, turn second,
+  // exit last. With text selected the composer copies instead and never calls
+  // here; with a non-empty draft the first press only clears the draft and
+  // keeps a running turn alive (no abort, no exit arming), so typing a
+  // follow-up mid-turn can never kill the turn by accident. Only an empty
+  // draft aborts the turn, and only two consecutive empty presses exit.
+  // Modal paths (overlay / approval / question) keep the old close+abort
+  // behavior: the composer is disabled there, so the draft is not editable.
   const handleInterrupt = useCallback((): void => {
+    const composerActive = overlay === null && state.awaitingApproval == null && !state.awaitingQuestion
+    if (composerActive && inputRef.current.length > 0) {
+      lastInterruptRef.current = null
+      setInput('')
+      setHistoryIndex(null)
+      setHistoryDraft('')
+      return
+    }
     const now = performance.now()
     if (lastInterruptRef.current !== null && now - lastInterruptRef.current <= 1000) {
       lastInterruptRef.current = null
@@ -658,13 +676,22 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     setHistoryDraft('')
     setOverlay(null)
     controllerRef.current?.abort()
-  }, [])
+  }, [overlay, state.awaitingApproval, state.awaitingQuestion])
 
   // Any composer copy/cut/paste/select-all is intervening keyboard input: it
   // cancels a pending double-press exit so copy-then-interrupt never quits.
   const handleSelectionAction = useCallback((): void => {
     lastInterruptRef.current = null
   }, [])
+
+  // SGR reassembly across stdin chunks (a press split as `[<0;50` + `;20M`
+  // under streaming load must still parse as one press). One buffer per
+  // subscriber; a lead withheld before a modal opened must never join
+  // post-modal bytes, hence the reset below.
+  const mouseBufRef = useRef(createSgrChunkBuffer())
+  useEffect(() => {
+    if (overlay !== null || state.awaitingQuestion) mouseBufRef.current.pending = ''
+  }, [overlay, state.awaitingQuestion])
 
   // Constrained drag selection (capture on): the terminal→Ink translation is
   // established once per geometry via CPR and cached; Composer publishes its
@@ -821,7 +848,13 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   }
 
   useInput((inputValue, key) => {
-    if (key.ctrl && inputValue === 'c') {
+    // SGR reassembly first: a press split across chunks (`[<0;50` + `;20M`)
+    // must parse as one sequence, and a withheld lead must never leak into
+    // text handling or arm Esc-abort below. Whole chunks pass through
+    // untouched, so every path below behaves exactly as before for them.
+    const joined = joinSgrChunk(mouseBufRef.current, inputValue)
+    const inputText = joined.text
+    if (key.ctrl && inputText === 'c') {
       // The mounted composer owns Ctrl+C (see `handleInterrupt`); overlays,
       // the approval gate and the question panel keep App-level behavior.
       if (overlay === null && state.awaitingApproval == null && !state.awaitingQuestion) return
@@ -829,15 +862,15 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       return
     }
     // Mouse reports do not count as intervening keyboard input.
-    if (!containsMouseSequence(inputValue)) lastInterruptRef.current = null
+    if (!joined.mouse && !containsMouseSequence(inputText)) lastInterruptRef.current = null
     if (overlay || state.awaitingQuestion) {
-      if (key.ctrl && inputValue === 'd') setOverlay(null)
+      if (key.ctrl && inputText === 'd') setOverlay(null)
       // C2收尾: question 期 Esc 整轮取消（面板同时按单次取消落定，两者一致）。
       // Overlay 开着时 Esc 归 overlay 自己（palette 等自带关闭）。
       else if (key.escape && state.awaitingQuestion && overlay === null) controllerRef.current?.abort()
       return
     }
-    if (key.ctrl && inputValue === 'd') {
+    if (key.ctrl && inputText === 'd') {
       exitRef.current(0)
       return
     }
@@ -846,21 +879,21 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     // constrained drag selection (frame chrome can never resolve). Wheel-only
     // chunks keep flowing to the scroll path below; anything else
     // mouse-shaped (fragments, legacy) stays swallowed below.
-    const cprReplies = parseCprReplies(inputValue)
+    const cprReplies = parseCprReplies(inputText)
     if (cprReplies.length > 0) resolveCprReplies(cprReplies)
-    const mouseEvents = parseSgrMouseEvents(inputValue)
+    const mouseEvents = parseSgrMouseEvents(inputText)
     if (mouseEvents.some((event) => event.kind === 'press' || event.kind === 'drag' || event.kind === 'release')) {
       routeDragEvents(mouseEvents)
       return
     }
     // Scroll measured terminal rows; plain arrows remain composer editing keys.
     // Ink exposes SGR mouse events as text, which the composer also ignores.
-    const wheel = parseWheelDelta(inputValue)
+    const wheel = parseWheelDelta(inputText)
     if (wheel !== 0) {
       scrollBy(wheel)
       return
     }
-    if (containsMouseSequence(inputValue)) return
+    if (joined.mouse || containsMouseSequence(inputText)) return
     // Esc interrupts a running turn (long output streams), mirroring a
     // single Ctrl+C press but without touching the draft. Placed after the
     // mouse guards so SGR wheel bytes can never trigger it; overlays own Esc

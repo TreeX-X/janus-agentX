@@ -91,7 +91,7 @@ export function commandHelpText(): string {
     '  /delete [n|id]        Delete a conversation (default: active).',
     '  /approval [mode]      Show or switch auto-run|per-action|plan.',
     '  /exit                 Leave janus.',
-      'Keys: Enter send · ↑/↓ input history · Shift+←→/↑↓/Home/End select text · Ctrl+A select all · Ctrl+C copy selection (else clear input / cancel turn; twice within 1s exit) · Ctrl+X cut · Ctrl+V paste · Esc clear selection / cancel turn · Ctrl+D exit · Ctrl+T thinking · Ctrl+O tool output · Ctrl+E todos · PgUp/PgDn scroll · Ctrl+Home/End top/bottom · Ctrl+↑/↓ step.',
+      'Keys: Enter send · ↑/↓ input history · Shift+←→/↑↓/Home/End select text · Ctrl+A select all · Ctrl+C copy selection (else non-empty input clears first and keeps the turn; empty cancels the turn; twice within 1s exit) · Ctrl+X cut · Ctrl+V paste · Esc clear selection / cancel turn · Ctrl+D exit · Ctrl+T thinking · Ctrl+O tool output · Ctrl+E todos · PgUp/PgDn scroll · Ctrl+Home/End top/bottom · Ctrl+↑/↓ step.',
     '      Mouse: drag inside the input to select text; release copies without borders or prompts. Wheel scrolls history. For native terminal selection (including output), use the terminal Shift+drag override where supported, or start with JANUS_NO_MOUSE=1 / JANUS_MOUSE=0 (tmux capture needs `set -g mouse on`).',
     'Panels: Ctrl+P command palette (provider setup, status, …).',
     'Mid-turn: the agent may ask option questions (TUI: ↑↓/Space/c/Enter/Esc · plain: numbers/labels/c/q).',

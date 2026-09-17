@@ -22,9 +22,11 @@
  * (plain moves collapse it, Esc clears it, edits replace it). Ctrl+A selects
  * all; Ctrl+C copies the selection to the system clipboard (OSC52) plus an
  * in-app buffer and clears it; Ctrl+X cuts; Ctrl+V pastes the in-app buffer
- * (native terminal paste keeps arriving as text, as before). With no
- * selection Ctrl+C falls through to `onInterrupt` (clear/abort/exit), so
- * `App` skips its own Ctrl+C while this composer is active.
+  * (native terminal paste keeps arriving as text, as before). With no
+  * selection Ctrl+C falls through to `onInterrupt` (non-empty clears first,
+  * empty aborts, double-empty exits), so `App` skips its own Ctrl+C while
+  * this composer is active. A selected Ctrl+C always copies and keeps the
+  * text — it never clears the draft and never interrupts the turn.
  *
  * Mouse drag selection (capture on): `App` forwards raw terminal cells to
  * `mouseControl`; cells resolve to buffer content only, so frame chrome can
@@ -65,7 +67,7 @@ import {
 } from './composer-state.js'
 import { createComposerClipboard } from './clipboard.js'
 import { TUI_HORIZONTAL_PADDING, useTerminalSize } from './terminal-size.js'
-import { containsMouseSequence, parseCprReplies } from './scroll.js'
+import { containsMouseSequence, createSgrChunkBuffer, joinSgrChunk, parseCprReplies } from './scroll.js'
 import { useSyncedCaret, type CaretDebugSnapshot } from './native-cursor.js'
 import { LOGO_TONE, TUI_CHROME } from '../logo.js'
 
@@ -87,7 +89,8 @@ interface ComposerProps {
   historyDraft?: string
   onHistoryRecall?: (next: { value: string; index: number | null; draft: string }) => void
   /**
-   * Ctrl+C with no selection (clear input / abort turn / double-press exit).
+   * Ctrl+C with no selection (App decides: non-empty draft clears first and
+   * keeps the turn; empty draft aborts; double empty-press exits).
    * The composer owns Ctrl+C while active so copy-vs-interrupt never races
    * `App`'s own handler; `App` skips its Ctrl+C exactly when `disabled` is false.
    */
@@ -134,6 +137,13 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
   // (see `native-cursor.ts`). Never computed manually — the discussion
   // `flexGrow` above moves this box without changing our props.
   const frameRef = useRef<DOMElement | null>(null)
+  // SGR reassembly across stdin chunks (mirrors `App`: same chunk stream, so
+  // the two buffers stay in sync; cleared while disabled — see the effect
+  // below — so overlay bytes can never join a stale lead).
+  const sgrBufRef = useRef(createSgrChunkBuffer())
+  useEffect(() => {
+    if (disabled) sgrBufRef.current.pending = ''
+  }, [disabled])
   // Forensic tap for cursor-deviation reports: overwritten every render by
   // `useSyncedCaret`, dumped to a log file on Ctrl+G (see `useInput` below).
   const caretDebugRef = useRef<CaretDebugSnapshot | null>(null)
@@ -187,13 +197,18 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
     setCursor(Math.max(0, Math.min(next, value.length)))
   }
 
-  useInput((input, key) => {
-    // SGR mouse reporting (capture on: wheel + drag) arrives as escape text
-    // that Ink 7 cannot parse — swallow it so mouse bytes never land in the
-    // buffer. `App` routes drags back here through `mouseControl`.
-    // CPR position replies (our own `\x1b[6n` queries for mouse mapping) are
-    // swallowed the same way; `App` extracts them first.
-    if (containsMouseSequence(input) || parseCprReplies(input).length > 0) return
+  useInput((rawInput, key) => {
+    // SGR reassembly first (mirrors `App`): a press split across chunks must
+    // still swallow as one sequence, and a withheld lead must never leak into
+    // the buffer as text. Whole chunks pass through untouched. SGR mouse
+    // reporting (capture on: wheel + drag) arrives as escape text that Ink 7
+    // cannot parse — swallow it so mouse bytes never land in the buffer.
+    // `App` routes drags back here through `mouseControl`. CPR position
+    // replies (our own `\x1b[6n` queries for mouse mapping) are swallowed the
+    // same way; `App` extracts them first.
+    const joined = joinSgrChunk(sgrBufRef.current, rawInput)
+    const input = joined.text
+    if (joined.mouse || containsMouseSequence(input) || parseCprReplies(input).length > 0) return
     // Forensic dump (see `writeCaretDebug` below): never blocks input.
     // BEL (`\x07`) is Ctrl+G on the wire; accept both parser mappings.
     if ((key.ctrl && input === 'g') || input === '\x07') {
