@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "repoId": "62b44166-82f0-41ff-838d-e2b02388ed06",
+  "name": "janus-agentX",
+  "profile": {
+    "id": "workflowx",
+    "version": "1.0.0-s1",
+    "digest": "de2aa81012fa0fcfea8d340f8a851b616f21689988f076ee1ec32fc67d601a48"
+  }
+}
