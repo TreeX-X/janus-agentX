@@ -9,6 +9,9 @@
  * Behaviour parity notes (any change here needs a shell-side twin test):
  * - trusted resource validation (<=12, no dup, running session, id match)
  * - knowledge recall only for sourceTag 'janus-chat'
+ * - maintenance sourceTag resolves workspaces without recall or capture
+ * - caller allowlist intersects the staged offering (workspace, todo, ask)
+ * - recovery follow-up only when mutation tools were actually offered
  * - function-calling gate for attached workspaces
  * - recovery follow-up when a mutation was requested but never attempted
  * - empty-response fallback mirrored as a text_delta event
@@ -87,6 +90,20 @@ export interface ChatTurnRequest {
    * pruning only (no extra model call). Failures fall back silently.
    */
   compactionSummarizer?: CompactionSummarizer
+  /**
+   * Caller-owned identity prepended before the built system prompt.
+   * Maintenance hosts pin domain rules here ("never emit a ChangeSet");
+   * the built chat prompt follows unchanged.
+   */
+  systemPromptPrefix?: string
+  /**
+   * Tool allowlist intersected with the staged offering (workspace, todo,
+   * ask). Maintenance discussion passes read-only tools only, which also
+   * drops the local todo/ask tools when they are absent from the list.
+   * Absent = the standard staged offering. Names match loosely: case and
+   * dots/underscores/dashes are ignored on both sides.
+   */
+  toolAllowlist?: string[]
 }
 
 export interface ChatTurnResult {
@@ -105,6 +122,22 @@ interface TrustedResource {
   sessionId: string
   workspaceRoot: string
   workspaceName: string
+}
+
+/**
+ * Tool names match loosely across dotted provider names and underscored
+ * model names (`workspace.read` and `workspace_read` are one tool), so a
+ * caller allowlist never misses by spelling.
+ */
+function normalizeOfferedToolName(name: string): string {
+  return name.toLowerCase().replace(/[._-]+/g, '')
+}
+
+/** Maintenance discussions resolve attached workspaces like chat. Recall and
+ * capture stay janus-chat-only: project turns read the same files without
+ * ever touching personal memory, even when a capture port is configured. */
+function resolvesTrustedResources(sourceTag?: string): boolean {
+  return sourceTag === 'janus-chat' || sourceTag === 'maintenance'
 }
 
 function resolveWorkspaceChatResources(
@@ -166,7 +199,7 @@ export async function runChatTurn(
     .filter((m) => m.content && m.content.trim().length > 0)
     .map((m) => ({ role: m.role, content: m.content }))
 
-  const trustedResources = sourceTag === 'janus-chat'
+  const trustedResources = resolvesTrustedResources(sourceTag)
     ? resolveWorkspaceChatResources(workspaceResources, ports.sessions.getSession)
     : new Map<string, TrustedResource>()
   const soleResource = trustedResources.size === 1 ? [...trustedResources.entries()][0] : undefined
@@ -186,6 +219,14 @@ export async function runChatTurn(
   }
 
   let workspaceTools: ReturnType<typeof createWorkspaceChatTools> | undefined
+  const prefixMessages: ChatMessage[] = request.systemPromptPrefix?.trim()
+    ? [{ role: 'system', content: request.systemPromptPrefix.trim() }]
+    : []
+  const allowlistedTools = request.toolAllowlist
+    ? new Set(request.toolAllowlist.map(normalizeOfferedToolName))
+    : null
+  const isToolAllowed = (name: string): boolean =>
+    !allowlistedTools || allowlistedTools.has(normalizeOfferedToolName(name))
   // Resolve the per-conversation session first: the todo snapshot below must
   // reflect pre-turn state, and loop-time `todo_write` calls write back here.
   const chatSession = request.chatSession ?? new ChatSessionRuntime()
@@ -233,11 +274,12 @@ export async function runChatTurn(
     })
     workspaceTools = Object.fromEntries(
       Object.entries(offeredTools).filter(([name]) =>
-        implemented.has(name) && (gatedTools === undefined || !gatedTools.has(name))),
+        implemented.has(name) && (gatedTools === undefined || !gatedTools.has(name)) && isToolAllowed(name)),
     ) as typeof offeredTools
     const activeToolManifests = Object.freeze(sortedManifests
       .filter((manifest) => Object.hasOwn(workspaceTools ?? {}, manifest.providerName)))
     promptMessages = [
+      ...prefixMessages,
       { role: 'system', content: buildChatSystemPrompt({ resources: trustedResources, toolManifests: activeToolManifests }) },
       ...(traceHistory ? [traceHistory] : []),
       ...(todoMessage ? [todoMessage] : []),
@@ -245,11 +287,18 @@ export async function runChatTurn(
     ]
   } else {
     promptMessages = [
+      ...prefixMessages,
       { role: 'system', content: buildChatSystemPrompt({ resources: trustedResources, toolManifests: [] }) },
       ...(todoMessage ? [todoMessage] : []),
       ...withRecall,
     ]
   }
+  // Recovery only makes sense when the turn can actually mutate: urging a
+  // read-only discussion to "attempt the mutation" confuses the model with
+  // tools it was never offered.
+  const canMutateOffered = Object.keys(workspaceTools ?? {}).some((name) =>
+    [...WORKSPACE_MUTATION_TOOLS].some((mutating) =>
+      normalizeOfferedToolName(mutating) === normalizeOfferedToolName(name)))
 
   if (trustedResources.size > 0 && endpoint.supportsFunctionCalling === false) {
     throw new Error(`Model "${endpoint.modelId}" does not support Function Calling required by attached workspaces`)
@@ -327,14 +376,22 @@ export async function runChatTurn(
     Object.keys(workspaceModelTools).sort((left, right) => left.localeCompare(right))
       .map((name) => [name, workspaceModelTools[name]]),
   )
-  const modelTools = { ...sortedWorkspaceModelTools, [TODOWRITE_TOOL_NAME]: todoModelTool, [ASKUSER_TOOL_NAME]: askModelTool }
+  const modelTools = {
+    ...sortedWorkspaceModelTools,
+    ...(isToolAllowed(TODOWRITE_TOOL_NAME) ? { [TODOWRITE_TOOL_NAME]: todoModelTool } : {}),
+    ...(isToolAllowed(ASKUSER_TOOL_NAME) ? { [ASKUSER_TOOL_NAME]: askModelTool } : {}),
+  }
   const runtimeLoopTools = workspaceTools
     ? createJanusRuntimeToolsForResources(ports.tools, trustedResources, { callerId, preview: createToolPreview })
       .filter((tool) => !!workspaceModelTools[tool.name])
     : []
   // `ask_user` always runs last within its batch: in-flight side effects
   // settle first so the user answers against final state.
-  const loopTools = [...runtimeLoopTools, todoLoopTool, askLoopTool]
+  const loopTools = [
+    ...runtimeLoopTools,
+    ...(isToolAllowed(TODOWRITE_TOOL_NAME) ? [todoLoopTool] : []),
+    ...(isToolAllowed(ASKUSER_TOOL_NAME) ? [askLoopTool] : []),
+  ]
   for (const tool of loopTools) {
     if (tool.name === ASKUSER_TOOL_NAME) tool.runLast = true
   }
@@ -417,6 +474,7 @@ export async function runChatTurn(
       const followUps: ChatMessage[] = []
       const mutationAttempted = executedToolTraces.some((entry) => WORKSPACE_MUTATION_TOOLS.has(entry.toolName))
       const needsRecovery = !!workspaceTools
+        && canMutateOffered
         && !recoveryIssued
         && (!streamedText.trim() || (userRequestedMutation && !mutationAttempted))
       if (needsRecovery) {
