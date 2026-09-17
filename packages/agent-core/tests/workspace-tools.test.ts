@@ -1039,7 +1039,7 @@ describe('workspace.search tool', () => {
     })
   })
 
-  it('returns flat hits by default without hunk reads or hashes', async () => {
+  it('returns flat hits by default with the file hash on the first hit', async () => {
     const root = await temporaryDirectory()
     await writeFile(join(root, 'a.ts'), 'first line\nsecond has needle\nthird line\n')
 
@@ -1049,12 +1049,26 @@ describe('workspace.search tool', () => {
     expect(result.output).toMatchObject({
       truncated: false,
       mode: 'content',
-      matches: [{ path: 'a.ts', line: 2, text: 'second has needle' }],
+      matches: [{ path: 'a.ts', line: 2, text: 'second has needle', sha256: expect.any(String) }],
     })
     const matches = (result.output as { matches: Array<Record<string, unknown>> }).matches
     expect(matches).toHaveLength(1)
     expect(matches[0]).not.toHaveProperty('hunks')
-    expect(matches[0]).not.toHaveProperty('sha256')
+  })
+
+  it('orders content hits by recency without changing hit lines', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'a-old.ts'), 'needle old\n')
+    await writeFile(join(root, 'z-new.ts'), 'needle new\n')
+    const now = Date.now() / 1000
+    await utimes(join(root, 'a-old.ts'), now - 60, now - 60)
+    await utimes(join(root, 'z-new.ts'), now - 5, now - 5)
+
+    const result = await executeSearch(root, { query: 'needle' })
+
+    expect(result.status).toBe('completed')
+    const paths = ((result.output as { matches: Array<{ path: string }> }).matches).map((match) => match.path)
+    expect(paths).toEqual(['z-new.ts', 'a-old.ts'])
   })
 
   it('respects gitignore rules in single-passthrough content search', async () => {

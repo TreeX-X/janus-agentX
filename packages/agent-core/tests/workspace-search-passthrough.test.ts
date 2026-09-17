@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -132,8 +132,7 @@ describe('workspace.search single-passthrough (mocked rg)', () => {
     expect(args.filter((arg) => arg === '**/*.ts')).toHaveLength(0)
   })
 
-  it('stops the producer at maxResults and reports truncation', async () => {
-    const root = await temporaryDirectory()
+  it('stops the producer at maxResults and reports truncation', async () => {    const root = await temporaryDirectory()
     const child = mockRgOnce([
       rgMatch('./a.ts', 1, 'needle one'),
       rgMatch('./a.ts', 2, 'needle two'),
@@ -146,6 +145,46 @@ describe('workspace.search single-passthrough (mocked rg)', () => {
     expect(result.matches).toHaveLength(2)
     expect(result.truncated).toBe(true)
     expect(child.kill).toHaveBeenCalled()
+  })
+
+  it('carries the file hash on the first flat hit of each readable file', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'code.ts'), 'needle one\nfiller\nneedle two\n', 'utf-8')
+    mockRgOnce([
+      rgMatch('./code.ts', 1, 'needle one'),
+      rgMatch('./code.ts', 3, 'needle two'),
+      rgMatch('./missing.ts', 1, 'needle ghost'),
+      rgEnd('./code.ts'),
+      rgEnd('./missing.ts'),
+    ])
+
+    const result = await searchWorkspace(baseOptions(root))
+
+    expect(result.matches).toHaveLength(3)
+    const [first, second, ghost] = result.matches as Array<{ path: string; sha256?: unknown }>
+    expect(typeof first.sha256).toBe('string')
+    expect(second).not.toHaveProperty('sha256')
+    expect(ghost.path).toBe('missing.ts')
+    expect(ghost).not.toHaveProperty('sha256')
+  })
+
+  it('orders files by recency even when the scanner lists them alphabetically', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'a-old.ts'), 'needle old\n', 'utf-8')
+    await writeFile(join(root, 'z-new.ts'), 'needle new\n', 'utf-8')
+    const now = Date.now() / 1000
+    await utimes(join(root, 'a-old.ts'), now - 60, now - 60)
+    await utimes(join(root, 'z-new.ts'), now - 5, now - 5)
+    mockRgOnce([
+      rgMatch('./a-old.ts', 1, 'needle old'),
+      rgEnd('./a-old.ts'),
+      rgMatch('./z-new.ts', 1, 'needle new'),
+      rgEnd('./z-new.ts'),
+    ])
+
+    const result = await searchWorkspace(baseOptions(root))
+
+    expect(result.matches.map((match) => (match as { path: string }).path)).toEqual(['z-new.ts', 'a-old.ts'])
   })
 
   it('groups hunks with the file hash only when withContext is set', async () => {

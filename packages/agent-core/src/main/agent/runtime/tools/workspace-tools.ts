@@ -27,7 +27,7 @@ import {
 const DEFAULT_DEPTH = 2
 const MAX_DEPTH = 4
 const DEFAULT_MAX_ENTRIES = 200
-const DEFAULT_OVERVIEW_MAX_ENTRIES = 300
+const DEFAULT_OVERVIEW_MAX_ENTRIES = 100
 const MAX_MAX_ENTRIES = 1000
 const registeredRegistries = new WeakSet<ToolRegistry>()
 
@@ -706,7 +706,7 @@ export const workspaceOverviewTool: RegisteredTool = {
 
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Find code with bounded ignore-aware search. Returns flat {path, line, text} hits by default (cheap first probe). mode=files searches file paths with recently modified files first; pass withContext:true for one hunk group per file (clustered hits share context, distant hunks carry a skipped-lines gap count) with the file SHA-256 (usable as workspace.edit expectedHash while unchanged). Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
+  description: 'Find code with bounded ignore-aware search. Content hits are flat {path, line, text} ordered recently-modified-first; the first hit per file carries the file SHA-256 (usable as workspace.edit expectedHash while unchanged). mode=files locates paths with recently modified files first; withContext:true groups hits per file into hunks with gap counts. Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',

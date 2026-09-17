@@ -118,7 +118,7 @@ export interface ContentFileGroup {
   sha256?: string
 }
 
-export type SearchMatch = { path: string; line?: number; text?: string } | ContentFileGroup
+export type SearchMatch = { path: string; line?: number; text?: string; sha256?: string } | ContentFileGroup
 
 export function isContentMatch(match: SearchMatch): match is ContentFileGroup {
   return Array.isArray((match as ContentFileGroup).hunks)
@@ -280,6 +280,66 @@ async function sortPathsByRecency(root: string, paths: string[]): Promise<string
     .map((entry) => entry.path)
 }
 
+/**
+ * Content-order pass: recently modified files first, hits within a file keep
+ * collection order (stable sort). Only matched files are stated, so the cost
+ * stays bounded by maxResults instead of the repository size.
+ */
+// Note: flat first-hit hashes and recency order cut re-reads — see .agents/notes/implemented/architecture/2026-09-17-turn-ritual-history-replay.md
+async function orderContentMatchesByRecency(root: string, matches: SearchMatch[]): Promise<void> {
+  const distinct: string[] = []
+  for (const match of matches) {
+    if (isContentMatch(match) || typeof match.line !== 'number') continue
+    if (!distinct.includes(match.path)) distinct.push(match.path)
+  }
+  if (distinct.length < 2) return
+  const mtimes = await Promise.all(distinct.map(async (path) => {
+    try {
+      return (await stat(join(root, path))).mtimeMs
+    } catch {
+      return 0
+    }
+  }))
+  // Stable sort by mtime only: ties (including unknown files) keep the
+  // scanner's collection order instead of falling back to alphabetical.
+  const rank = new Map(distinct
+    .map((path, index) => ({ path, mtime: mtimes[index] ?? 0 }))
+    .sort((left, right) => right.mtime - left.mtime)
+    .map((entry, index) => [entry.path, index] as [string, number]))
+  matches.sort((left, right) => {
+    const leftPath = isContentMatch(left) ? '' : left.path
+    const rightPath = isContentMatch(right) ? '' : right.path
+    return (rank.get(leftPath) ?? 0) - (rank.get(rightPath) ?? 0)
+  })
+}
+
+/**
+ * Hash the first flat hit per file (≤1MB, policy-readable). Hashing is
+ * server-side IO: ~16 tokens per file on the wire, while a compensating
+ * re-read before edit costs a full page plus a turn.
+ */
+async function attachFirstHitHashes(root: string, matches: SearchMatch[]): Promise<void> {
+  const seen = new Set<string>()
+  const firsts: Array<{ path: string; match: { path: string; line?: number; text?: string; sha256?: string } }> = []
+  for (const match of matches) {
+    if (isContentMatch(match) || typeof match.line !== 'number' || seen.has(match.path)) continue
+    seen.add(match.path)
+    firsts.push({ path: match.path, match })
+  }
+  const hashes = await Promise.all(firsts.map(async ({ path }) => {
+    try {
+      const full = await readWorkspaceFile(root, path, HASHABLE_BYTES, evaluateWorkspaceReadPolicy)
+      return createHash('sha256').update(full).digest('hex')
+    } catch {
+      return undefined
+    }
+  }))
+  firsts.forEach(({ match }, index) => {
+    const sha256 = hashes[index]
+    if (sha256 !== undefined) match.sha256 = sha256
+  })
+}
+
 // Note: bounded search preserves complete matches and uses rg when available — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
 // Note: matches carry context lines, recency order, and edit-compatible hashes — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
 // Note: first hit is a single rg passthrough with flat matches; hunks and hashes are opt-in — see .agents/notes/implemented/architecture/2026-09-17-search-first-token-optimization.md
@@ -367,7 +427,11 @@ export async function searchWorkspace(options: SearchOptions) {
       if (resultLimit) break
     }
   }
+  await orderContentMatchesByRecency(root, matches)
   if (!withContext) {
+    // First hit per file carries the edit-compatible hash so a located fix
+    // usually needs no second read; grouping stays opt-in via withContext.
+    await attachFirstHitHashes(root, matches)
     return {
       matches, scannedFiles, truncated, mode, backend: native ? 'ripgrep' : 'node',
       ...(!native ? { note: 'ripgrep unavailable: bounded Node fallback; ignore files are not applied. Install rg for ignore-aware native search.' } : {}),
