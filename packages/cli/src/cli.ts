@@ -14,6 +14,7 @@ import { defaultAuthPath, emptyAuth, loadAuthFile } from './auth.js'
 import { loadEffectiveCatalog } from './providers.js'
 import { runRepl } from './repl.js'
 import { runFullscreen } from './tui/run.js'
+import { runNotes } from './notes.js'
 import { CLI_VERSION } from './version.js'
 import type { TuiOptions } from './args.js'
 
@@ -110,6 +111,12 @@ async function main(argv: string[]): Promise<number> {
       return 0
     case 'chat':
       return runChat(parsed.chat ?? { workspace: process.cwd(), prompt: '' })
+    case 'notes': {
+      const out = await runNotes(parsed.notes?.args ?? [], parsed.notes?.workspace ?? process.cwd())
+      if (out.stdout) process.stdout.write(out.stdout)
+      if (out.stderr) process.stderr.write(out.stderr)
+      return out.exit
+    }
     case 'tui': {
       const tui: TuiOptions = parsed.tui ?? { workspace: process.cwd() }
       const tty = !!process.stdin.isTTY && !!process.stdout.isTTY

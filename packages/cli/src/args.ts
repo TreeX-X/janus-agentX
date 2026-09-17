@@ -9,7 +9,7 @@
  * `tui` (also the default with no argv) is the resident interactive loop.
  */
 
-export type CliCommand = 'chat' | 'tui' | 'version' | 'help'
+export type CliCommand = 'chat' | 'tui' | 'version' | 'help' | 'notes'
 
 export type ApprovalModeOption = 'auto-run' | 'per-action' | 'plan'
 
@@ -52,7 +52,14 @@ export interface ParsedArgs {
   command: CliCommand
   chat?: ChatOptions
   tui?: TuiOptions
+  notes?: NotesOptions
   error?: string
+}
+
+export interface NotesOptions {
+  /** Raw args after `notes` (subcommand, flags, refs); parsed by the notes runner. */
+  args: string[]
+  workspace: string
 }
 
 interface SharedOptions {
@@ -279,6 +286,9 @@ export function parseArgs(argv: string[], cwd = process.cwd()): ParsedArgs {
   if (command === 'tui') {
     return parseTui(rest, cwd)
   }
+  if (command === 'notes') {
+    return { command: 'notes', notes: { args: rest, workspace: cwd } }
+  }
   if (command !== 'chat') {
     return { command: 'help', error: `Unknown command: ${command}` }
   }
@@ -308,6 +318,8 @@ export function helpText(): string {
     '      Model config falls back to JANUS_MODEL / JANUS_BASE_URL / JANUS_API_KEY.',
     '      Headless stays file-free unless --config <path> is given.',
     '  janus version            Print the CLI version.',
+    '  janus notes [--root <dir>] [--json] <list|show|create|check|apply> [args]',
+    '      Offline project-note operations over .agents/notes (same results as wfx-notes).',
     '',
     'Exit codes: 0 done · 1 agent/model error · 2 usage/config error · 130 interrupted.',
   ].join('\n')

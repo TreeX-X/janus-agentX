@@ -26,6 +26,7 @@
     "@janus-agent/chat-core": "file:../chat-core",
     "@janus-agent/janus-agent": "file:../janus-agent",
     "@janus-agent/node-hosts": "file:../node-hosts",
+    "@janus-agent/notes-cli": "file:../notes-cli",
     "ai": "3.4.33",
     "ai-stream": "npm:ai@^6.0.278",
     "ink": "^7.1.1",
