@@ -94,12 +94,18 @@ describe('harness dispatch kernel', () => {
     try {
       const bad = await dispatchRun(dir, {
         taskUri: 'nope', mode: 'xdo', taskContractHash: 'zz',
-        inputs: [], closeout: 'working-tree-authorized',
+        inputs: 'nope' as unknown as [],
+        closeout: 'working-tree-authorized',
       });
       expect(bad.ok).toBe(false);
       expect(bad.errors.map((e) => e.code)).toEqual(
-        expect.arrayContaining(['SCHEMA_INVALID', 'NOT_READY', 'APPROVAL_REQUIRED']),
+        expect.arrayContaining(['SCHEMA_INVALID', 'APPROVAL_REQUIRED']),
       );
+      const standalone = await dispatchRun(dir, {
+        taskUri: TASK, mode: 'xdo', taskContractHash: CONTRACT,
+        inputs: [], closeout: 'commit-required',
+      });
+      expect(standalone.ok).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

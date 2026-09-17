@@ -9,7 +9,7 @@
  *  from task notes plus receipts; they never substitute the note truth.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   BaselineInput,
@@ -141,8 +141,7 @@ export async function saveRun(root: string, run: HarnessRun): Promise<void> {
   await writeAtomic(runFile(root, run.runId), JSON.stringify(run, null, 2));
 }
 
-export async function loadRun(root: string, runId: string): Promise<HarnessRun> {
-  assertRunId(runId, 'run');
+export async function loadRun(root: string, runId: string): Promise<HarnessRun> {  assertRunId(runId, 'run');
   let raw: string;
   try {
     raw = await readFile(runFile(root, runId), 'utf8');
@@ -159,6 +158,27 @@ export async function loadRun(root: string, runId: string): Promise<HarnessRun> 
     if (e instanceof RunStoreError) throw e;
     throw new RunStoreError('CORRUPT', `run record unreadable: ${runId}`);
   }
+}
+
+/** Every readable run record, newest first. Unreadable entries are skipped, never fatal. */
+export async function listRuns(root: string): Promise<HarnessRun[]> {
+  let names: string[] = [];
+  try {
+    names = (await readdir(runsDir(root), { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+  const out: HarnessRun[] = [];
+  for (const name of names) {
+    try {
+      out.push(await loadRun(root, name));
+    } catch {
+      continue;
+    }
+  }
+  return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
 /** Exclusive lease claim. Returns the current holder instead of overwriting. */

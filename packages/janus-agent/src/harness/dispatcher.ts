@@ -155,8 +155,10 @@ export async function dispatchRun(root: string, input: DispatchInput): Promise<O
   if (!NOTE_URI_RE.test(input.taskUri)) errors.push(diag('SCHEMA_INVALID', `bad task URI: ${input.taskUri}`, 'taskUri'));
   if (!['xdo', 'xdel', 'xflow'].includes(input.mode)) errors.push(diag('SCHEMA_INVALID', `bad mode: ${input.mode}`, 'mode'));
   if (!HEX64_RE.test(input.taskContractHash)) errors.push(diag('SCHEMA_INVALID', 'task contract hash must be hex64', 'taskContractHash'));
-  if (!Array.isArray(input.inputs) || input.inputs.length < 1) {
-    errors.push(diag('NOT_READY', 'dispatch needs at least the task snapshot', 'inputs'));
+  // Empty inputs are a standalone task: the contract hash still pins its own
+  // scope, and every related note pins through its digest when present.
+  if (!Array.isArray(input.inputs)) {
+    errors.push(diag('SCHEMA_INVALID', 'inputs must be an array', 'inputs'));
   }
   if (input.closeout !== 'commit-required' && input.closeout !== 'working-tree-authorized') {
     errors.push(diag('SCHEMA_INVALID', `bad closeout: ${input.closeout}`, 'closeout'));

@@ -51,3 +51,4 @@ export type {
   RunLease,
   TakeoverRecord,
 } from './harness/run-store.js'
+export { listRuns, loadRun, readLease } from './harness/run-store.js'
