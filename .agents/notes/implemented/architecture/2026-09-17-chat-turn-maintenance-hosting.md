@@ -53,7 +53,8 @@ read-only turn never urges an attempt it cannot perform.
   recovery skipped read-only, recovery kept with mutation tools),
   existing `chat-turn`/`ask-turn`/`todo-turn` suites stay green (35 checks
   total), `npm run typecheck --workspace=@janus-agent/janus-agent`
-  passes.
+  passes. Adopted by JanusX maintenance discussions (see the JanusX
+  [unified discussion](../../../../../JanusX/.agents/notes/implemented/architecture/2026-09-17-maintenance-discussion-unified-s6.md)).
 - **Costs and limits**: maintenance blueprint reads arrive as a pre-read
   scope snapshot, not an interactive tool; mid-turn drill-down beyond the
   snapshot needs a new turn. The allowlist is caller-owned: a host that
