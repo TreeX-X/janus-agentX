@@ -62,10 +62,16 @@ function resultToAgentResult(result: ToolResult): JanusAgentToolResult {
   }
 }
 
+interface ResolvedRuntimeSession {
+  sessionId: string
+  /** Filled back into the forwarded input: hosts validate it against the session. */
+  workspaceId?: string
+}
+
 function createRuntimeTool(
   host: JanusRuntimeToolHost,
   manifest: ToolManifest,
-  sessionId: string | ((input: Record<string, unknown>) => string | undefined),
+  sessionId: string | ((input: Record<string, unknown>) => string | ResolvedRuntimeSession | undefined),
   callerId: string,
   preview?: JanusRuntimeToolPreview,
 ): JanusRuntimeAgentTool {
@@ -80,17 +86,20 @@ function createRuntimeTool(
     execute: async (call: JanusToolCall, signal) => {
       if (signal.aborted) return { content: 'Tool execution cancelled', isError: true }
       const input = asInput(call.arguments)
-      const resolvedSessionId = typeof sessionId === 'function' ? sessionId(input) : sessionId
+      const resolved = typeof sessionId === 'function' ? sessionId(input) : { sessionId }
+      const resolvedSessionId = typeof resolved === 'string' ? resolved : resolved?.sessionId
       if (!resolvedSessionId) return { content: 'Workspace session is unavailable', isError: true }
+      const resolvedWorkspaceId = typeof resolved === 'object' ? resolved.workspaceId : undefined
+      const forwarded = resolvedWorkspaceId ? { ...input, workspaceId: resolvedWorkspaceId } : input
       const result = await host.executeFunctionCall({
         sessionId: resolvedSessionId,
         call: {
           toolName: manifest.canonicalName,
-          input,
+          input: forwarded,
           correlationId: call.id,
           source: 'function-calling',
           evidenceConfidence: 'medium',
-          ...(preview ? { preview: preview(manifest.canonicalName, input) } : {}),
+          ...(preview ? { preview: preview(manifest.canonicalName, forwarded) } : {}),
         },
       }, callerId)
       return resultToAgentResult(result)
@@ -133,9 +142,21 @@ export function createJanusRuntimeToolsForResources(
   resources: Map<string, JanusRuntimeWorkspaceResource>,
   options: { callerId?: string; preview?: JanusRuntimeToolPreview } = {},
 ): JanusRuntimeAgentTool[] {
-  const resolveSession = (input: Record<string, unknown>) => {
-    const workspaceId = typeof input.workspaceId === 'string' ? input.workspaceId : ''
-    return resources.get(workspaceId)?.sessionId
+  // Note: single-workspace omission (output-token parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Mirrors createWorkspaceChatTools: schemas let the model omit workspaceId,
+  // so this execution path must resolve the omission identically — explicit
+  // ids resolve exactly (unknown ids fail closed), only a missing id falls
+  // back to a sole attached workspace, and the id is filled back into the
+  // forwarded input because hosts validate it against the session.
+  const resolveSession = (input: Record<string, unknown>): ResolvedRuntimeSession | undefined => {
+    const rawId = typeof input.workspaceId === 'string' ? input.workspaceId : ''
+    const hit = resources.get(rawId)
+    if (hit) return { sessionId: hit.sessionId, workspaceId: rawId }
+    if (!rawId && resources.size === 1) {
+      const [[soleId, sole]] = [...resources.entries()]
+      return { sessionId: sole.sessionId, workspaceId: soleId }
+    }
+    return undefined
   }
   const callerId = options.callerId ?? 'janus-agent-loop'
   return manifests(host).map((manifest) => createRuntimeTool(host, manifest, resolveSession, callerId, options.preview))

@@ -22,7 +22,7 @@ Status: implemented
 
 工具循环话术设上限。带工具调用的 assistant 消息只在最新 2 条保留正文，更早的去正文但保留 `toolCalls`（调用与结果配对不断）；纯文本回答可能承载结论，永不触碰。
 
-`workspaceId` 单资源免填。全部模型工具的 `workspaceId` 改为可选，缺省且仅挂一个工作区时由服务端补齐，多工作区缺省或显式未知 id 照常失败；系统提示同步改为单工作区省略。显式 id 永不静默改道，打错 id 仍报错。实现位于 `createWorkspaceChatTools` 的解析入口。
+`workspaceId` 单资源免填。全部模型工具的 `workspaceId` 改为可选，缺省且仅挂一个工作区时由服务端补齐，多工作区缺省或显式未知 id 照常失败；系统提示同步改为单工作区省略。显式 id 永不静默改道，打错 id 仍报错。补齐点有两个且必须同改：`createWorkspaceChatTools` 的解析入口（面向模型的 schema 层）与 `createJanusRuntimeToolsForResources` 的会话解析（janus-agent 回环真正的执行路径，回填后的 id 随 input 转发，因为主机侧按会话校验它）；只改前者时省略调用在后者全灭。实现位于上述两处。
 
 跨轮 trace 历史设上限。`TOOL_TRACE_MAX_ENTRIES` 从 24 收敛到 12，时间顺序与最近优先不变；回环内的失败自愈仍由当轮 `failedCalls` 与修复 nudge 承担，trace 只负责跨轮回看。
 
@@ -44,5 +44,5 @@ Status: implemented
 ## Consequences
 
 - **Gains**: 每轮前缀下降约 1.5k（发布 schema 门控加描述瘦身）；单结果包装下降约 200 至 300 tokens 且不再随轮数携带回显字段；旧搜索输出最多存活 2 轮原文，旧读最多存活 3 个只读单元原文；读默认页下降约六成；单资源调用省约 10 参数 tokens；跨轮 trace 上限减半；空白漂移的编辑不再 spending 一整轮重试；超限文本统一指向更窄的重查。
-- **Costs and limits**: 发布意图识别依赖关键词与历史变更记录，非常规措辞的发布请求首轮缺工具，需一句追问后次轮补齐；纯文本历史摘要依赖首行格式，旧 JSON 历史仍按 JSON 路径解析；模糊匹配只覆盖去缩进情形，实质内容差异仍需重读；读默认页收缩后超 300 行的定位偶发一次续读轮，回看信号是同问题复放的补读轮数上升；`workspaceId` 节省取决于模型是否省略，多工作区与显式 id 路径零变化；trace 上限 12 后超界的跨轮失败回看丢失，回看信号是跨轮重复失败调用。
-- **Verification**: `agent-core` 全量（命令 `npx vitest run`）、`chat-core`、`janus-agent`、`cli`、`node-hosts` 全过；`agent-core`、`chat-core`、`janus-agent` `tsc --noEmit` 通过。新增用例覆盖纯文本渲染 9 项、截断 3 项、阶段暴露 2 项、分级剪枝 4 项（含读与话术）、模糊编辑 2 项、读分页新默认 1 项、单资源免填 3 项、trace 上限 1 项。同问题 token 复放口径：定位类任务预期 60 至 80k，补读轮数不涨即保留读默认收缩。
+- **Costs and limits**: 发布意图识别依赖关键词与历史变更记录，非常规措辞的发布请求首轮缺工具，需一句追问后次轮补齐；纯文本历史摘要依赖首行格式，旧 JSON 历史仍按 JSON 路径解析；模糊匹配只覆盖去缩进情形，实质内容差异仍需重读；读默认页收缩后超 300 行的定位偶发一次续读轮，回看信号是同问题复放的补读轮数上升；`workspaceId` 节省取决于模型是否省略，多工作区与显式 id 路径零变化；trace 上限 12 后超界的跨轮失败回看丢失，回看信号是跨轮重复失败调用；跨包测试跑的是 `dist` 而非 `src`，改完 agent-core 或 chat-core 必须先 `npm run build` 再验 janus-agent，否则旧 dist 给出假绿。
+- **Verification**: `agent-core` 全量（命令 `npx vitest run`）、`chat-core`、`janus-agent`、`cli`、`node-hosts` 全过；`agent-core`、`chat-core`、`janus-agent` `tsc --noEmit` 通过；跨包验证前执行根 `npm run build` 刷新 `dist`。新增用例覆盖纯文本渲染 9 项、截断 3 项、阶段暴露 2 项、分级剪枝 4 项（含读与话术）、模糊编辑 2 项、读分页新默认 1 项、单资源免填 6 项（chat-tools 3、adapter 2、回环端到端 1）、trace 上限 1 项。内部 smoke：`janus chat` 定位任务在部署包内完成搜索并答对；部署流程为备份 `release/janus-cli` 到 `release/rollback`、根构建、`pack:cli`、全局安装、`janus version` 与 headless 回合验证。同问题 token 复放口径：定位类任务预期 60 至 80k，补读轮数不涨即保留读默认收缩。

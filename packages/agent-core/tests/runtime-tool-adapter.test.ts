@@ -56,4 +56,37 @@ describe('runtime tool adapter', () => {
     expect(executeFunctionCall).toHaveBeenCalledTimes(1)
     expect(executeFunctionCall.mock.calls[0][0].sessionId).toBe('session-a')
   })
+
+  // Note: single-workspace omission — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Regression: schemas let the model omit workspaceId, but this execution
+  // path (the one janus-agent actually uses) dropped the omission and failed
+  // every call with 'Workspace session is unavailable'.
+  it('fills an omitted workspaceId from the sole resource and forwards it', async () => {
+    const executeFunctionCall = vi.fn(async () => result())
+    const host = {
+      registry: { list: () => [{ name: 'workspace.read', description: 'Read', inputSchema: { type: 'object' as const }, actionRisk: 'read' as const }] },
+      executeFunctionCall,
+    }
+    const [tool] = createJanusRuntimeToolsForResources(host, new Map([['ws-a', { sessionId: 'session-a' }]]))
+    const output = await tool.execute({ id: 'call', name: tool.name, arguments: { path: 'a.ts' } }, new AbortController().signal)
+    expect(output).toMatchObject({ isError: false })
+    expect(executeFunctionCall).toHaveBeenCalledTimes(1)
+    expect(executeFunctionCall.mock.calls[0][0].sessionId).toBe('session-a')
+    expect(executeFunctionCall.mock.calls[0][0].call.input).toMatchObject({ path: 'a.ts', workspaceId: 'ws-a' })
+  })
+
+  it('fails closed on omission with several resources or an explicit unknown id', async () => {
+    const executeFunctionCall = vi.fn(async () => result())
+    const host = {
+      registry: { list: () => [{ name: 'workspace.read', description: 'Read', inputSchema: { type: 'object' as const }, actionRisk: 'read' as const }] },
+      executeFunctionCall,
+    }
+    const resources = new Map([['ws-a', { sessionId: 'session-a' }], ['ws-b', { sessionId: 'session-b' }]])
+    const [tool] = createJanusRuntimeToolsForResources(host, resources)
+    const omitted = await tool.execute({ id: 'call', name: tool.name, arguments: { path: 'a.ts' } }, new AbortController().signal)
+    const unknown = await tool.execute({ id: 'call-2', name: tool.name, arguments: { workspaceId: 'ws-9', path: 'a.ts' } }, new AbortController().signal)
+    expect(omitted).toMatchObject({ isError: true, content: 'Workspace session is unavailable' })
+    expect(unknown).toMatchObject({ isError: true, content: 'Workspace session is unavailable' })
+    expect(executeFunctionCall).not.toHaveBeenCalled()
+  })
 })

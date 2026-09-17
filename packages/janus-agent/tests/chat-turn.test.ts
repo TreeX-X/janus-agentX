@@ -503,4 +503,53 @@ describe('runChatTurn', () => {
     expect(captured[0]).toContain('git_commit')
   })
 
+  // Note: single-workspace omission — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Regression: the model omits workspaceId (schemas allow it), but the loop
+  // execution path dropped the omission and failed every call with
+  // 'Workspace session is unavailable'. The id must be filled before the host
+  // validates it against the session.
+  it('executes an omitted workspaceId through the sole attached workspace', async () => {
+    const seen: unknown[] = []
+    const ports = stubPorts({
+      sessions: {
+        getSession: (id) => id === 's1'
+          ? { sessionId: 's1', workspaceId: 'w', workspaceRoot: '/tmp/w', status: 'running' }
+          : null,
+      },
+      tools: {
+        executeFunctionCall: async (input) => {
+          seen.push(input.call.input)
+          return { status: 'completed', toolName: input.call.toolName, output: { path: 'a.ts', content: 'hello' } } as never
+        },
+        registry: {
+          list: () => [{
+            name: 'workspace.read', description: 'read',
+            inputSchema: { type: 'object', properties: {} },
+            actionRisk: 'read',
+          }] as never,
+        },
+      },
+      streamTextFn: (() => {
+        let n = 0
+        return async () => {
+          n += 1
+          if (n === 1) {
+            return {
+              fullStream: (async function* () {
+                yield { type: 'tool-call', toolCallId: 'c1', toolName: 'workspace_read', args: { path: 'a.ts' } }
+                yield { type: 'finish', finishReason: 'tool-calls' }
+              })(),
+              textStream: (async function* () { })(),
+            }
+          }
+          return { textStream: (async function* () { yield 'done' })() }
+        }
+      })(),
+    })
+    const result = await runChatTurn(stagedRequest('stage-omitted', 'read a.ts'), ports)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ path: 'a.ts', workspaceId: 'w' })
+    expect(result.toolTraces.some((trace) => trace.status === 'completed')).toBe(true)
+  })
+
 })
