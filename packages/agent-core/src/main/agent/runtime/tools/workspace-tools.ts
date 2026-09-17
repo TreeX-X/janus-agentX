@@ -706,7 +706,7 @@ export const workspaceOverviewTool: RegisteredTool = {
 
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Find code with bounded ignore-aware search. mode=files searches file paths with recently modified files first; mode=content returns one hunk group per file (clustered hits share context, distant hunks carry a skipped-lines gap count) with the file SHA-256 (usable as workspace.edit expectedHash while unchanged). Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
+  description: 'Find code with bounded ignore-aware search. Returns flat {path, line, text} hits by default (cheap first probe). mode=files searches file paths with recently modified files first; pass withContext:true for one hunk group per file (clustered hits share context, distant hunks carry a skipped-lines gap count) with the file SHA-256 (usable as workspace.edit expectedHash while unchanged). Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -714,6 +714,7 @@ export const workspaceSearchTool: RegisteredTool = {
       workspaceId: { type: 'string' }, query: { type: 'string' }, path: { type: 'string' },
       glob: { type: 'string' }, mode: { type: 'string', enum: ['content', 'files'] },
       regex: { type: 'boolean' }, caseSensitive: { type: 'boolean' }, maxResults: { type: 'number' },
+      withContext: { type: 'boolean' },
       maxTokens: { type: 'number', description: `Optional output budget in tokens (1-${MAX_OUTPUT_TOKEN_BUDGET}).` },
     },
     required: ['workspaceId'], additionalProperties: false,
@@ -730,7 +731,7 @@ export const workspaceSearchTool: RegisteredTool = {
     if (typeof query !== 'string' || query.length > 256 || (mode === 'content' && !query.trim())) throw new Error('workspace.search query must be 1-256 characters for content search')
     if (typeof requestedPath !== 'string') throw new Error('workspace.search path must be a string')
     if (input.glob !== undefined && (typeof input.glob !== 'string' || input.glob.length > 256)) throw new Error('workspace.search glob must be at most 256 characters')
-    for (const key of ['regex', 'caseSensitive']) {
+    for (const key of ['regex', 'caseSensitive', 'withContext']) {
       if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error(`workspace.search ${key} must be a boolean`)
     }
     if (typeof maxResults !== 'number' || !Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 100) throw new Error('workspace.search maxResults must be an integer between 1 and 100')
@@ -743,7 +744,7 @@ export const workspaceSearchTool: RegisteredTool = {
     const result = await searchWorkspace({
       root: context.workspaceRoot, path, scopedFile, query, mode, maxResults,
       glob: input.glob as string | undefined, regex: input.regex === true,
-      caseSensitive: input.caseSensitive === true, signal: context.signal,
+      caseSensitive: input.caseSensitive === true, withContext: input.withContext === true, signal: context.signal,
     })
     const totalTokens = estimateOutputTokens(JSON.stringify(result.matches))
     let matches = result.matches

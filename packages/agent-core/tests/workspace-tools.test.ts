@@ -914,7 +914,7 @@ describe('workspace.search tool', () => {
     await writeFile(join(root, 'node_modules', 'dep.js'), 'needle in dependency')
     await writeFile(join(root, '.env'), 'NEEDLE=secret')
 
-    const result = await executeSearch(root, { query: 'needle' })
+    const result = await executeSearch(root, { query: 'needle', withContext: true })
 
     expect(result.status).toBe('completed')
     expect(result.output).toMatchObject({
@@ -943,7 +943,7 @@ describe('workspace.search tool', () => {
     const root = await temporaryDirectory()
     await writeFile(join(root, 'many.txt'), Array.from({ length: 10 }, () => 'match').join('\n'))
 
-    const result = await executeSearch(root, { query: 'match', maxResults: 3 })
+    const result = await executeSearch(root, { query: 'match', maxResults: 3, withContext: true })
 
     expect(result.status).toBe('completed')
     const capped = result.output as { matches: Array<{ matchCount: number }> }
@@ -970,7 +970,7 @@ describe('workspace.search tool', () => {
   it('supports regex alternatives and case-sensitive search', async () => {
     const root = await temporaryDirectory()
     await writeFile(join(root, 'code.ts'), 'function Foo() {}\nfunction Bar() {}\nfunction foo() {}')
-    const result = await executeSearch(root, { query: 'Foo|Bar', regex: true, caseSensitive: true })
+    const result = await executeSearch(root, { query: 'Foo|Bar', regex: true, caseSensitive: true, withContext: true })
     if (result.status !== 'completed') {
       expect(result.error).toContain('requires ripgrep')
       return
@@ -983,7 +983,7 @@ describe('workspace.search tool', () => {
   it('bounds complete match records and preserves truncation guidance', async () => {
     const root = await temporaryDirectory()
     await writeFile(join(root, 'many.ts'), Array.from({ length: 100 }, () => 'needle ' + 'x'.repeat(500)).join('\n'))
-    const result = await executeSearch(root, { query: 'needle', maxResults: 50 })
+    const result = await executeSearch(root, { query: 'needle', maxResults: 50, withContext: true })
     const output = result.output as { matches: Array<{ matchCount: number }>; truncated: boolean; guidance: string }
     expect(result.status).toBe('completed')
     const hits = output.matches.reduce((total, group) => total + group.matchCount, 0)
@@ -998,7 +998,7 @@ describe('workspace.search tool', () => {
     await writeFile(join(root, 'code.ts'), 'needle')
     vi.stubEnv('PATH', '')
     try {
-      const result = await executeSearch(root, { query: 'needle', glob: '**/*.ts' })
+      const result = await executeSearch(root, { query: 'needle', glob: '**/*.ts', withContext: true })
       expect(result.status).toBe('completed')
       expect(result.output).toMatchObject({
         backend: 'node',
@@ -1028,7 +1028,7 @@ describe('workspace.search tool', () => {
     await writeFile(join(root, 'src', 'main.ts'), 'needle here\n')
     await writeFile(join(root, 'other.ts'), 'needle there\n')
 
-    const result = await executeSearch(root, { query: 'needle', path: 'src/main.ts' })
+    const result = await executeSearch(root, { query: 'needle', path: 'src/main.ts', withContext: true })
 
     expect(result.status).toBe('completed')
     expect(result.output).toMatchObject({
@@ -1037,6 +1037,69 @@ describe('workspace.search tool', () => {
       matches: [{ path: 'src/main.ts', matchCount: 1 }],
       note: expect.stringContaining('scoped'),
     })
+  })
+
+  it('returns flat hits by default without hunk reads or hashes', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'a.ts'), 'first line\nsecond has needle\nthird line\n')
+
+    const result = await executeSearch(root, { query: 'needle' })
+
+    expect(result.status).toBe('completed')
+    expect(result.output).toMatchObject({
+      truncated: false,
+      mode: 'content',
+      matches: [{ path: 'a.ts', line: 2, text: 'second has needle' }],
+    })
+    const matches = (result.output as { matches: Array<Record<string, unknown>> }).matches
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).not.toHaveProperty('hunks')
+    expect(matches[0]).not.toHaveProperty('sha256')
+  })
+
+  it('respects gitignore rules in single-passthrough content search', async () => {
+    const root = await temporaryDirectory()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, '.gitignore'), 'ignored.ts\n')
+    await writeFile(join(root, 'ignored.ts'), 'needle at root')
+    await writeFile(join(root, 'src', 'kept.ts'), 'needle kept')
+
+    const result = await executeSearch(root, { query: 'needle' })
+
+    expect(result.status).toBe('completed')
+    const paths = ((result.output as { matches: Array<{ path: string }> }).matches).map((match) => match.path)
+    expect(paths).toContain('src/kept.ts')
+    if ((result.output as { backend: string }).backend === 'ripgrep') {
+      expect(paths).not.toContain('ignored.ts')
+    }
+  })
+
+  it('excludes sensitive files from content results', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, '.env'), 'NEEDLE=s3cret')
+    await writeFile(join(root, 'app.ts'), 'needle here')
+
+    const result = await executeSearch(root, { query: 'needle' })
+
+    expect(result.status).toBe('completed')
+    const paths = ((result.output as { matches: Array<{ path: string }> }).matches).map((match) => match.path)
+    expect(paths).toContain('app.ts')
+    expect(paths).not.toContain('.env')
+  })
+
+  it('returns stable files-mode results across repeated searches', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'alpha-target.ts'), 'x')
+    await writeFile(join(root, 'beta-target.ts'), 'x')
+
+    const first = await executeSearch(root, { mode: 'files', query: 'target' })
+    const second = await executeSearch(root, { mode: 'files', query: 'target' })
+
+    expect(first.status).toBe('completed')
+    expect(second.status).toBe('completed')
+    expect((second.output as { matches: unknown[] }).matches).toEqual(
+      (first.output as { matches: unknown[] }).matches,
+    )
   })
 })
 
@@ -1305,7 +1368,7 @@ describe('workspace.search evidence density', () => {
     const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
     const result = await runtime.executeTool({
       sessionId: session.id,
-      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle' } },
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle', withContext: true } },
     })
 
     expect(result.status).toBe('completed')
@@ -1338,7 +1401,7 @@ describe('workspace.search evidence density', () => {
     const session = await runtime.createSession({ workspaceId: 'workspace-1', workspaceRoot: root })
     const result = await runtime.executeTool({
       sessionId: session.id,
-      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle' } },
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'needle', withContext: true } },
     })
 
     expect(result.status).toBe('completed')
@@ -1361,7 +1424,7 @@ describe('workspace.search evidence density', () => {
 
     const found = await runtime.executeTool({
       sessionId: session.id,
-      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'before' } },
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'before', withContext: true } },
     })
     expect(found.status).toBe('completed')
     const match = (found.output as { matches: Array<{ sha256: string }> }).matches[0]
@@ -1413,7 +1476,7 @@ describe('workspace.search evidence density', () => {
     await writeFile(join(root, 'many.txt'), Array.from({ length: 60 }, () => 'hit').join('\n'))
     const sixty = await runtime.executeTool({
       sessionId: session.id,
-      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'hit', maxResults: 60 } },
+      call: { toolName: 'workspace.search', input: { workspaceId: 'workspace-1', query: 'hit', maxResults: 60, withContext: true } },
     })
     expect(sixty).toMatchObject({ status: 'completed' })
     const groups = (sixty.output as { matches: Array<{ path: string; matchCount: number; hunks: unknown[] }> }).matches

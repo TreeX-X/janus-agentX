@@ -10,6 +10,19 @@ import { isTextBuffer } from '../../environment/janus-workspace-fs'
 const SKIP = ['node_modules', 'dist', 'out', 'build', 'release', 'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.janusX']
 const MAX_FILES = 20_000
 const MAX_BYTES = 512 * 1024
+/**
+ * Best-effort rg-side exclusions mirroring SKIP plus the sensitive
+ * directories/filenames/extensions from policy-gate. Result-side eligible()
+ * stays authoritative; these globs only avoid opening excluded files during
+ * single-passthrough scans.
+ */
+const SENSITIVE_GLOBS = [
+  '.aws', '.azure', '.gnupg', '.kube', '.secrets', '.ssh', 'secrets',
+  '.env', '.envrc', '.git-credentials', '.netrc', '.npmrc', '.pypirc',
+  'credentials', 'credentials.json', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_rsa',
+  '*.jks', '*.key', '*.keystore', '*.p12', '*.pem', '*.pfx',
+]
+const RG_EXCLUDE_GLOBS = ['.git', ...SKIP, ...SENSITIVE_GLOBS]
 /** Record budget ≈ the default output token budget; matches carry ±2 context lines plus a file hash. */
 export const MAX_RESULT_CHARS = DEFAULT_OUTPUT_TOKEN_BUDGET * 4
 const CONTEXT_LINES = 2
@@ -28,6 +41,12 @@ export interface SearchOptions {
   caseSensitive: boolean
   maxResults: number
   signal: AbortSignal
+  /**
+   * Hit-first by default (flat {path, line, text}). Pass true to group hits
+   * per file into hunks with ±2 context lines plus the edit-compatible
+   * file hash (costs one bounded read per matched file).
+   */
+  withContext?: boolean
 }
 
 /** No shell, no rg config, no symlink traversal; stop producers at the output bound. */
@@ -204,25 +223,9 @@ function buildHunks(fileLines: string[], hits: Array<{ line: number; text: strin
   return hunks
 }
 
-/** Recently modified files first; alphabetical order breaks ties. */
-async function sortPathsByRecency(root: string, paths: string[]): Promise<string[]> {
-  const mtimes = await Promise.all(paths.map(async (path) => {
-    try {
-      return (await stat(join(root, path))).mtimeMs
-    } catch {
-      return 0
-    }
-  }))
-  return paths
-    .map((path, index) => ({ path, mtime: mtimes[index] ?? 0 }))
-    .sort((left, right) => right.mtime - left.mtime || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
-    .map((entry) => entry.path)
-}
-
-// Note: bounded search preserves complete matches and uses rg when available — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
-// Note: matches carry context lines, recency order, and edit-compatible hashes — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
-export async function searchWorkspace(options: SearchOptions) {
-  const { root, signal, query, maxResults, mode } = options
+/** Single rg --files enumeration shared by files-mode and the Node fallback. */
+async function enumerateFiles(options: SearchOptions): Promise<{ files: string[]; truncated: boolean; native: boolean }> {
+  const { root, signal } = options
   const files: string[] = []
   let truncated = false
   const eligible = (path: string) => !isSensitivePath(path)
@@ -235,7 +238,7 @@ export async function searchWorkspace(options: SearchOptions) {
     files.push(path)
     return true
   }
-  const args = ['--files', '--null', '--hidden', '--no-require-git', '--glob', '!.git', ...SKIP.flatMap((name) => ['--glob', `!${name}`])]
+  const args = ['--files', '--null', '--hidden', '--no-require-git', ...RG_EXCLUDE_GLOBS.flatMap((name) => ['--glob', `!${name}`])]
   // Positive rg globs override ignore files; apply user glob after enumeration.
   args.push('--', options.scopedFile ?? (options.path ? `./${options.path}` : '.'))
   const native = await runRg(args, root, signal, '\0', addFile)
@@ -259,9 +262,37 @@ export async function searchWorkspace(options: SearchOptions) {
     else await walk(options.path, 0)
   }
   files.sort()
+  return { files, truncated, native }
+}
+
+/** Recently modified files first; alphabetical order breaks ties. */
+async function sortPathsByRecency(root: string, paths: string[]): Promise<string[]> {
+  const mtimes = await Promise.all(paths.map(async (path) => {
+    try {
+      return (await stat(join(root, path))).mtimeMs
+    } catch {
+      return 0
+    }
+  }))
+  return paths
+    .map((path, index) => ({ path, mtime: mtimes[index] ?? 0 }))
+    .sort((left, right) => right.mtime - left.mtime || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+    .map((entry) => entry.path)
+}
+
+// Note: bounded search preserves complete matches and uses rg when available — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
+// Note: matches carry context lines, recency order, and edit-compatible hashes — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
+// Note: first hit is a single rg passthrough with flat matches; hunks and hashes are opt-in — see .agents/notes/implemented/architecture/2026-09-17-search-first-token-optimization.md
+export async function searchWorkspace(options: SearchOptions) {
+  const { root, signal, query, maxResults, mode } = options
+  const withContext = options.withContext === true
+  const eligible = (path: string) => !isSensitivePath(path)
+    && !path.split('/').some((part) => SKIP.includes(part))
+    && (!options.glob || matchesGlob(path, options.glob))
   const matches: SearchMatch[] = []
   let resultChars = 0
   let resultLimit = false
+  let truncated = false
   const addMatch = (path: string, line?: number, text?: string) => {
     const match: SearchMatch = { path, ...(line !== undefined ? { line, text } : {}) }
     const cost = JSON.stringify(match).length
@@ -277,6 +308,8 @@ export async function searchWorkspace(options: SearchOptions) {
   if (mode === 'files') {
     // Collect every name hit before cutting: alphabetical truncation would
     // hide recently modified files behind older names.
+    const { files, truncated: enumTruncated, native } = await enumerateFiles(options)
+    truncated = enumTruncated
     const hits: string[] = []
     for (const path of files) {
       if ((options.caseSensitive ? path : path.toLowerCase()).includes(needle)) hits.push(path)
@@ -291,32 +324,35 @@ export async function searchWorkspace(options: SearchOptions) {
       resultChars += JSON.stringify({ path }).length
     }
     if (ordered.length > matches.length) truncated = true
-  } else if (native) {
-    // Explicit eligible paths prevent rg from opening policy-excluded files.
-    // Batches stay below Windows command-line limits even with long paths.
-    for (let start = 0; start < files.length && !resultLimit;) {
-      const batch: string[] = []
-      let chars = 0
-      while (start < files.length && chars + files[start].length < 6000) {
-        const path = files[start++]
-        batch.push(`./${path}`); chars += path.length + 4
-      }
-      if (!batch.length) { truncated = true; start++; continue }
-      const searchArgs = ['--json', '--max-filesize', String(MAX_BYTES), '--max-count', String(maxResults + 1)]
-      if (!options.caseSensitive) searchArgs.push('--ignore-case')
-      if (!options.regex) searchArgs.push('--fixed-strings')
-      searchArgs.push('-e', query, '--', ...batch)
-      await runRg(searchArgs, root, signal, '\n', (record) => {
-        const event = JSON.parse(record)
-        if (event.type !== 'match') return true
-        const path = event.data.path.text?.replaceAll('\\', '/').replace(/^\.\//, '')
-        if (!path || !eligible(path) || typeof event.data.lines.text !== 'string') return true
-        const text = event.data.lines.text.replace(/\r?\n$/, '')
-        return addMatch(path, event.data.line_number, text.length > MATCH_TEXT_CHARS ? `${text.slice(0, MATCH_TEXT_CHARS)}…` : text)
-      })
-      scannedFiles += batch.length
+    return {
+      matches, scannedFiles: files.length, truncated, mode, backend: native ? 'ripgrep' : 'node',
+      ...(!native ? { note: 'ripgrep unavailable: bounded Node fallback; ignore files are not applied. Install rg for ignore-aware native search.' } : {}),
+      ...(truncated ? { guidance: 'Results are incomplete. Narrow path/glob/query to inspect the remaining matches.' } : {}),
     }
-  } else {
+  }
+  // Content mode: one rg process over the scope. The user glob stays
+  // result-side (positive rg globs override ignore files); rg-side
+  // exclusions are best-effort so excluded files are never opened by choice,
+  // while eligible() remains authoritative for what the model sees.
+  const scope = options.scopedFile ?? (options.path ? `./${options.path}` : '.')
+  const searchArgs = ['--json', '--hidden', '--no-require-git', '--max-filesize', String(MAX_BYTES), '--max-count', String(maxResults + 1),
+    ...RG_EXCLUDE_GLOBS.flatMap((name) => ['--glob', `!${name}`])]
+  if (!options.caseSensitive) searchArgs.push('--ignore-case')
+  if (!options.regex) searchArgs.push('--fixed-strings')
+  searchArgs.push('-e', query, '--', scope)
+  const native = await runRg(searchArgs, root, signal, '\n', (record) => {
+    const event = JSON.parse(record)
+    if (event.type === 'end') { scannedFiles += 1; return true }
+    if (event.type !== 'match') return true
+    const path = event.data.path.text?.replaceAll('\\', '/').replace(/^\.\//, '')
+    if (!path || !eligible(path) || typeof event.data.lines.text !== 'string') return true
+    const text = event.data.lines.text.replace(/\r?\n$/, '')
+    return addMatch(path, event.data.line_number, text.length > MATCH_TEXT_CHARS ? `${text.slice(0, MATCH_TEXT_CHARS)}…` : text)
+  })
+  if (!native) {
+    if (options.regex) throw new Error('Regex search requires ripgrep (rg); install rg or use a literal query')
+    const { files, truncated: enumTruncated } = await enumerateFiles(options)
+    truncated = truncated || enumTruncated
     for (const path of files) {
       if (signal.aborted) throw new Error('workspace.search cancelled')
       scannedFiles++
@@ -329,6 +365,13 @@ export async function searchWorkspace(options: SearchOptions) {
           && !addMatch(path, index + 1, text.length > MATCH_TEXT_CHARS ? `${text.slice(0, MATCH_TEXT_CHARS)}…` : text)) break
       }
       if (resultLimit) break
+    }
+  }
+  if (!withContext) {
+    return {
+      matches, scannedFiles, truncated, mode, backend: native ? 'ripgrep' : 'node',
+      ...(!native ? { note: 'ripgrep unavailable: bounded Node fallback; ignore files are not applied. Install rg for ignore-aware native search.' } : {}),
+      ...(truncated ? { guidance: 'Results are incomplete. Narrow path/glob/query to inspect the remaining matches.' } : {}),
     }
   }
   if (mode === 'content') {

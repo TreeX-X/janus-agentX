@@ -78,7 +78,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.overview', input),
     },
     workspace_search: {
-      description: 'Search code with path/glob filters and matching line numbers. mode=files locates paths with recently modified files first; content matches group per file into hunks with skipped-lines gap counts plus the file SHA-256. Use mode=files to locate paths, regex=true for alternative symbols. Default: literal case-insensitive content search.',
+      description: 'Search code with path/glob filters and matching line numbers. Returns flat hits by default (cheap first probe); mode=files locates paths with recently modified files first; pass withContext:true for per-file hunk groups with skipped-lines gap counts plus the file SHA-256. Use mode=files to locate paths, regex=true for alternative symbols. Default: literal case-insensitive content search.',
       parameters: z.object({
         workspaceId,
         query: z.string().max(256).default('').describe('Literal text or regex; optional in files mode.'),
@@ -86,11 +86,12 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
         mode: z.enum(['content', 'files']).default('content'),
         regex: z.boolean().default(false),
         caseSensitive: z.boolean().default(false),
+        withContext: z.boolean().default(false).describe('Group hits per file into hunks with context lines and the file SHA-256 (for edits). Costs one bounded read per matched file.'),
         path: z.string().default(''),
         maxResults: z.number().int().min(1).max(100).default(30),
         maxTokens: z.number().int().min(1).max(100000).optional().describe('Optional output budget in tokens; tighter than the match caps when given.'),
       }),
-      execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; maxTokens?: number }) => execute('workspace.search', input),
+      execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; withContext?: boolean; maxTokens?: number }) => execute('workspace.search', input),
     },
     workspace_read: {
       description: 'Read one UTF-8 text file as line pages (files ≤100KB return whole from offset, larger files default 800 lines or 48KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing; withLineAnchors:true also returns LINE#HASH anchors per line for lineEdits.',
