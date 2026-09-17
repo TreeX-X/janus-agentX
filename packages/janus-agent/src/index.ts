@@ -19,3 +19,35 @@ export type {
   TurnCapture,
 } from './ports.js'
 export { ASKUSER_TOOL_NAME, askUserParameters } from './orchestrator/ask-tool.js'
+export type {
+  CloseoutCheck,
+  CloseoutReport,
+  DispatchInput,
+  LiveSnapshot,
+  OpResult,
+  RepairPacket,
+  StartPreconditions,
+} from './harness/dispatcher.js'
+export {
+  cancelRun,
+  closeoutRun,
+  dispatchRun,
+  finishRun,
+  handoffRun,
+  markRun,
+  pauseRun,
+  rebaselineRun,
+  recordReceipt,
+  repairRun,
+  resumeRun,
+  startRun,
+  takeoverRun,
+  verifyRun,
+} from './harness/dispatcher.js'
+export type {
+  CodeRow,
+  HarnessRun,
+  RepairRecord,
+  RunLease,
+  TakeoverRecord,
+} from './harness/run-store.js'
