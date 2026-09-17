@@ -5,6 +5,7 @@
  * git evidence. No agent-core, no Electron, no LLM.
  */
 export * from './repository.js';
+export * from './baseline.js';
 export * from './resolver.js';
 export * from './journal.js';
 export * from './transaction.js';
