@@ -34,6 +34,8 @@ describe('parseInputLine', () => {
     expect(isKnownCommand('clear')).toBe(false)
     expect(isKnownCommand('list')).toBe(false)
     expect(commandHelpText()).toContain('/exit')
+    expect(commandHelpText()).toContain('/harness')
+    expect(isKnownCommand('harness')).toBe(true)
     expect(commandHelpText()).toContain('/switch')
     expect(commandHelpText()).toContain('/status')
     expect(commandHelpText()).toContain('/connect')

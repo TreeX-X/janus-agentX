@@ -43,6 +43,30 @@ describe('executeCommand', () => {
     await session.close()
   })
 
+  it('routes harness commands through the host and leaves the mode on exit', async () => {
+    const session = await openSession()
+    expect((await executeCommand(session, 'harness', [])).stderr).toEqual(['janus: harness mode is unavailable here.'])
+    const calls: string[][] = []
+    let active = true
+    const host = {
+      isActive: () => active,
+      run: async (args: string[]) => {
+        calls.push(args)
+        return { stdout: [`harness:${args.join(',')}`], stderr: [] }
+      },
+      exitMode: () => {
+        active = false
+        return ['back to build mode.']
+      },
+    }
+    expect((await executeCommand(session, 'harness', ['status'], { harness: host })).stdout).toEqual(['harness:status'])
+    expect(calls).toEqual([['status']])
+    expect((await executeCommand(session, 'exit', [], { harness: host })).exit).toBeUndefined()
+    expect(active).toBe(false)
+    expect((await executeCommand(session, 'exit', [], { harness: host })).exit).toBe(true)
+    await session.close()
+  })
+
   it('manages conversations end to end', async () => {
     const session = await openSession()
     const created = await executeCommand(session, 'new', ['research'])

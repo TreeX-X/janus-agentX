@@ -50,6 +50,7 @@ export const COMMAND_COMPLETIONS: readonly CompletionItem[] = [
   { name: 'rename', hint: 'Rename the active conversation.' },
   { name: 'delete', hint: 'Delete a conversation (default: active).' },
   { name: 'approval', hint: 'Show or switch auto-run|per-action.' },
+  { name: 'harness', hint: 'Enter task-bound harness mode.' },
   { name: 'exit', hint: 'Leave janus.' },
 ]
 

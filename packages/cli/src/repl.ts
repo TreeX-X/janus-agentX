@@ -20,6 +20,7 @@ import { runConnectWizard, testConnection, type ConnectAsk, type TestConnectionF
 import { EFFORT_META, effortMeta, effortPickerRows, parseEffortPickerInput } from './effort.js'
 import { executeCommand } from './tui/exec.js'
 import { parseInputLine } from './commands.js'
+import { HarnessController, createHarnessHost } from './harness-mode.js'
 import { completeSlashCommand } from './tui/composer-state.js'
 import {
   normalizeCustomAnswer,
@@ -133,6 +134,7 @@ interface ReplState {
   streamTextFn?: ChatTurnPorts['streamTextFn']
   testConnection?: TestConnectionFn
   outputKind?: 'text' | 'thinking' | 'tool'
+  harness?: import('./tui/exec.js').HarnessHost
 }
 
 function renderEvent(state: ReplState, event: unknown): void {
@@ -479,6 +481,7 @@ async function handleCommand(state: ReplState, command: string, args: string[]):
   // `/model <id>` still switches directly via executeCommand.
   if (command === 'model' && args.length === 0) return runModelPicker(state)
   const outcome = await executeCommand(state.session, command, args, {
+    harness: state.harness,
     recreateWorkspace: async (dir) => {
       const next = await CliSession.create({
         workspace: dir,
@@ -593,6 +596,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     testConnection: io.testConnection,
     outputKind: undefined,
   }
+  state.harness = createHarnessHost(new HarnessController(() => state.session.getWorkspaceRoot()));
 
   const created = await CliSession.create({
     ...options,
@@ -637,7 +641,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
 
   try {
     for (;;) {
-      const line = await lines.next('you> ')
+      const line = await lines.next(state.harness?.isActive() ? 'harness> ' : 'you> ')
       if (line === null) return 0
       const parsed = parseInputLine(line)
       if (parsed.kind === 'empty') continue
@@ -648,6 +652,11 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
         }
         const outcome = await handleCommand(state, parsed.command as string, parsed.args ?? [])
         if (outcome === 'exit') return 0
+        if (outcome === 'recreated' && state.harness?.isActive()) {
+          // The checkout moved under the bound run: leave the mode loudly
+          // instead of enforcing a baseline from the wrong directory.
+          for (const text of state.harness.exitMode()) stdout(`${text}\n`)
+        }
         continue
       }
       activeController = new AbortController()

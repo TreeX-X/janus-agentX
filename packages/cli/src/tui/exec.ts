@@ -49,8 +49,15 @@ export interface CommandSession {
 }
 
 export interface RecreateResult {
-  ok: boolean
-  message: string
+  ok: boolean;
+  message: string;
+}
+
+/** Harness mode host (S8). Absent = build-mode-only host (Ink until wired). */
+export interface HarnessHost {
+  isActive(): boolean;
+  run(args: string[]): Promise<CommandOutcome>;
+  exitMode(): string[];
 }
 
 export interface CommandOutcome {
@@ -75,13 +82,19 @@ export async function executeCommand(
   session: CommandSession,
   command: string,
   args: string[],
-  host: { recreateWorkspace?: (dir: string) => Promise<RecreateResult> } = {},
+  host: { recreateWorkspace?: (dir: string) => Promise<RecreateResult>; harness?: HarnessHost } = {},
 ): Promise<CommandOutcome> {
   switch (command) {
     case 'help':
       return continued([commandHelpText()])
     case 'exit':
+      // Inside harness mode /exit leaves the mode first; the bound run keeps
+      // its lease and only an explicit cancel ends it.
+      if (host.harness?.isActive()) return continued(host.harness.exitMode())
       return { stdout: [], stderr: [], exit: true }
+    case 'harness':
+      if (!host.harness) return continued([], ['janus: harness mode is unavailable here.'])
+      return host.harness.run(args)
     case 'compact': {
       try {
         return continued([await session.compactActiveConversation(args.join(' ') || undefined)])
