@@ -381,6 +381,30 @@ describe('workspace.edit tool', () => {
     })
   })
 
+  // Note: line-trimmed fuzzy fallback — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  it('applies a whitespace-drifted oldText when the trimmed shape is unique', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'notes.txt'), 'if (x) {\n    hello workspace\n}', 'utf-8')
+    const expectedHash = createHash('sha256').update('if (x) {\n    hello workspace\n}').digest('hex')
+
+    // Tab-indented oldText never matches exactly, but trims to one unique line.
+    const result = await executeEdit(root, expectedHash, true, '\thello workspace')
+
+    expect(result.status).toBe('completed')
+    expect(await readFile(join(root, 'notes.txt'), 'utf-8')).toBe('if (x) {\nupdated\n}')
+  })
+
+  it('rejects a trimmed match that hits multiple sites instead of editing one', async () => {
+    const root = await temporaryDirectory()
+    await writeFile(join(root, 'notes.txt'), '  dup\n  dup\n', 'utf-8')
+    const expectedHash = createHash('sha256').update('  dup\n  dup\n').digest('hex')
+
+    const result = await executeEdit(root, expectedHash, true, '\tdup')
+
+    expect(result.status).not.toBe('completed')
+    expect(JSON.stringify(result)).toContain('ambiguous')
+  })
+
   it('pages multi-byte lines without splitting characters', async () => {
     const root = await temporaryDirectory()
     const source = 'a你\nb好\nc'

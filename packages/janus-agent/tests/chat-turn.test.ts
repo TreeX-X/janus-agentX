@@ -449,4 +449,58 @@ describe('runChatTurn', () => {
     expect(count.count).toBe(4)
   })
 
+  // Note: staged tool offering — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  function stagedPorts(captured: string[][]) {
+    const names = ['workspace.search', 'workspace.read', 'workspace.edit', 'command.run', 'git.commit', 'git.push', 'project.apply-config']
+    return stubPorts({
+      sessions: {
+        getSession: (id) => id === 's1'
+          ? { sessionId: 's1', workspaceId: 'w', workspaceRoot: '/tmp/w', status: 'running' }
+          : null,
+      },
+      tools: {
+        executeFunctionCall: async (input) => ({ status: 'completed', toolName: input.call.toolName, output: {} }) as never,
+        registry: {
+          list: () => names.map((name) => ({
+            name, description: name,
+            inputSchema: { type: 'object', properties: {} },
+            actionRisk: 'read',
+          })) as never,
+        },
+      },
+      streamTextFn: (async (options: Record<string, unknown>) => {
+        captured.push(Object.keys((options.tools ?? {}) as Record<string, unknown>).sort())
+        return { textStream: (async function* () { yield 'done' })() }
+      }) as ChatTurnPorts['streamTextFn'],
+    })
+  }
+
+  function stagedRequest(requestId: string, content: string) {
+    return {
+      requestId, messages: [{ role: 'user' as const, content }], providerId: 'p',
+      sourceTag: 'janus-chat' as const,
+      workspaceResources: [{ workspaceId: 'w', workspacePath: '/tmp/w', workspaceName: 'w', agentSessionId: 's1' }],
+    }
+  }
+
+  it('gates publish tools on read-only questions but keeps the fix path', async () => {
+    const captured: string[][] = []
+    await runChatTurn(stagedRequest('stage-q', 'where is authentication handled?'), stagedPorts(captured))
+    expect(captured.length).toBeGreaterThan(0)
+    const tools = captured[0]
+    expect(tools).toContain('workspace_search')
+    expect(tools).toContain('workspace_read')
+    expect(tools).toContain('workspace_edit')
+    expect(tools).toContain('command_run')
+    expect(tools).not.toContain('git_commit')
+    expect(tools).not.toContain('git_push')
+    expect(tools).not.toContain('project_apply_config')
+  })
+
+  it('offers publish tools when the user asks to commit', async () => {
+    const captured: string[][] = []
+    await runChatTurn(stagedRequest('stage-c', 'commit these changes please'), stagedPorts(captured))
+    expect(captured[0]).toContain('git_commit')
+  })
+
 })

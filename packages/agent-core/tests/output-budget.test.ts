@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   estimateOutputTokens,
   fitItemsToBudget,
+  MODEL_TEXT_MAX_BYTES,
+  MODEL_TEXT_MAX_LINES,
   parseOutputTokenBudget,
+  truncateModelText,
 } from '../src/main/agent/runtime/tools/output-budget'
 
 describe('output token budgets', () => {
@@ -36,5 +39,25 @@ describe('output token budgets', () => {
     expect(() => parseOutputTokenBudget(0, 'workspace.read')).toThrow('maxTokens')
     expect(() => parseOutputTokenBudget(100001, 'workspace.read')).toThrow('maxTokens')
     expect(() => parseOutputTokenBudget('many', 'workspace.read')).toThrow('maxTokens')
+  })
+
+  it('passes short model text through untouched', () => {
+    expect(truncateModelText('hello', 'narrow it')).toBe('hello')
+  })
+
+  it('caps model text head-first with a narrower-query hint', () => {
+    const text = Array.from({ length: MODEL_TEXT_MAX_LINES + 10 }, (_, i) => `line ${i}`).join('\n')
+    const out = truncateModelText(text, 'Re-search narrower.')
+    expect(out).toContain('Output truncated')
+    expect(out).toContain('Re-search narrower.')
+    expect(out.split('\n').length).toBeLessThan(MODEL_TEXT_MAX_LINES + 10)
+    expect(out).toContain('line 0')
+  })
+
+  it('caps model text by bytes for long single lines', () => {
+    const text = `short\n${'x'.repeat(MODEL_TEXT_MAX_BYTES + 100)}`
+    const out = truncateModelText(text, 'Read a smaller range.')
+    expect(out).toContain('Output truncated')
+    expect(out).toContain('short')
   })
 })

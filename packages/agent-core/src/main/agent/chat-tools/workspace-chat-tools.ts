@@ -56,7 +56,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
 
   const tools = {
     workspace_list: {
-      description: 'List a bounded file tree in one attached workspace. Entries carry sizes and modification times with recently modified paths first. Use this before reading when the exact path is unknown.',
+      description: 'List a bounded file tree. Entries carry sizes and mtimes, newest-first. Use this before reading when the exact path is unknown.',
       parameters: z.object({
         workspaceId,
         path: z.string().default(''),
@@ -67,7 +67,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.list', input),
     },
     workspace_overview: {
-      description: 'Read a shallow bounded tree of one attached workspace with file sizes, modification times, and a git working-tree summary. Start here when the checkout shape is unknown instead of looping workspace_list.',
+      description: 'Shallow bounded tree with sizes, mtimes, and a git summary. Start here when the checkout shape itself is unknown, not for code search.',
       parameters: z.object({
         workspaceId,
         path: z.string().default(''),
@@ -78,7 +78,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string; depth: number; maxEntries: number; maxTokens?: number }) => execute('workspace.overview', input),
     },
     workspace_search: {
-      description: 'Search code with path/glob filters. Flat hits come recently-modified-first; the first hit per file carries the file SHA-256 for edits. mode=files locates paths; withContext:true groups hunks with gap counts. Default: literal case-insensitive.',
+      description: 'Bounded code search with path/glob filters. Flat hits newest-first; the first hit per file carries the SHA-256 for edits. mode=files locates paths; withContext:true groups hunks (one bounded read per file). Literal case-insensitive by default.',
       parameters: z.object({
         workspaceId,
         query: z.string().max(256).default('').describe('Literal text or regex; optional in files mode.'),
@@ -94,7 +94,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; query: string; path: string; maxResults: number; glob?: string; mode?: string; regex?: boolean; caseSensitive?: boolean; withContext?: boolean; maxTokens?: number }) => execute('workspace.search', input),
     },
     workspace_read: {
-      description: 'Read one UTF-8 text file as line pages (files ≤100KB return whole from offset, larger files default 800 lines or 48KB, whichever first). Continue with offset=nextOffset while truncated is true. Read immediately before editing; withLineAnchors:true also returns LINE#HASH anchors per line for lineEdits.',
+      description: 'Read one UTF-8 file as line pages (≤100KB whole; larger default 800 lines/48KB). Continue with offset=nextOffset while truncated. withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1).describe('Workspace-relative file path, e.g. src/notes/test.md'),
@@ -107,7 +107,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string; offset?: number; limit?: number; maxBytes?: number; maxTokens?: number; withLineAnchors?: boolean }) => execute('workspace.read', input),
     },
     workspace_edit: {
-      description: 'Edit one existing UTF-8 file with exact, unambiguous replacements, a single-file unified diff, or hash-anchored lineEdits. Requires the SHA-256 returned by workspace_read or by a workspace_search content match when the file is unchanged; the configured Agent permission mode controls approval. lineEdits use LINE#HASH anchors from workspace_read withLineAnchors:true and apply bottom-up; a stale anchor aborts the whole batch and returns fresh anchors to retry with.',
+      description: 'Edit one file with exact replacements, a unified diff, or hash-anchored lineEdits. Needs the SHA-256 from workspace_read or a workspace_search hit; the Agent permission mode controls approval. A stale anchor aborts the batch with fresh anchors.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1),
@@ -146,7 +146,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string; content: string }) => execute('workspace.create', input),
     },
     workspace_delete: {
-      description: 'Delete one workspace file, symlink, or directory after approval. Directories with entries require recursive:true. The workspace root, .janusX audit state, and sensitive paths are refused. Prefer this over shell rm: the delete is previewed, audited, and checkpointed for restore.',
+      description: 'Delete one file, symlink, or directory after approval. Non-empty directories need recursive:true. Prefer this over shell rm: previewed, audited, checkpointed.',
       parameters: z.object({
         workspaceId,
         path: z.string().min(1).describe('Workspace-relative path of the target, e.g. src/notes/old.md'),
@@ -289,7 +289,7 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId: string; path: string }) => execute('git.push', input),
     },
     command_run: {
-      description: 'Run one program with structured arguments in an attached workspace. Pass program and args separately; no shell syntax. Sync timeout 120s default (max 600s); jobs over 60s must use background:true and poll project_process_output. Sync output is an 8KB tail preview; page the full log at logPath with workspace_read. Prefer workspace_delete over shell rm; catastrophic deletions are refused.',
+      description: 'Run one program with args in a workspace. No shell syntax. Jobs over 60s must use background:true and poll project_process_output. Sync output is an 8KB tail; page the full log at logPath with workspace_read.',
       parameters: z.object({
         workspaceId,
         cwd: z.string().default(''),

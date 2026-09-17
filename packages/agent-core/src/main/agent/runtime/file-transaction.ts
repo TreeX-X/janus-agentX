@@ -76,16 +76,27 @@ function applyExactReplacements(content: string, replacements: WorkspaceExactRep
     }
     if (!replacement.oldText) throw new Error(`workspace.edit replacement ${index + 1} oldText must not be empty`)
     const oldText = normalizeEditText(replacement.oldText)
-    const first = next.indexOf(oldText)
+    let span = oldText
+    let first = next.indexOf(span)
     if (first < 0) {
-      throw new WorkspaceEditConflictError(
-        `workspace.edit replacement ${index + 1} no longer matches the file; ${mismatchContext(next, oldText)}`,
-      )
+      // Whitespace-only drift (model retyped indentation from a search hit):
+      // one unique trimmed match still applies; otherwise keep the exact error.
+      const fuzzy = findLineTrimmedSpan(next, oldText)
+      if (fuzzy === undefined) {
+        throw new WorkspaceEditConflictError(
+          `workspace.edit replacement ${index + 1} no longer matches the file; ${mismatchContext(next, oldText)}`,
+        )
+      }
+      if (fuzzy === 'ambiguous') {
+        throw new WorkspaceEditConflictError(`workspace.edit replacement ${index + 1} is ambiguous`)
+      }
+      span = fuzzy
+      first = next.indexOf(span)
     }
-    if (next.indexOf(oldText, first + oldText.length) >= 0) {
+    if (next.indexOf(span, first + span.length) >= 0) {
       throw new WorkspaceEditConflictError(`workspace.edit replacement ${index + 1} is ambiguous`)
     }
-    next = `${next.slice(0, first)}${normalizeEditText(replacement.newText)}${next.slice(first + oldText.length)}`
+    next = `${next.slice(0, first)}${normalizeEditText(replacement.newText)}${next.slice(first + span.length)}`
     if (Buffer.byteLength(next) > MAX_WORKSPACE_EDIT_BYTES) {
       throw new Error(`workspace.edit output exceeds ${MAX_WORKSPACE_EDIT_BYTES} bytes`)
     }
@@ -99,6 +110,33 @@ function applyExactReplacements(content: string, replacements: WorkspaceExactRep
 
 function normalizeEditText(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+// Note: line-trimmed fuzzy fallback (opencode LineTrimmed parity, minimal) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Exact match stays authoritative: fuzzy only fires when indexOf misses, and
+// only when the trimmed shape matches exactly one span. Anything ambiguous
+// (zero or multiple candidates) falls back to the exact-match error so the
+// model re-reads instead of editing the wrong site. The expectedHash gate
+// above still guards against concurrent modification.
+function findLineTrimmedSpan(haystack: string, needle: string): string | 'ambiguous' | undefined {
+  const hayLines = haystack.split('\n')
+  const needleLines = needle.split('\n')
+  if (needleLines.length > 0 && needleLines[needleLines.length - 1] === '') needleLines.pop()
+  if (needleLines.length === 0 || needleLines.every((line) => line.trim() === '')) return undefined
+  const hits: Array<{ start: number; end: number }> = []
+  for (let i = 0; i + needleLines.length <= hayLines.length; i++) {
+    let matches = true
+    for (let j = 0; j < needleLines.length; j++) {
+      if (hayLines[i + j].trim() !== needleLines[j].trim()) {
+        matches = false
+        break
+      }
+    }
+    if (matches) hits.push({ start: i, end: i + needleLines.length })
+  }
+  if (hits.length === 0) return undefined
+  if (hits.length > 1) return 'ambiguous'
+  return hayLines.slice(hits[0].start, hits[0].end).join('\n')
 }
 
 function editLineNumberAt(text: string, index: number): number {

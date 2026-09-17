@@ -110,6 +110,39 @@ describe('ChatSessionRuntime', () => {
     expect(recent).toBeDefined()
   })
 
+  // Note: graded prune — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  it('prunes old search outputs even within budget but keeps old reads verbatim', () => {
+    const runtime = new ChatSessionRuntime()
+    const searchUnit = (id: string, query: string) => ([
+      { role: 'assistant' as const, content: '', toolCalls: [{ id, name: 'workspace_search', arguments: { query } }] },
+      { role: 'tool' as const, toolCallId: id, toolName: 'workspace_search', content: `Found 1 match for "${query}"\n\na.ts:\n Line 1: ${query}` },
+    ])
+    const readUnit = (id: string) => ([
+      { role: 'assistant' as const, content: '', toolCalls: [{ id, name: 'workspace_read', arguments: { path: 'a.ts' } }] },
+      { role: 'tool' as const, toolCallId: id, toolName: 'workspace_read', content: '<path>a.ts</path> lines 1-10/100\n<content>\n1: hello\n</content>' },
+    ])
+    const messages = [
+      { role: 'system' as const, content: 'policy' },
+      { role: 'user' as const, content: 'first' },
+      ...searchUnit('call-s1', 'alpha'),
+      { role: 'user' as const, content: 'second' },
+      ...searchUnit('call-s2', 'beta'),
+      { role: 'user' as const, content: 'third' },
+      ...searchUnit('call-s3', 'gamma'),
+      { role: 'user' as const, content: 'fourth' },
+      ...readUnit('call-r1'),
+      { role: 'user' as const, content: 'current request' },
+    ]
+    const context = runtime.buildContext(messages, {
+      model: { contextWindow: 200_000, maxOutputTokens: 100 },
+    })
+    const oldSearch = context.find((message) => message.role === 'tool' && message.toolCallId === 'call-s1')
+    expect(oldSearch?.content).toContain('"pruned":true')
+    const oldRead = context.find((message) => message.role === 'tool' && message.toolCallId === 'call-r1')
+    expect(oldRead?.content).not.toContain('"pruned":true')
+    expect(oldRead?.content).toContain('hello')
+  })
+
   it('keeps short sessions fully verbatim without pruning', () => {
     const runtime = new ChatSessionRuntime()
     const context = runtime.buildContext([

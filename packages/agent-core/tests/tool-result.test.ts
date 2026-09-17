@@ -17,8 +17,11 @@ function completed(toolName: string, output: unknown): ToolResult {
   }
 }
 
-describe('toolResultToModelValue P4 preview-only', () => {
-  it('orders command.run paging refs before the preview blobs with a logPath guidance', () => {
+// Note: opencode-style plain-text model values — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Structured outputs stay complete in details/traces/UI; the model only
+// re-reads these texts, so assertions check header-first plain text.
+describe('toolResultToModelValue plain-text (opencode parity)', () => {
+  it('renders command.run refs-first as text with a logPath pointer, never a re-run invite', () => {
     const value = toolResultToModelValue(completed('command.run', {
       workspaceId: 'workspace-1',
       cwd: '',
@@ -35,16 +38,14 @@ describe('toolResultToModelValue P4 preview-only', () => {
       wallTimeMs: 1200,
       logTruncated: false,
       logPath: '.janusX/logs/cmd-1.log',
-    })) as Record<string, unknown>
-    const keys = Object.keys(value)
-    // compactToolMessage cuts at 4k chars: refs must survive the cut.
-    expect(keys.indexOf('logPath')).toBeLessThan(keys.indexOf('stdout'))
-    expect(keys.indexOf('guidance')).toBeLessThan(keys.indexOf('stdout'))
-    expect(value.logPath).toBe('.janusX/logs/cmd-1.log')
-    expect(value.totalBytes).toBe(70000)
-    expect(value.guidance).toContain('.janusX/logs/cmd-1.log')
-    expect(value.guidance).toContain('workspace_read')
-    expect(value.stdout).toBe('tail-preview')
+    })) as string
+    expect(typeof value).toBe('string')
+    expect(value.indexOf('$ npm run build exit=1')).toBe(0)
+    expect(value).toContain('.janusX/logs/cmd-1.log')
+    expect(value).toContain('workspace_read')
+    expect(value.indexOf('.janusX/logs/cmd-1.log')).toBeLessThan(value.indexOf('tail-preview'))
+    expect(value).not.toContain('workspaceId')
+    expect(value).not.toContain('estimatedTokens')
   })
 
   it('keeps background projectId/logPath and drops absent stdout/exitCode', () => {
@@ -58,15 +59,14 @@ describe('toolResultToModelValue P4 preview-only', () => {
       pid: 1234,
       name: 'npm run build',
       logPath: '.janusX/logs/bg-1.log',
-    })) as Record<string, unknown>
-    expect(value.projectId).toBe('pid-1')
-    expect(value.logPath).toBe('.janusX/logs/bg-1.log')
-    expect(value.guidance).toContain('.janusX/logs/bg-1.log')
-    expect('stdout' in value).toBe(false)
-    expect('exitCode' in value).toBe(false)
+    })) as string
+    expect(value).toContain('job=pid-1')
+    expect(value).toContain('.janusX/logs/bg-1.log')
+    expect(value).toContain('project_process_output')
+    expect(value).not.toContain('exit=')
   })
 
-  it('R4: keeps non-empty env refs ahead of the preview blobs', () => {
+  it('drops env echoes from the model text (approval preview still carries them)', () => {
     const value = toolResultToModelValue(completed('command.run', {
       workspaceId: 'workspace-1',
       cwd: '',
@@ -79,10 +79,9 @@ describe('toolResultToModelValue P4 preview-only', () => {
       env: { NODE_ENV: 'production' },
       logPath: '.janusX/logs/bg-1.log',
       stdout: 'tail-preview',
-    })) as Record<string, unknown>
-    expect(value.env).toEqual({ NODE_ENV: 'production' })
-    const keys = Object.keys(value)
-    expect(keys.indexOf('env')).toBeLessThan(keys.indexOf('stdout'))
+    })) as string
+    expect(value).not.toContain('NODE_ENV')
+    expect(value).toContain('job=pid-1')
   })
 
   it('points background jobs without a log file at project_process_output', () => {
@@ -94,30 +93,11 @@ describe('toolResultToModelValue P4 preview-only', () => {
       projectId: 'pid-1',
       pid: 1234,
       name: 'npm run build',
-    })) as Record<string, unknown>
-    expect(value.guidance).toContain('project_process_output')
+    })) as string
+    expect(value).toContain('project_process_output')
   })
 
-  it('keeps exited output refs for finished background jobs', () => {
-    const value = toolResultToModelValue(completed('project.process-output', {
-      workspaceId: 'workspace-1',
-      projectId: 'pid',
-      output: 'done',
-      totalLines: 3,
-      offsetLines: 0,
-      truncated: false,
-      exited: true,
-      exitCode: 0,
-      signal: null,
-      logPath: '.janusX/logs/bg-1.log',
-    })) as Record<string, unknown>
-    expect(value.exited).toBe(true)
-    expect(value.exitCode).toBe(0)
-    expect(value.logPath).toBe('.janusX/logs/bg-1.log')
-    expect(value.guidance).toContain('.janusX/logs/bg-1.log')
-  })
-
-  it('orders process-output paging refs before the page blob with a hint when truncated', () => {
+  it('renders process-output paging refs as a header line with a hint when truncated', () => {
     const value = toolResultToModelValue(completed('project.process-output', {
       workspaceId: 'workspace-1',
       projectId: 'pid',
@@ -125,48 +105,90 @@ describe('toolResultToModelValue P4 preview-only', () => {
       totalLines: 900,
       offsetLines: 0,
       truncated: true,
-    })) as Record<string, unknown>
-    const keys = Object.keys(value)
-    expect(keys.indexOf('totalLines')).toBeLessThan(keys.indexOf('output'))
-    expect(keys.indexOf('truncated')).toBeLessThan(keys.indexOf('output'))
-    expect(value.guidance).toContain('offsetLines')
+    })) as string
+    expect(value.indexOf('lines=0/900')).toBeGreaterThanOrEqual(0)
+    expect(value.indexOf('lines=0/900')).toBeLessThan(value.indexOf('page-text'))
+    expect(value).toContain('offsetLines')
   })
 
-  it('passes other tools through unchanged', () => {
-    expect(toolResultToModelValue(completed('workspace.read', { content: 'hello' })))
-      .toEqual({ content: 'hello' })
-  })
-
-  it('orders workspace.read paging refs before the page blob with a next-offset hint', () => {
+  it('renders workspace.read as numbered lines with range+sha header and next-offset hint', () => {
+    const sha = 'a'.repeat(64)
     const value = toolResultToModelValue(completed('workspace.read', {
       workspaceId: 'workspace-1',
       path: 'big.ts',
       lineStart: 1,
-      lineEnd: 200,
+      lineEnd: 2,
       totalLines: 1000,
       offset: 1,
       bytes: 9000,
       size: 45000,
       truncated: true,
-      nextOffset: 201,
-      sha256: 'abc',
-      content: 'page-text',
-    })) as Record<string, unknown>
-    const keys = Object.keys(value)
-    expect(keys.indexOf('nextOffset')).toBeLessThan(keys.indexOf('content'))
-    expect(keys.indexOf('guidance')).toBeLessThan(keys.indexOf('content'))
-    expect(value.guidance).toContain('offset=201')
+      nextOffset: 3,
+      sha256: sha,
+      content: 'line-one\nline-two',
+    })) as string
+    expect(value).toContain('<path>big.ts</path>')
+    expect(value).toContain('lines 1-2/1000')
+    expect(value).toContain(`sha=${sha}`)
+    expect(value).toContain('1: line-one')
+    expect(value).toContain('offset=3')
+    expect(value).not.toContain('workspace-1')
+    expect(value).not.toContain('estimatedTokens')
   })
 
-  it('keeps display-only change diffs out of the model payload', () => {
+  it('renders workspace.search flat hits grouped by file with the first-hit sha', () => {
+    const sha = 'b'.repeat(64)
+    const value = toolResultToModelValue(completed('workspace.search', {
+      workspaceId: 'workspace-1',
+      query: 'needle',
+      path: '',
+      matches: [
+        { path: 'a.ts', line: 12, text: 'const needle = 1', sha256: sha },
+        { path: 'a.ts', line: 30, text: 'needle()' },
+        { path: 'b.ts', line: 3, text: 'needle' },
+      ],
+      truncated: false,
+    })) as string
+    expect(value).toContain('Found 3 matches for "needle"')
+    expect(value).toContain(`a.ts: [sha=${sha}]`)
+    expect(value).toContain(' Line 12: const needle = 1')
+    expect(value).toContain(' Line 30: needle()')
+    expect(value).not.toContain('workspace-1')
+  })
+
+  it('renders workspace.list entries as plain paths without token echoes', () => {
+    const value = toolResultToModelValue(completed('workspace.list', {
+      workspaceId: 'workspace-1',
+      path: '',
+      depth: 2,
+      entries: [
+        { path: 'src', name: 'src', type: 'directory', depth: 1, size: 0, mtime: 1 },
+        { path: 'src/a.ts', name: 'a.ts', type: 'file', depth: 2, size: 12, mtime: 2 },
+      ],
+      truncated: false,
+    })) as string
+    expect(value).toContain('src/')
+    expect(value).toContain('src/a.ts (12b)')
+    expect(value).not.toContain('workspace-1')
+    expect(value).not.toContain('estimatedTokens')
+  })
+
+  it('keeps mutation results to one line and display diffs out of the model payload', () => {
+    const sha = 'c'.repeat(64)
     const value = toolResultToModelValue(completed('workspace.edit', {
+      workspaceId: 'workspace-1',
       path: 'a.ts',
-      sha256: 'abc',
+      changedPaths: ['a.ts'],
+      previousHash: 'x',
+      sha256: sha,
+      editMode: 'replace_blocks',
+      replacements: 1,
+      bytes: 10,
       checkpointId: 'cp-1',
       diffPreview: '--- a/a.ts\n+++ b/a.ts\n@@ replacement 1/1 @@\n-x\n+y',
       diffTruncated: false,
-    })) as Record<string, unknown>
-    expect(value).toEqual({ path: 'a.ts', sha256: 'abc', checkpointId: 'cp-1' })
-    expect('diffPreview' in value).toBe(false)
+    })) as string
+    expect(value).toBe(`Edited a.ts sha=${sha} checkpoint=cp-1`)
+    expect(value).not.toContain('@@')
   })
 })

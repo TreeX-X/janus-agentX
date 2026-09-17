@@ -39,7 +39,7 @@ describe('workspace chat tools', () => {
     })
 
     expect(tools.workspace_read.description).toBe(toolManifests[0].description)
-    expect(tools.workspace_edit.description).toContain('exact, unambiguous replacements')
+    expect(tools.workspace_edit.description).toContain('exact replacements')
     expect(tools.workspace_edit.description).toContain('lineEdits')
   })
 
@@ -72,7 +72,9 @@ describe('workspace chat tools', () => {
       callerId: 'renderer:7',
     })
 
-    await expect(tools.workspace_read.execute({ workspaceId: 'workspace-2', path: 'src/main.ts', maxBytes: 4096 })).resolves.toEqual({ content: 'hello' })
+    // Plain-text model value (opencode parity): the mock output lacks a path,
+    // so the header falls back to `file`, but the body stays addressable.
+    await expect(tools.workspace_read.execute({ workspaceId: 'workspace-2', path: 'src/main.ts', maxBytes: 4096 })).resolves.toContain('1: hello')
     expect(executeFunctionCall).toHaveBeenCalledWith({
       sessionId: 'session-2',
       call: {

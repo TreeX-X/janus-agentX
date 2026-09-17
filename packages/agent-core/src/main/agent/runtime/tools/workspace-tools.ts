@@ -110,7 +110,7 @@ function lineEditsDiffPreview(path: string, value: unknown): CallDiffPreview | u
 // Note: adaptive pages, token budgets, and search-carried hashes cut diagnostic round trips — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
-  description: 'Read one UTF-8 text file as line pages (files ≤100KB return whole from offset, larger files default 800 lines or 48KB, whichever first). Use offset/limit for large files and continue with offset=nextOffset while truncated is true. Returns the full-file SHA-256 for edits; withLineAnchors:true also returns a LINE#HASH anchor per line for hash-anchored lineEdits in workspace.edit. maxTokens optionally tightens the page further.',
+  description: 'Read one UTF-8 file as line pages (≤100KB whole; larger default 800 lines/48KB). Continue with offset=nextOffset while truncated. Returns the full-file SHA-256 for edits; withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',
@@ -223,7 +223,7 @@ export const workspaceReadTool: RegisteredTool = {
 
 export const workspaceEditTool: RegisteredTool = {
   name: 'workspace.edit',
-  description: 'Apply bounded exact replacements, one unified diff, or hash-anchored lineEdits to an existing workspace file after approval. expectedHash accepts the SHA-256 from workspace.read or from a workspace.search content match when the file is unchanged, so a located fix needs no second read. lineEdits need the LINE#HASH anchors from workspace.read withLineAnchors:true and apply bottom-up; any anchor mismatch aborts the whole batch and returns fresh anchors.',
+  description: 'Edit one file after approval with exact replacements, a unified diff, or hash-anchored lineEdits. expectedHash takes the SHA-256 from workspace.read or a workspace.search hit (no second read when unchanged). lineEdits need LINE#HASH anchors from workspace.read withLineAnchors:true; a stale anchor aborts the batch with fresh anchors.',
   actionRisk: 'write',
   inputSchema: {
     type: 'object',
@@ -572,7 +572,7 @@ export const workspaceDeleteTool: RegisteredTool = {
 
 export const workspaceListTool: RegisteredTool = {
   name: 'workspace.list',
-  description: 'List a bounded, non-sensitive file tree inside an explicitly selected workspace. Entries carry sizes and modification times with recently modified paths first; prefer workspace.overview when the shape of the checkout is unknown.',
+  description: 'List a bounded file tree. Entries carry sizes and mtimes, newest-first; prefer workspace.overview when the checkout shape is unknown.',
   actionRisk: 'list',
   inputSchema: {
     type: 'object',
@@ -637,7 +637,7 @@ export const workspaceListTool: RegisteredTool = {
 
 export const workspaceOverviewTool: RegisteredTool = {
   name: 'workspace.overview',
-  description: 'Read a shallow bounded tree of an explicitly selected workspace with file sizes, modification times, and a git working-tree summary. Start here when the checkout shape is unknown instead of looping workspace.list.',
+  description: 'Shallow bounded tree with sizes, mtimes, and a git summary. Start here when the checkout shape itself is unknown, not for code search.',
   actionRisk: 'list',
   inputSchema: {
     type: 'object',
@@ -706,7 +706,7 @@ export const workspaceOverviewTool: RegisteredTool = {
 
 export const workspaceSearchTool: RegisteredTool = {
   name: 'workspace.search',
-  description: 'Find code with bounded ignore-aware search. Content hits are flat {path, line, text} ordered recently-modified-first; the first hit per file carries the file SHA-256 (usable as workspace.edit expectedHash while unchanged). mode=files locates paths with recently modified files first; withContext:true groups hits per file into hunks with gap counts. Filter with path/glob; regex enables multi-symbol patterns. Literal case-insensitive matching is the default.',
+  description: 'Bounded ignore-aware search. Content hits are flat {path,line,text}, newest-first; the first hit per file carries the SHA-256 for workspace.edit. mode=files locates paths; withContext:true groups hunks with gap counts (one bounded read per file). Literal case-insensitive by default.',
   actionRisk: 'read',
   inputSchema: {
     type: 'object',

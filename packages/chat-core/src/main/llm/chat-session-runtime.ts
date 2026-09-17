@@ -17,7 +17,7 @@ const COMPACTION_MAX_HEAD_CHARS = 24_000
 /** Stored summaries stay re-readable at a glance and cheap to resend. */
 const COMPACTION_MAX_SUMMARY_CHARS = 6_000
 /** Prune tier: newest tool outputs stay verbatim within this tail budget; older ones keep the call and a digest. */
-const DEFAULT_PRUNE_KEEP_TOKENS = 40_000
+const DEFAULT_PRUNE_KEEP_TOKENS = 16_000
 const MIN_PRUNE_KEEP_TOKENS = 4_000
 const DEFAULT_COMPACTION_KEEP_UNITS = 1
 const MIN_COMPACTION_KEEP_UNITS = 1
@@ -231,6 +231,14 @@ function firstGroupHit(group: Record<string, unknown>): number | undefined {
 function toolDigest(message: JanusAgentMessage): string | undefined {
   if (message.role !== 'tool') return undefined
   const label = message.toolName ?? 'tool'
+  // Plain-text model values (opencode parity): first line already carries
+  // the digest (e.g. `Found 3 matches for "q"`, `<path>a.ts</path> lines
+  // 1-200/1000 sha=…`, `$ npm run build exit=1`, `Edited a.ts sha=…`).
+  const firstLine = message.content.split('\n', 1)[0]?.trim() ?? ''
+  if (!message.content.trimStart().startsWith('{')) {
+    const head = firstLine.length > 160 ? `${firstLine.slice(0, 160)}…` : firstLine
+    if (head) return `- ${label} ${head}`
+  }
   let parsed: Record<string, unknown> | undefined
   try {
     const value = JSON.parse(message.content) as unknown
@@ -481,6 +489,36 @@ interface ContextLayout {
 }
 
 // Note: preserve current evidence and prune before summarizing — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
+// Note: graded prune (opencode parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Search/list/overview outputs are cheap to re-run (one rg passthrough), so
+// only their newest 2 turns stay verbatim; reads/edits/command evidence keep
+// the full pruneKeep tail because re-reads cost a turn each.
+
+/** Search/list/overview units are disposable: re-running them is one cheap call. */
+const DISPOSABLE_TOOL_NAMES = new Set([
+  'workspace_search', 'workspace.search',
+  'workspace_list', 'workspace.list',
+  'workspace_overview', 'workspace.overview',
+])
+
+/** Disposable units keep verbatim bodies only within this many newest turns. */
+const DISPOSABLE_VERBATIM_TURNS = 2
+
+function unitIsDisposable(unit: JanusAgentMessage[]): boolean {
+  let sawTool = false
+  for (const message of unit) {
+    if (message.role === 'tool') {
+      sawTool = true
+      if (!DISPOSABLE_TOOL_NAMES.has(message.toolName ?? '')) return false
+    }
+    for (const call of message.toolCalls ?? []) {
+      sawTool = true
+      if (!DISPOSABLE_TOOL_NAMES.has(call.name)) return false
+    }
+  }
+  return sawTool
+}
+
 function layoutContext(
   runtime: LoadedContextIndex,
   messages: JanusAgentMessage[],
@@ -497,7 +535,9 @@ function layoutContext(
   const pruneKeep = Math.max(MIN_PRUNE_KEEP_TOKENS, options.pruneKeepTokens ?? DEFAULT_PRUNE_KEEP_TOKENS)
   let tailTokens = 0
   const units = original.map((unit, index) => {
-    const keep = index === 0 || tailTokens < pruneKeep
+    const disposable = unitIsDisposable(unit)
+    const keep = index === 0
+      || (tailTokens < pruneKeep && (!disposable || index < DISPOSABLE_VERBATIM_TURNS))
     tailTokens += unit.reduce((sum, message) => sum + messageTokens(message), 0)
     return keep ? unit : unit.map(pruneToolMessage)
   })

@@ -209,6 +209,22 @@ export async function runChatTurn(
     // subset — e.g. the janus CLI has no project.detect. Offering more would
     // let the model call tools that can only fail at execution.
     const implemented = new Set(sortedManifests.map((manifest) => manifest.providerName))
+    // Note: staged tool offering (opencode parity: ~10 tools, not 23) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+    // Diagnose+fix+verify stays in the core set every turn (search/read/edit/
+    // command); publish/management tools (git write, project write) join only
+    // when the user asked to publish or prior turns already mutated files.
+    // Each gated schema costs ~120-200 tokens every turn via history replay,
+    // while a missing publish tool degrades to a one-line ask, not a failure.
+    const queryForStaging = latestUserQuery(withRecall)
+    const needsManagement = hasExplicitWorkspaceMutationIntent(queryForStaging)
+      || /(?:commit|push|pull|publish|merge|deploy|stage\b)/i.test(queryForStaging)
+      || (Array.isArray(toolTraces) && toolTraces.some((entry) =>
+        entry.status === 'completed' && WORKSPACE_MUTATION_TOOLS.has(entry.toolName)))
+    const gatedTools = needsManagement ? undefined : new Set([
+      'git_stage', 'git_unstage', 'git_commit', 'git_pull', 'git_push',
+      'project_generate_config', 'project_apply_config',
+      'project_start_process', 'project_stop_process',
+    ])
     const offeredTools = createWorkspaceChatTools({
       runtime: { executeFunctionCall: (input) => ports.tools.executeFunctionCall(input, callerId) },
       resources: trustedResources,
@@ -216,7 +232,8 @@ export async function runChatTurn(
       toolManifests: sortedManifests,
     })
     workspaceTools = Object.fromEntries(
-      Object.entries(offeredTools).filter(([name]) => implemented.has(name)),
+      Object.entries(offeredTools).filter(([name]) =>
+        implemented.has(name) && (gatedTools === undefined || !gatedTools.has(name))),
     ) as typeof offeredTools
     const activeToolManifests = Object.freeze(sortedManifests
       .filter((manifest) => Object.hasOwn(workspaceTools ?? {}, manifest.providerName)))
