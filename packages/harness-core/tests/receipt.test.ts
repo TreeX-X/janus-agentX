@@ -1,6 +1,6 @@
 /** Receipt shape and effective validity (C4, F06 subset). */
 import { describe, expect, it } from 'vitest';
-import { coverageRatio, codeKey, evaluateReceipt, validateReceiptShape, type Receipt } from '../src/index.js';
+import { coverageRatio, codeKey, codeManifestHash, evaluateReceipt, validateReceiptShape, type Receipt } from '../src/index.js';
 
 const R = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
 const CONTRACT = '73e315502bb2e0678461ba859f4d16d73c101bdd55d2c167ecbee36eae1b8ae6';
@@ -8,6 +8,7 @@ const TASK = `note://${R}/55555555-5555-4555-8555-555555555555`;
 const REQ = `note://${R}/33333333-3333-4333-8333-333333333333`;
 
 function receipt(over: Partial<Receipt> = {}): Receipt {
+  const manifest = over.codeManifest ?? [{ repoId: R, path: 'src/a.ts', sha256: 'b'.repeat(64) }];
   return {
     schema: 'harness-receipt/1',
     id: 'r1',
@@ -16,10 +17,10 @@ function receipt(over: Partial<Receipt> = {}): Receipt {
     attempt: 1,
     taskContractHash: CONTRACT,
     inputs: [{ uri: REQ, contentHash: 'a'.repeat(64), criteria: ['AC-1'] }],
-    codeManifest: [{ repoId: R, path: 'src/a.ts', sha256: 'b'.repeat(64) }],
+    codeManifest: manifest,
     checks: [{ id: 'V-1', kind: 'command', required: true, status: 'passed', repoId: R, command: { program: 'node', args: ['--test'], cwd: '.' }, exitCode: 0, summary: 'ok', performedBy: 'cli' }],
     coverage: [{ uri: REQ, criterionId: 'AC-1', criterionHash: 'c'.repeat(64), checkIds: ['V-1'] }],
-    review: { kind: 'self', verdict: 'approved', reviewedManifestHash: 'd'.repeat(64), actor: 'cli' },
+    review: { kind: 'self', verdict: 'approved', reviewedManifestHash: codeManifestHash(manifest), actor: 'cli' },
     createdAt: '2026-09-16T00:00:00Z',
     actor: 'cli',
     ...over,
@@ -46,7 +47,7 @@ describe('receipt', () => {
     expect(validateReceiptShape(r).some((d) => d.code === 'SCHEMA_INVALID')).toBe(true);
     const indep = receipt({
       mode: 'xflow',
-      review: { kind: 'independent', verdict: 'approved', reviewedManifestHash: 'd'.repeat(64), actor: 'reviewer' },
+      review: { ...receipt().review, kind: 'independent', actor: 'reviewer' },
     });
     expect(validateReceiptShape(indep)).toEqual([]);
     expect(evaluateReceipt(indep, { ...liveCtx(), implementor: 'builder' })).toEqual([]);
@@ -76,6 +77,15 @@ describe('receipt', () => {
   it('never averages an empty required set to complete', () => {
     expect(coverageRatio(0, 0)).toBeUndefined();
     expect(coverageRatio(1, 2)).toBe(0.5);
+  });
+
+  it('binds review to every manifest row regardless of ordering', () => {
+    const r = receipt();
+    r.review.reviewedManifestHash = 'd'.repeat(64);
+    expect(evaluateReceipt(r, liveCtx()).some((problem) => problem.path === 'review.reviewedManifestHash')).toBe(true);
+    const manifest = [...r.codeManifest, { repoId: R, path: 'deleted.ts', deleted: true }];
+    expect(codeManifestHash(manifest)).toBe(codeManifestHash([...manifest].reverse()));
+    expect(codeManifestHash(manifest)).not.toBe(codeManifestHash(r.codeManifest));
   });
 
   it('rejects malformed nested values without throwing', () => {

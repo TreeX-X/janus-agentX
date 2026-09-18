@@ -12,7 +12,7 @@
  */
 import { statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { basename, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { streamChatModel } from './model-stream.js'
 import { toDisplayEvent, type CliDisplayEvent } from './tool-display.js'
 import {
@@ -22,7 +22,7 @@ import {
 } from '@janus-agent/agent-core'
 import { TOOL_TRACE_MAX_ENTRIES } from '@janus-agent/chat-core'
 import type { ChatTodoItem } from '@janus-agent/chat-core'
-import { runChatTurn, type AskUserPortAnswer, type AskUserPortRequest, type ChatTurnPorts, type ChatTurnResult } from '@janus-agent/janus-agent'
+import { runChatTurn, type AskUserPortAnswer, type AskUserPortRequest, type ChatTurnPorts, type ChatTurnResult, type TaskTurnContext, type TaskVerificationPorts } from '@janus-agent/janus-agent'
 import type { CompactionSummarizer } from '@janus-agent/chat-core'
 import type { JanusAgentMessage } from '@janus-agent/agent-core'
 import { createChatModel } from './model.js'
@@ -36,6 +36,7 @@ import {
   ConversationRegistry,
   DEFAULT_CONVERSATION_TITLE,
   memoryConversationStore,
+  fileConversationStore,
   titleFromPrompt,
   type ConversationStorePort,
   type ConversationSummary,
@@ -141,6 +142,9 @@ export class CliSession {
   private readonly sessionId: string
   private readonly ports: ChatTurnPorts
   private readonly registry: ConversationRegistry
+  private readonly taskRegistries = new Map<string, ConversationRegistry>()
+  private verificationSessionId: string | null = null
+  private hookConversationId: string | null = null
   private readonly workspaceRoot: string
   private readonly catalog: ProviderCatalog
   private readonly configPath: string | null
@@ -514,7 +518,7 @@ export class CliSession {
       const typed = event as { type?: string; request?: Partial<ApprovalRequestShape> }
       if (typed.type !== 'approval-requested') return
       const request = typed.request
-      if (!request || request.sessionId !== this.sessionId || typeof request.id !== 'string') return
+      if (!request || (request.sessionId !== this.sessionId && request.sessionId !== this.verificationSessionId) || typeof request.id !== 'string') return
       const snapshot: ApprovalRequestShape = {
         id: request.id,
         sessionId: request.sessionId,
@@ -532,7 +536,7 @@ export class CliSession {
           // JanusX hook: signal approval-wait before the host UI resolves it.
           void postJanusxHook({
             event: 'PermissionRequest',
-            sessionId: this.registry.getActiveId(),
+            sessionId: this.hookConversationId ?? this.registry.getActiveId(),
             cwd: this.workspaceRoot,
             message: typeof preview?.summary === 'string' && preview.summary
               ? preview.summary
@@ -928,6 +932,7 @@ export class CliSession {
   setApprovalMode(mode: ApprovalModeOption): void {
     this.approvalMode = mode
     this.runtime.setApprovalMode(this.sessionId, mode)
+    if (this.verificationSessionId) this.runtime.setApprovalMode(this.verificationSessionId, mode)
   }
 
   /**
@@ -967,16 +972,25 @@ export class CliSession {
     prompt: string,
     callbacks: TurnEventCallbacks = {},
     signal?: AbortSignal,
+    task?: TaskTurnContext,
   ): Promise<ChatTurnResult> {
     const modelId = this.modelId
     if (!modelId) {
-      throw new Error(MISSING_MODEL_MESSAGE)
+      throw new Error(`${task ? 'CAPABILITY_UNAVAILABLE: ' : ''}${MISSING_MODEL_MESSAGE}`)
     }
     if (!this.hasApiKey() && !this.hasCustomTransport) {
-      throw new Error(MISSING_API_KEY_MESSAGE)
+      throw new Error(`${task ? 'CAPABILITY_UNAVAILABLE: ' : ''}${MISSING_API_KEY_MESSAGE}`)
     }
     const requestId = randomUUID()
-    const record = this.registry.getActive()
+    let registry = this.registry
+    if (task) {
+      if (resolve(task.root) !== this.workspaceRoot || !/^harness-[A-Za-z0-9-]+$/.test(task.conversationId)) throw new Error('NOT_READY: invalid task conversation binding')
+      registry = this.taskRegistries.get(task.conversationId) ?? await ConversationRegistry.load(
+        fileConversationStore(join(this.workspaceRoot, '.agents', '.local', 'conversations')), task.conversationId,
+      )
+      this.taskRegistries.set(task.conversationId, registry)
+    }
+    const record = registry.getActive()
     const userMessage = { role: 'user' as const, content: prompt }
     const requestMessages = [...record.data.messages, userMessage]
     if (record.data.title === DEFAULT_CONVERSATION_TITLE) {
@@ -988,6 +1002,7 @@ export class CliSession {
       cwd: this.workspaceRoot,
       env: this.env,
     }
+    this.hookConversationId = record.data.id
     // JanusX hook: turn boundaries are awaited (localhost) so Stop can never
     // overtake Start in the bridge; a late Start would strand a phantom turn.
     await postJanusxHook({ ...hookBase, event: 'UserPromptSubmit', message: prompt, raw: { hook: 'send-turn' } })
@@ -1000,7 +1015,8 @@ export class CliSession {
           messages: requestMessages,
           providerId: 'cli',
           modelId,
-          sourceTag: 'janus-chat',
+          sourceTag: task?.sourceTag ?? 'janus-chat',
+          ...(task ? { systemPromptPrefix: task.systemPromptPrefix, toolAllowlist: task.toolAllowlist, toolGate: task.toolGate } : {}),
           conversationId: record.data.id,
           workspaceId: CLI_WORKSPACE_ID,
           workspacePath: this.workspaceRoot,
@@ -1047,7 +1063,7 @@ export class CliSession {
             delete record.data.compactionSummary
             delete record.data.compactionKey
           }
-          await this.registry.persist(record.data.id)
+          await registry.persist(record.data.id)
         } catch {
           // Best effort: persist must never mask the original failure.
         }
@@ -1082,10 +1098,55 @@ export class CliSession {
         delete record.data.compactionSummary
         delete record.data.compactionKey
       }
-      await this.registry.persist(record.data.id)
+      await registry.persist(record.data.id)
       return result
     } finally {
       this.approvalSignal = null
+      this.hookConversationId = null
+    }
+  }
+
+  // Note: task execution reuses runtime approval and command results - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
+  taskVerificationPorts(actor: string): TaskVerificationPorts {
+    if (!this.modelId || (!this.hasApiKey() && !this.hasCustomTransport)) throw new Error('CAPABILITY_UNAVAILABLE: self-review needs a configured model and transport')
+    return {
+      command: async (step, signal) => {
+        signal?.throwIfAborted()
+        const session = await this.runtime.createSession({ workspaceId: CLI_WORKSPACE_ID, workspaceRoot: this.workspaceRoot, approvalMode: this.approvalMode }, APPROVAL_CALLER_ID)
+        this.verificationSessionId = session.id
+        this.approvalSignal = signal ?? new AbortController().signal
+        let cancellation: Promise<unknown> | undefined
+        const cancel = () => { cancellation = this.runtime.cancelSession(session.id) }
+        signal?.addEventListener('abort', cancel, { once: true })
+        try {
+          if (signal?.aborted) cancel()
+          const result = await this.runtime.executeTool({ sessionId: session.id, call: {
+            toolName: 'command.run', source: 'planner', evidenceConfidence: 'high',
+            input: { workspaceId: CLI_WORKSPACE_ID, program: step.program, args: step.args, cwd: step.cwd, background: false },
+          } }, APPROVAL_CALLER_ID)
+          const output = result.output as { ok?: boolean; exitCode?: number; timedOut?: boolean; stdout?: string; stderr?: string; logPath?: string } | undefined
+          return { ok: result.status === 'completed' && output?.ok === true,
+            exitCode: output?.exitCode, timedOut: output?.timedOut,
+            summary: [result.error, output?.stdout, output?.stderr, output?.logPath].filter(Boolean).join('\n') || result.status }
+        } finally {
+          signal?.removeEventListener('abort', cancel)
+          await (cancellation ?? this.runtime.cancelSession(session.id))
+          this.verificationSessionId = null
+          this.approvalSignal = null
+        }
+      },
+      review: async (input, signal) => {
+        const result = await this.sendTurn([
+          'Review this exact code manifest and declared check evidence. Read relevant files before deciding.',
+          'Return only one JSON object with review and coverage. Never approve failing or insufficient evidence.',
+          'Coverage must cite passing check IDs that actually demonstrate each acceptance criterion.',
+          JSON.stringify({ manifest: input.manifest, checks: input.checks, criteria: input.criteria }),
+          JSON.stringify({ review: { kind: 'self', verdict: 'approved|needs-fix|blocked', reviewedManifestHash: input.manifestHash, actor }, coverage: input.criteria }),
+        ].join('\n'), {}, signal, { ...input.turn, conversationId: `${input.turn.conversationId}-${randomUUID()}` })
+        if (result.cancelled) throw new Error('NOT_READY: review cancelled')
+        try { return JSON.parse(result.text) as Awaited<ReturnType<NonNullable<TaskVerificationPorts['review']>>> }
+        catch { throw new Error('NOT_READY: reviewer did not return structured JSON evidence') }
+      },
     }
   }
 

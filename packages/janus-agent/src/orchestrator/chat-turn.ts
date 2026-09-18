@@ -104,6 +104,8 @@ export interface ChatTurnRequest {
    * dots/underscores/dashes are ignored on both sides.
    */
   toolAllowlist?: string[]
+  /** Host-owned policy, evaluated before any tool (including local tools). */
+  toolGate?: (call: { name: string; arguments: unknown }) => Promise<{ block: true; reason: string; terminate?: boolean } | undefined>
 }
 
 export interface ChatTurnResult {
@@ -137,7 +139,7 @@ function normalizeOfferedToolName(name: string): string {
  * capture stay janus-chat-only: project turns read the same files without
  * ever touching personal memory, even when a capture port is configured. */
 function resolvesTrustedResources(sourceTag?: string): boolean {
-  return sourceTag === 'janus-chat' || sourceTag === 'maintenance'
+  return sourceTag === 'janus-chat' || sourceTag === 'maintenance' || sourceTag === 'harness'
 }
 
 function resolveWorkspaceChatResources(
@@ -431,6 +433,8 @@ export async function runChatTurn(
     maxTurns,
     steeringPort: request.steeringPort,
     beforeToolCall: async ({ call }) => {
+      const gate = await request.toolGate?.(call)
+      if (gate) return gate
       const failures = failedCalls.get(callKey(call))
       if (failures !== undefined) {
         failedCalls.set(callKey(call), failures + 1)

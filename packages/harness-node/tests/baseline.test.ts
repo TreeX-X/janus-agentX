@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { contentDigest, criterionHash, parseNote, taskContractHash } from '@janus-agent/harness-core';
+import { codeManifestHash, contentDigest, criterionHash, parseNote, taskContractHash } from '@janus-agent/harness-core';
 import { collectTaskBaseline, proveRequirementCoverage } from '../src/baseline.js';
 import { buildNoteIndex } from '../src/repository.js';
 import { makeRepo, REPO } from './helpers.js';
@@ -123,7 +123,7 @@ function coveringReceipt(): Record<string, unknown> {
     codeManifest: [],
     checks: [{ id: 'v1', kind: 'manual', required: true, status: 'passed', repoId: REPO, summary: 'eyeballed', performedBy: 'someone' }],
     coverage: [{ uri: REQ_URI, criterionId: 'AC-1', criterionHash: criterionHash(acLine('AC-1', 'widget works')), checkIds: ['v1'] }],
-    review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 'someone' },
+    review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: codeManifestHash([]), actor: 'someone' },
     createdAt: '2026-09-17T00:00:00.000Z',
     actor: 'someone',
   };

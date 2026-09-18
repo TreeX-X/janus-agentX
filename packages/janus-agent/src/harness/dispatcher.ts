@@ -476,17 +476,20 @@ export async function rebaselineRun(
     if (!HEX64_RE.test(baseline.taskContractHash)) {
       problems.push(diag('SCHEMA_INVALID', 'task contract hash must be hex64', 'taskContractHash'));
     }
-    if (!Array.isArray(baseline.inputs) || baseline.inputs.length < 1) {
-      problems.push(diag('NOT_READY', 'rebaseline needs at least the task snapshot', 'inputs'));
+    if (!Array.isArray(baseline.inputs)) {
+      problems.push(diag('NOT_READY', 'rebaseline needs an inputs array', 'inputs'));
     }
     problems.push(...checkedState(run, 'rebaseline', { ...idleCtx(), authorized: authorization !== null }));
     if (problems.length > 0) return fail(run, problems, undefined);
     run.baseline = { taskContractHash: baseline.taskContractHash, inputs: baseline.inputs };
     run.verification = undefined;
     run.state = 'queued';
+    run.lease = null;
+    delete run.pausedFrom;
     if (authorization?.ref && !run.authorizationRef) run.authorizationRef = authorization.ref;
     try {
       await saveRun(root, run);
+      await releaseLease(root, runId);
       return pass(run, undefined);
     } catch (e) {
       return fail(run, storeError(e, run), undefined);

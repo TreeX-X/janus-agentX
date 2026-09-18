@@ -135,6 +135,7 @@ interface ReplState {
   testConnection?: TestConnectionFn
   outputKind?: 'text' | 'thinking' | 'tool'
   harness?: import('./tui/exec.js').HarnessHost
+  harnessController?: HarnessController
 }
 
 function renderEvent(state: ReplState, event: unknown): void {
@@ -207,7 +208,7 @@ async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): P
   state.stdout('janus▸ ')
   state.outputKind = 'text'
   try {
-    const result: ChatTurnResult = await state.session.sendTurn(
+    const send = (task?: import('@janus-agent/janus-agent').TaskTurnContext) => state.session.sendTurn(
       prompt,
       {
         onEvent: ({ event }) => renderEvent(state, event),
@@ -221,7 +222,11 @@ async function runTurn(state: ReplState, prompt: string, signal: AbortSignal): P
         },
       },
       signal,
+      task,
     )
+    const result: ChatTurnResult = state.harnessController?.isActive()
+      ? await state.harnessController.executeTurn(send, signal)
+      : await send()
     // Post-turn outcome captions + file previews (same data as the Ink cards).
     try {
       for (const preview of buildTracePreviews(state.session.getWorkspaceRoot(), result.toolTraces)) {
@@ -596,7 +601,11 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
     testConnection: io.testConnection,
     outputKind: undefined,
   }
-  state.harness = createHarnessHost(new HarnessController(() => state.session.getWorkspaceRoot()));
+  state.harnessController = new HarnessController(() => state.session.getWorkspaceRoot());
+  state.harness = createHarnessHost(state.harnessController, {
+    ports: (actor) => state.session.taskVerificationPorts(actor),
+    signal: () => activeController?.signal,
+  });
 
   const created = await CliSession.create({
     ...options,
@@ -650,7 +659,14 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
           stderr(`unknown command: /${parsed.command} (type /help)\n`)
           continue
         }
-        const outcome = await handleCommand(state, parsed.command as string, parsed.args ?? [])
+        activeController = new AbortController()
+        let outcome: Awaited<ReturnType<typeof handleCommand>>
+        try {
+          outcome = await handleCommand(state, parsed.command as string, parsed.args ?? [])
+        } finally {
+          if (activeController.signal.aborted) state.lines.drain?.()
+          activeController = null
+        }
         if (outcome === 'exit') return 0
         if (outcome === 'recreated' && state.harness?.isActive()) {
           // The checkout moved under the bound run: leave the mode loudly

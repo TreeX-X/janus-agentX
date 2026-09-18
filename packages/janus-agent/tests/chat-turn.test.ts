@@ -26,6 +26,39 @@ function stubPorts(overrides: Partial<ChatTurnPorts> = {}): ChatTurnPorts {
 }
 
 describe('runChatTurn', () => {
+  it('enforces harness tool policy before execution and skips personal memory', async () => {
+    let executions = 0
+    let memoryCalls = 0
+    let rounds = 0
+    const gated: string[] = []
+    const ports = stubPorts({
+      sessions: { getSession: () => ({ sessionId: 's', workspaceId: 'w', workspaceRoot: '/tmp/w', status: 'running' }) },
+      tools: {
+        registry: { list: () => [{ name: 'workspace.read', description: 'read', actionRisk: 'read', inputSchema: { type: 'object', properties: {} } }] },
+        executeFunctionCall: async () => { executions++; return { status: 'completed' } as never },
+      },
+      knowledgeSearch: async () => { memoryCalls++; throw new Error('harness must not recall') },
+      knowledgeCapture: { captureTurn: async () => { memoryCalls++ } },
+      streamTextFn: async () => {
+        if (rounds++ === 0) return {
+          textStream: (async function* () {})(),
+          fullStream: (async function* () {
+            yield { type: 'tool-call', toolCallId: 'c', toolName: 'workspace_read', args: { workspaceId: 'w', path: 'outside.txt' } }
+            yield { type: 'finish', finishReason: 'tool-calls' }
+          })(),
+        }
+        return { textStream: (async function* () { yield 'blocked' })() }
+      },
+    })
+    await runChatTurn({ requestId: 'harness', providerId: 'p', sourceTag: 'harness', messages: [{ role: 'user', content: 'Update outside.txt' }],
+      workspaceResources: [{ workspaceId: 'w', workspacePath: '/tmp/w', workspaceName: 'W', agentSessionId: 's' }],
+      toolAllowlist: ['workspace.read'], toolGate: async (call) => { gated.push(call.name); return { block: true, terminate: true, reason: 'outside task scope' } },
+    }, ports)
+    expect(gated).toEqual(['workspace_read'])
+    expect(executions).toBe(0)
+    expect(memoryCalls).toBe(0)
+  })
+
   it('streams text deltas and returns the full reply', async () => {
     const deltas: string[] = []
     const result = await runChatTurn(

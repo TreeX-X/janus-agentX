@@ -1,14 +1,9 @@
 // Note: TUI harness mode lives here — see .agents/notes/implemented/architecture/2026-09-17-cli-harness-mode-s8.md
 /**
- * @file TUI harness mode shell (S8 slice 8b-2, mode half).
- * @description Explicit task-bound mode for the interactive loop. Normal
- *  input stays the build-mode chat turn; `/harness <task>` binds one task
- *  note to one 8a run (fixed baseline, owner lease, handoff file) and the
- *  prompt shows the mode until `/exit` leaves it. Leaving never cancels:
- *  only an explicit cancel ends the run, and re-entering reattaches to the
- *  live run instead of dispatching a duplicate. Scoped turns, receipts,
- *  review, and CLI closeout arrive in later slices; this shell promises
- *  ownership and visibility only.
+ * @file Task-bound plain CLI execution and lifecycle controls.
+ * @description Leaving the mode keeps the lease. Re-entry rechecks the
+ *  baseline; task turns, verification, review and receipts use the shared
+ *  execution host. Ink must supply its own host before enabling this mode.
  */
 import { hostname, userInfo } from 'node:os';
 import {
@@ -17,14 +12,22 @@ import {
 } from '@janus-agent/harness-node';
 import {
   cancelRun,
+  closeoutRun,
   dispatchRun,
   handoffRun,
   listRuns,
   loadRun,
   pauseRun,
+  prepareTaskTurn,
+  rebaselineRun,
+  repairRun,
+  resumeRun,
   readLease,
   startRun,
   takeoverRun,
+  verifyTaskExecution,
+  type TaskTurnContext,
+  type TaskVerificationPorts,
 } from '@janus-agent/janus-agent';
 import type { CommandOutcome } from './tui/exec.js';
 
@@ -57,6 +60,11 @@ function pretty(problems: Array<{ code: string; message: string }>): string[] {
   return problems.map((p) => `${p.code}: ${p.message}`);
 }
 
+function sameBaseline(a: { taskContractHash: string; inputs: Array<{ uri: string; contentHash: string; criteria?: string[] }> }, b: typeof a): boolean {
+  const key = (inputs: typeof a.inputs) => JSON.stringify(inputs.map((row) => [row.uri, row.contentHash, [...(row.criteria ?? [])].sort()]).sort());
+  return a.taskContractHash === b.taskContractHash && key(a.inputs) === key(b.inputs);
+}
+
 /** Stable owner across CLI invocations on one machine; pid-excluded on purpose. */
 export function cliOwner(): string {
   let user = 'unknown';
@@ -80,7 +88,8 @@ export function harnessUsage(): string[] {
     'harness mode: task-bound runs with a fixed baseline and an owner lease.',
     '  /harness <task-uri|id|path> [--mode xdo|xdel|xflow]   enter (dispatches or reattaches)',
     '  /harness [status]                                      show the bound run',
-    '  /harness pause | cancel | takeover <reason> | exit     run controls',
+    '  /harness start | pause | resume | cancel | takeover <reason> | exit',
+    '  /harness verify | repair <reason> | rebaseline | closeout',
     '  /exit                                                  leave harness mode (the run keeps its lease)',
   ];
 }
@@ -125,7 +134,12 @@ export class HarnessController {
     const live = await this.liveRun(root, baseline.taskUri);
     if (live) {
       const lease = await readLease(root, live.runId);
-      if (lease && lease.owner === this.owner) {
+      if (lease?.owner === this.owner || (!lease && live.state === 'queued')) {
+        if (!sameBaseline(live.baseline, baseline)) {
+          this.binding = { root, taskUri: baseline.taskUri, runId: live.runId, mode: live.mode };
+          this.pendingTakeover = null;
+          return { stdout: [], stderr: ['STALE_BASELINE: task changed; pause and explicitly rebaseline before execution.'] };
+        }
         this.binding = { root, taskUri: baseline.taskUri, runId: live.runId, mode: live.mode };
         this.pendingTakeover = null;
         return { stdout: [`reattached run ${live.runId.slice(0, 8)} (${live.state}, attempt ${live.attempt}).`, ...(await this.describe(root, baseline.taskUri))] , stderr: [] };
@@ -201,9 +215,82 @@ export class HarnessController {
     return { stdout: [`run paused (was ${out.run?.pausedFrom ?? 'active'}).`], stderr: [] };
   }
 
+  // Note: task turns never complete from model prose - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
+  async executeTurn<T extends { cancelled: boolean }>(send: (context: TaskTurnContext) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const bound = this.requireBinding();
+    if (!bound.ok) throw new Error([...bound.stdout, ...bound.stderr].join('\n'));
+    const token = await this.ownToken(bound.run.root, bound.run.runId);
+    if (!token.ok) throw new Error(token.stderr.join('\n'));
+    try {
+      signal?.throwIfAborted();
+      const result = await send(await prepareTaskTurn(bound.run.root, bound.run.runId, token.token));
+      if (result.cancelled || signal?.aborted) await this.pause();
+      return result;
+    } catch (error) {
+      if (signal?.aborted) await this.pause();
+      throw error;
+    }
+  }
+
+  async control(command: 'start' | 'resume' | 'rebaseline' | 'repair' | 'closeout', reason = ''): Promise<CommandOutcome> {
+    const bound = this.requireBinding();
+    if (!bound.ok) return bound;
+    const { root, runId, taskUri } = bound.run;
+    if (command === 'closeout') {
+      const result = await closeoutRun(root, runId, { repoRoot: root });
+      return { stdout: result.ok ? [result.data.detail] : [], stderr: pretty(result.errors) };
+    }
+    if (command === 'start') {
+      const fresh = await collectTaskBaseline(root, taskUri);
+      if (!fresh.ok) return { stdout: [], stderr: pretty(fresh.problems) };
+      const run = await loadRun(root, runId);
+      const result = await startRun(root, runId, this.owner, {
+        baselineValid: sameBaseline(fresh.baseline, run.baseline),
+        dependenciesReady: true, authorization: { by: this.owner },
+      });
+      return { stdout: result.ok ? [`run started (attempt ${result.data.attempt}).`] : [], stderr: pretty(result.errors) };
+    }
+    const token = await this.ownToken(root, runId);
+    if (!token.ok) return token;
+    if (command === 'resume') {
+      const fresh = await collectTaskBaseline(root, taskUri);
+      if (!fresh.ok) return { stdout: [], stderr: pretty(fresh.problems) };
+      if (!sameBaseline(fresh.baseline, (await loadRun(root, runId)).baseline)) return { stdout: [], stderr: ['STALE_BASELINE: task changed; rebaseline before resuming.'] };
+      const result = await resumeRun(root, runId, token.token);
+      return { stdout: result.ok ? [`run resumed (${result.data.state}).`] : [], stderr: pretty(result.errors) };
+    }
+    if (command === 'rebaseline') {
+      const fresh = await collectTaskBaseline(root, taskUri);
+      if (!fresh.ok) return { stdout: [], stderr: pretty(fresh.problems) };
+      const result = await rebaselineRun(root, runId, token.token, fresh.baseline, { by: this.owner });
+      return { stdout: result.ok ? ['baseline updated; /harness start to execute it.'] : [], stderr: pretty(result.errors) };
+    }
+    if (!reason.trim()) return { stdout: [], stderr: ['usage: /harness repair <reason>'] };
+    const run = await loadRun(root, runId);
+    const receiptId = run.receipts.at(-1);
+    if (!receiptId) return { stdout: [], stderr: ['NOT_READY: repair requires a recorded failure receipt'] };
+    const result = await repairRun(root, runId, token.token, { failureReceiptId: receiptId, summary: reason, auto: false, authorization: { by: this.owner } });
+    return { stdout: result.ok ? [`repair started (attempt ${result.data.attempt}).`] : [], stderr: pretty(result.errors) };
+  }
+
+  async verify(ports: (actor: string) => TaskVerificationPorts, signal?: AbortSignal): Promise<CommandOutcome> {
+    const bound = this.requireBinding();
+    if (!bound.ok) return bound;
+    const token = await this.ownToken(bound.run.root, bound.run.runId);
+    if (!token.ok) return token;
+    try {
+      const result = await verifyTaskExecution(bound.run.root, bound.run.runId, token.token, ports(this.owner), signal);
+      return { stdout: [`receipt ${result.receipt.id}: ${result.completed ? 'done; closeout remains separate' : 'not complete'}`], stderr: result.errors };
+    } catch (error) { return { stdout: [], stderr: [String(error)] }; }
+  }
+
   async cancel(): Promise<CommandOutcome> {
     const bound = this.requireBinding();
     if (!bound.ok) return bound;
+    if ((await loadRun(bound.run.root, bound.run.runId)).state === 'queued') {
+      const out = await cancelRun(bound.run.root, bound.run.runId, null);
+      return { stdout: out.ok ? ['queued run cancelled.', ...this.exitMode()] : [], stderr: pretty(out.errors) };
+    }
     const token = await this.ownToken(bound.run.root, bound.run.runId);
     if (!token.ok) return token;
     const out = await cancelRun(bound.run.root, bound.run.runId, token.token);
@@ -225,6 +312,7 @@ export class HarnessController {
 
   private requireBinding(): { ok: true; run: Binding } | { ok: false; stdout: string[]; stderr: string[] } {
     if (!this.binding) return { ok: false, stdout: ['harness mode is off — /harness <task-uri> to enter.'], stderr: [] };
+    if (this.workspaceRoot() !== this.binding.root) return { ok: false, stdout: [], stderr: ['NOT_READY: workspace changed; re-enter the task'] };
     return { ok: true, run: this.binding };
   }
 
@@ -268,7 +356,10 @@ export class HarnessController {
 }
 
 /** Shared-command adapter: one entry for the plain loop; Ink passes no host until wired. */
-export function createHarnessHost(controller: HarnessController): {
+export function createHarnessHost(controller: HarnessController, execution?: {
+  ports: (actor: string) => TaskVerificationPorts;
+  signal: () => AbortSignal | undefined;
+}): {
   isActive(): boolean;
   run(args: string[]): Promise<CommandOutcome>;
   exitMode(): string[];
@@ -288,6 +379,8 @@ export function createHarnessHost(controller: HarnessController): {
       const [first, ...rest] = argv;
       if (!first || first === 'status') return controller.status();
       if (first === 'pause') return controller.pause();
+      if (first === 'start' || first === 'resume' || first === 'rebaseline' || first === 'repair' || first === 'closeout') return controller.control(first, rest.join(' '));
+      if (first === 'verify') return execution ? controller.verify(execution.ports, execution.signal()) : { stdout: [], stderr: ['CAPABILITY_UNAVAILABLE: no task execution host'] };
       if (first === 'cancel') return controller.cancel();
       if (first === 'takeover') return controller.takeover(rest.join(' '));
       if (first === 'exit') return { stdout: controller.exitMode(), stderr: [] };

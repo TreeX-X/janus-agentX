@@ -7,6 +7,7 @@
 // Note: completion requires a complete live proof — see .agents/notes/implemented/bug-fix/2026-09-18-harness-receipt-gates.md
 import { AC_ID_RE, HEX64_RE, NOTE_URI_RE, UUID_RE, type AcceptanceRef, type Diagnostic, type VerificationStep } from './schema.js';
 import { badPath } from './parse.js';
+import { sha256Hex } from './hash.js';
 
 function diag(code: Diagnostic['code'], message: string, path?: string): Diagnostic {
   return path === undefined ? { code, message } : { code, message, path };
@@ -50,6 +51,16 @@ export interface Receipt {
   review: { kind: 'self' | 'independent' | 'manual'; verdict: 'approved' | 'needs-fix' | 'blocked'; reviewedManifestHash: string; actor: string };
   createdAt: string;
   actor: string;
+}
+
+/** Review identity covers the complete, order-independent manifest including deletions. */
+export function codeManifestHash(manifest: Receipt['codeManifest']): string {
+  const sorted = [...manifest].sort((a, b) => {
+    const left = codeKey(a.repoId, a.path);
+    const right = codeKey(b.repoId, b.path);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  return sha256Hex(JSON.stringify(sorted.map((row) => [row.repoId, row.path, row.sha256 ?? null, row.deleted === true])));
 }
 
 export function validateReceiptShape(r: unknown): Diagnostic[] {
@@ -217,6 +228,7 @@ export function evaluateReceipt(r: Receipt, ctx: ValidityContext): Diagnostic[] 
     }
   }
   if (r.review.verdict !== 'approved') out.push(diag('NOT_READY', `review is ${r.review.verdict}`, 'review.verdict'));
+  if (r.review.reviewedManifestHash !== codeManifestHash(r.codeManifest)) out.push(diag('STALE_BASELINE', 'review does not cover this code manifest', 'review.reviewedManifestHash'));
   if (r.mode === 'xflow' && (r.review.kind !== 'independent' || r.review.actor === r.actor || r.review.actor === ctx.implementor)) {
     out.push(diag('SCHEMA_INVALID', 'xflow review must come from a different identity', 'review.actor'));
   }

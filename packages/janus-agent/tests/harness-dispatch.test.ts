@@ -27,7 +27,7 @@ import {
   type LiveSnapshot,
 } from '../src/harness/dispatcher.js';
 import { readLease } from '../src/harness/run-store.js';
-import type { Receipt } from '@janus-agent/harness-core';
+import { codeManifestHash, type Receipt } from '@janus-agent/harness-core';
 
 const REPO = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
 const NOTE = '11111111-1111-4111-8111-111111111111';
@@ -55,6 +55,7 @@ function live(overrides: Partial<LiveSnapshot> = {}): LiveSnapshot {
 }
 
 function receipt(overrides: Partial<Receipt> = {}): Receipt {
+  const manifest = overrides.codeManifest ?? [{ repoId: REPO, path: 'src/a.ts', sha256: CODE_HASH }];
   return {
     schema: 'harness-receipt/1',
     id: 'r1',
@@ -63,14 +64,14 @@ function receipt(overrides: Partial<Receipt> = {}): Receipt {
     attempt: 1,
     taskContractHash: CONTRACT,
     inputs: [{ uri: TASK, contentHash: INPUT_HASH }],
-    codeManifest: [{ repoId: REPO, path: 'src/a.ts', sha256: CODE_HASH }],
+    codeManifest: manifest,
     checks: [{
       id: 'c1', kind: 'command', required: true, status: 'passed',
       repoId: REPO, exitCode: 0, summary: 'tests pass', performedBy: 'coder-1',
       command: { program: 'node', args: ['--test'], cwd: '.' },
     }],
     coverage: [{ uri: TASK, criterionId: 'AC-1', criterionHash: CRITERION_HASH, checkIds: ['c1'] }],
-    review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 'coder-1' },
+    review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: codeManifestHash(manifest), actor: 'coder-1' },
     createdAt: new Date().toISOString(),
     actor: 'coder-1',
     ...overrides,
@@ -155,7 +156,7 @@ describe('harness dispatch kernel', () => {
       expect(self.errors.some((e) => e.path === 'review')).toBe(true);
       const indie = await recordReceipt(dir, runId, token, receipt({
         id: 'r-indie', mode: 'xflow', attempt: 1,
-        review: { kind: 'independent', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 'reviewer-9' },
+        review: { ...receipt().review, kind: 'independent', actor: 'reviewer-9' },
         actor: 'coder-1',
       }));
       expect(indie.ok).toBe(true);
@@ -168,7 +169,7 @@ describe('harness dispatch kernel', () => {
       await verifyRun(dir, sameActor, token2, receipt().codeManifest);
       await recordReceipt(dir, sameActor, token2, receipt({
         id: 'r-same', mode: 'xflow', attempt: 1,
-        review: { kind: 'independent', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 'coder-1' },
+        review: { ...receipt().review, kind: 'independent', actor: 'coder-1' },
         actor: 'coder-1',
       }));
       const blocked = await finishRun(dir, sameActor, token2, 'r-same', live());
@@ -277,6 +278,8 @@ describe('harness dispatch kernel', () => {
       expect(rebase.ok).toBe(true);
       expect(rebase.run?.state).toBe('queued');
       expect(rebase.run?.baseline.taskContractHash).toBe('9'.repeat(64));
+      expect(await readLease(dir, runId)).toBeNull();
+      expect((await startRun(dir, runId, 'owner-1', AUTH)).ok).toBe(true);
       expect((await cancelRun(dir, runId, null)).ok).toBe(true);
       expect((await cancelRun(dir, runId, null)).ok).toBe(false);
       const queued = await dispatched(dir);
