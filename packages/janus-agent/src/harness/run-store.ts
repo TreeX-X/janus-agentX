@@ -3,7 +3,7 @@
  * @file Harness run store (S8 slice 8a).
  * @description Local-only run records under `.agents/.local/runs/<runId>/`:
  *  run state, owner leases, receipts, repair packets, and handoff files.
- *  Writes are atomic temp-file renames; leases use exclusive creation so two
+ *  Run snapshots use atomic temp-file renames; receipts and leases use exclusive creation so two
  *  owners never hold one run. Leases never auto-expire: a dead owner needs
  *  an explicit, recorded takeover. Records are best-effort and rebuildable
  *  from task notes plus receipts; they never substitute the note truth.
@@ -60,6 +60,8 @@ export interface HarnessRun {
   repairBudget: { maxAuto: number; usedAuto: number };
   repairs: RepairRecord[];
   receipts: string[];
+  /** The receipt that passed finish; later failures never substitute it. */
+  completedReceiptId?: string;
   takeovers: TakeoverRecord[];
   closeout: 'commit-required' | 'working-tree-authorized';
   authorizationRef?: string;
@@ -70,7 +72,7 @@ export interface HarnessRun {
 }
 
 export class RunStoreError extends Error {
-  readonly code: 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'IO_ERROR' | 'BAD_ID';
+  readonly code: 'NOT_FOUND' | 'CORRUPT' | 'BUSY' | 'IO_ERROR' | 'BAD_ID' | 'CONFLICT';
   constructor(code: RunStoreError['code'], message: string) {
     super(message);
     this.code = code;
@@ -223,7 +225,16 @@ export async function releaseLease(root: string, runId: string): Promise<void> {
 }
 
 export async function storeReceipt(root: string, runId: string, receipt: Receipt): Promise<void> {
-  await writeAtomic(receiptFile(root, runId, receipt.id), JSON.stringify(receipt, null, 2));
+  const path = receiptFile(root, runId, receipt.id);
+  const bytes = JSON.stringify(receipt, null, 2);
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    await writeFile(path, bytes, { flag: 'wx', encoding: 'utf8' });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    // Same request is retryable; an existing id never authorizes new evidence.
+    if (await readFile(path, 'utf8') !== bytes) throw new RunStoreError('CONFLICT', `receipt ${receipt.id} already exists with different content`);
+  }
 }
 
 export async function loadReceipt(root: string, runId: string, receiptId: string): Promise<Receipt> {

@@ -18,16 +18,16 @@ acceptance checkbox would stale a run that only tracked progress.
 live checkout. The task note must be an accepted, valid task; its
 contract hash comes from the shared hasher. Direct `implements`,
 `governed-by`, and `depends-on` targets pin through per-kind normative
-digests, with `depends-on` followed transitively and cycles refused with
-the chain. Requirement predecessors prove every acceptance criterion
+digests, with dependency and governance edges followed transitively and cycles refused.
+Implementation goals need no prior completion evidence. Requirement predecessors prove every acceptance criterion
 against evidence and run receipts: matching criterion hash, cited checks
 passed with all required checks passed, and code manifests rehashed
 against the worktree. Task predecessors need a done state with
-discoverable receipt files, pinned as contract-plus-receipt hashes.
+current valid receipt files, pinned as contract-plus-receipt hashes.
 Unresolvable, invalid, uncovered, undone, or receipt-less predecessors
-refuse with named diagnostics; first visit wins per target in
-deterministic relation order (disagreeing criteria subsets on one target
-stay unmerged as documented below). Two small kernel changes support
+refuse with named diagnostics; repeated target visits merge criterion subsets.
+The [receipt validity decision](../bug-fix/2026-09-18-harness-receipt-gates.md) defines the proof checks.
+Two small kernel changes support
 this collector: dispatch accepts empty inputs because a standalone task
 pins through its contract hash alone, and the run store gains record
 listing with load and lease readers so shells reattach without new
@@ -55,16 +55,11 @@ criterion lines normalize before hashing.
 
 - **Gains**: every host pins the same baseline for the same task
   revision. Verification:
-  `packages/harness-node/tests/baseline.test.ts` (8 checks: deterministic
-  three-input pin with URI resolution, non-task/draft/unknown/unresolved
-  refusals, uncovered-criteria naming, undone and receipt-less
-  predecessors, cycle chain, prose-move digest drift, per-criterion
-  coverage proof), package suite green (24 checks), `npm run typecheck`
+  `packages/harness-node/tests/baseline.test.ts` covers deterministic pins,
+  repository identity, adopted inputs, acceptance references, unmet goals,
+  prerequisite evidence, cycles, and drift. `npm run typecheck`
   and `npm run build` pass.
 - **Costs and limits**: cross-repo targets stay unresolved until the
-  workspaces bind more than one checkout. Two edges covering different
-  criteria subsets of one target pin the first subset; disagreeing
-  subsets on one target are pathological and stay unmerged. Draft
-  predecessors pin by digest and stale on acceptance, by design rather
-  than by refusal. Revisit when multi-checkout binding or the receipt
+  workspaces bind more than one checkout. Evidence validation rescans notes
+  while traversing dependencies. Revisit when multi-checkout binding or the receipt
   registry centralizes evidence.

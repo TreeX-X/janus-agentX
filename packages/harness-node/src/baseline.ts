@@ -1,4 +1,5 @@
 // Note: task baseline collection lives here — see .agents/notes/implemented/architecture/2026-09-17-harness-baseline-s8.md
+// Note: eligibility and evidence share one validity gate — see .agents/notes/implemented/bug-fix/2026-09-18-harness-receipt-gates.md
 /**
  * @file Task baseline collection (S8 slice 8b, shared).
  * @description Assembles the fixed C3 baseline for one task note: the task
@@ -9,17 +10,21 @@
  *  refuse the baseline with named diagnostics instead of guessing
  *  satisfaction. No models, no network, no execution.
  */
-import { readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   contentDigest,
+  codeKey,
   criterionHash,
+  evaluateReceipt,
   taskContractHash,
+  validateReceiptShape,
   type BaselineInput,
   type Diagnostic,
   type ParsedNote,
+  type Receipt,
 } from '@janus-agent/harness-core';
-import { buildNoteIndex, noteUri, sha256HexBytes, type NoteIndex } from './repository.js';
+import { buildNoteIndex, isWithin, noteUri, sha256HexBytes, type NoteIndex } from './repository.js';
 
 function diag(code: Diagnostic['code'], message: string, path?: string): Diagnostic {
   return path === undefined ? { code, message } : { code, message, path };
@@ -65,13 +70,6 @@ function tailId(ref: string): string {
   return ref.includes('://') ? (ref.split('/').pop() ?? ref) : ref;
 }
 
-interface ReceiptRow {
-  id: string;
-  coverage: Array<{ uri: string; criterionId: string; criterionHash: string; checkIds: string[] }>;
-  checks: Array<{ id: string; required: boolean; status: string }>;
-  codeManifest: Array<{ repoId: string; path: string; sha256?: string; deleted?: boolean }>;
-}
-
 const RECEIPT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 async function readJsonFile(path: string): Promise<unknown | null> {
@@ -82,43 +80,8 @@ async function readJsonFile(path: string): Promise<unknown | null> {
   }
 }
 
-function asReceiptRow(id: string, value: unknown): ReceiptRow | null {
-  if (!value || typeof value !== 'object') return null;
-  const v = value as Record<string, unknown>;
-  if (!Array.isArray(v['coverage']) || !Array.isArray(v['checks'])) return null;
-  const coverage: ReceiptRow['coverage'] = [];
-  for (const c of v['coverage'] as Array<Record<string, unknown>>) {
-    if (typeof c['uri'] !== 'string' || typeof c['criterionId'] !== 'string' ||
-      typeof c['criterionHash'] !== 'string' || !Array.isArray(c['checkIds']) || c['checkIds'].length < 1) {
-      return null;
-    }
-    coverage.push({
-      uri: c['uri'], criterionId: c['criterionId'], criterionHash: c['criterionHash'],
-      checkIds: (c['checkIds'] as unknown[]).map(String),
-    });
-  }
-  const checks: ReceiptRow['checks'] = [];
-  for (const c of v['checks'] as Array<Record<string, unknown>>) {
-    if (typeof c['id'] !== 'string' || typeof c['status'] !== 'string') return null;
-    checks.push({ id: c['id'], required: c['required'] === true, status: c['status'] });
-  }
-  const codeManifest: ReceiptRow['codeManifest'] = [];
-  if (Array.isArray(v['codeManifest'])) {
-    for (const row of v['codeManifest'] as Array<Record<string, unknown>>) {
-      if (typeof row['repoId'] !== 'string' || typeof row['path'] !== 'string') return null;
-      codeManifest.push({
-        repoId: row['repoId'],
-        path: row['path'],
-        ...(typeof row['sha256'] === 'string' ? { sha256: row['sha256'] } : {}),
-        ...(row['deleted'] === true ? { deleted: true as const } : {}),
-      });
-    }
-  }
-  return { id, coverage, checks, codeManifest };
-}
-
-async function listEvidenceReceipts(root: string): Promise<ReceiptRow[]> {
-  const out: ReceiptRow[] = [];
+async function listEvidenceReceipts(root: string): Promise<Receipt[]> {
+  const out: Receipt[] = [];
   const dirs: string[] = [join(root, '.agents', 'evidence')];
   try {
     const runs = await readdir(join(root, '.agents', '.local', 'runs'), { withFileTypes: true });
@@ -136,8 +99,8 @@ async function listEvidenceReceipts(root: string): Promise<ReceiptRow[]> {
       continue;
     }
     for (const file of files) {
-      const row = asReceiptRow(file.replace(/\.json$/, ''), await readJsonFile(join(dir, file)));
-      if (row) out.push(row);
+      const value = await readJsonFile(join(dir, file));
+      if (validateReceiptShape(value).length === 0 && (value as Receipt).id === file.replace(/\.json$/, '')) out.push(value as Receipt);
     }
   }
   return out;
@@ -191,42 +154,94 @@ export async function proveRequirementCoverage(
   repoId: string,
   uri: string,
   note: ParsedNote,
+  ancestors: ReadonlySet<string> = new Set(),
 ): Promise<CoverageProof> {
   const receipts = await listEvidenceReceipts(root);
+  const validReceipts: Receipt[] = [];
+  for (const receipt of receipts) {
+    if (!receipt.coverage.some((cov) => cov.uri === uri)) continue;
+    if ((await receiptProblems(root, repoId, receipt, ancestors)).length === 0) validReceipts.push(receipt);
+  }
   const uncovered: string[] = [];
   const used = new Set<string>();
   for (const ac of note.acs) {
     const liveLine = `- [ ] ${ac.id}: ${ac.text}`;
     const liveHash = criterionHash(liveLine);
     let hit = false;
-    for (const receipt of receipts) {
+    for (const receipt of validReceipts) {
       const cov = receipt.coverage.find((c) => c.uri === uri && c.criterionId === ac.id && c.criterionHash === liveHash);
       if (!cov) continue;
-      const passed = new Set(receipt.checks.filter((c) => c.status === 'passed').map((c) => c.id));
-      if (!cov.checkIds.every((id) => passed.has(id))) continue;
-      if (receipt.checks.some((c) => c.required && c.status !== 'passed')) continue;
-      let drift = false;
-      for (const row of receipt.codeManifest) {
-        if (row.repoId !== repoId || row.deleted || !row.sha256) continue;
-        try {
-          const bytes = await readFile(join(root, row.path));
-          if (sha256HexBytes(bytes) !== row.sha256) {
-            drift = true;
-            break;
-          }
-        } catch {
-          drift = true;
-          break;
-        }
-      }
-      if (drift) continue;
       hit = true;
       used.add(receipt.id);
       break;
     }
     if (!hit) uncovered.push(ac.id);
   }
-  return { covered: uncovered.length === 0, uncovered, receipts: [...used].sort() };
+  return { covered: note.acs.length > 0 && uncovered.length === 0, uncovered, receipts: [...used].sort() };
+}
+
+/** Rebuild validity from the repository; receipt claims never supply live hashes. */
+async function receiptProblems(root: string, repoId: string, receipt: Receipt, ancestors: ReadonlySet<string>): Promise<Diagnostic[]> {
+  const shape = validateReceiptShape(receipt);
+  if (shape.length > 0) return shape;
+  const index = await buildNoteIndex(root);
+  const lookup = (uri: string): ParsedNote | undefined => {
+    if (!uri.startsWith(`note://${repoId}/`)) return undefined;
+    const entry = index.byId.get(tailId(uri));
+    return entry?.diagnostics.length === 0 ? entry.note : undefined;
+  };
+  let contract = receipt.taskContractHash ?? '';
+  const inputHashes = new Map<string, string>();
+  const task = receipt.taskUri ? lookup(receipt.taskUri) : undefined;
+  if (receipt.taskUri) {
+    if (!task || task.meta.kind !== 'task' || !task.meta.work) return [diag('NOT_READY', 'receipt task is unresolved')];
+    if (task.meta.execution && (task.meta.execution.mode !== receipt.mode || task.meta.execution.attempt !== receipt.attempt)) return [diag('STALE_BASELINE', 'receipt differs from the recorded task mode or attempt')];
+    const base = await collectBaseline(root, receipt.taskUri, ancestors);
+    if (!base.ok) return base.problems;
+    contract = base.baseline.taskContractHash;
+    for (const input of base.baseline.inputs) inputHashes.set(input.uri, input.contentHash);
+  } else {
+    for (const input of receipt.inputs) {
+      const note = lookup(input.uri);
+      if (!note || !['requirement', 'initiative', 'decision'].includes(note.meta.kind)) return [diag('UNRESOLVED_REFERENCE', `cannot verify input ${input.uri}`)];
+      const lines = acLines(note);
+      const criteria: Record<string, string> = {};
+      for (const id of input.criteria ?? Object.keys(lines)) {
+        if (!(id in lines)) return [diag('STALE_BASELINE', `input criterion vanished: ${input.uri}#${id}`)];
+        criteria[id] = lines[id];
+      }
+      inputHashes.set(input.uri, contentDigest({ uri: input.uri, kind: note.meta.kind, lifecycle: note.meta.lifecycle, sections: pickSections(note, note.meta.kind), criteria }).digest);
+    }
+    for (const cov of receipt.coverage) {
+      if (!inputHashes.has(cov.uri)) return [diag('NOT_READY', `taskless receipt does not pin covered input ${cov.uri}`)];
+    }
+  }
+  const criterionHashes = new Map<string, Map<string, string>>();
+  for (const cov of receipt.coverage) {
+    const note = lookup(cov.uri);
+    if (note) criterionHashes.set(cov.uri, new Map(note.acs.map((ac) => [ac.id, criterionHash(`- [ ] ${ac.id}: ${ac.text}`)])));
+  }
+  const codeHashes = new Map<string, string | null>();
+  for (const row of receipt.codeManifest) {
+    if (row.repoId !== repoId) return [diag('UNRESOLVED_REFERENCE', `receipt file belongs to another checkout: ${row.repoId}`)];
+    const file = join(root, row.path);
+    try { await lstat(file); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { codeHashes.set(codeKey(row.repoId, row.path), null); continue; }
+      else return [diag('IO_ERROR', `cannot verify receipt file: ${row.path}`)];
+    }
+    try {
+      const actual = await realpath(file);
+      if (!isWithin(root, actual)) return [diag('PERMISSION_DENIED', `receipt file escapes checkout: ${row.path}`)];
+      codeHashes.set(codeKey(row.repoId, row.path), sha256HexBytes(await readFile(actual)));
+    } catch { return [diag('IO_ERROR', `cannot verify receipt file: ${row.path}`)]; }
+  }
+  return evaluateReceipt(receipt, {
+    taskContractHash: contract, inputHashes, criterionHashes, codeHashes,
+    acceptanceRefs: task?.meta.work?.acceptanceRefs ?? receipt.coverage.map(({ uri, criterionId }) => ({ uri, criterionId })),
+    verification: task?.meta.work?.verification ?? [],
+    implementor: receipt.actor,
+  });
 }
 
 export interface TaskBaseline {
@@ -248,9 +263,14 @@ const EXPECTED_KIND: Record<string, string[]> = {
   implements: ['requirement'],
   'governed-by': ['decision'],
   'depends-on': ['requirement', 'task'],
+  acceptance: ['requirement', 'initiative'],
 };
 
 export async function collectTaskBaseline(root: string, taskRef: string): Promise<BaselineResult> {
+  return collectBaseline(root, taskRef, new Set());
+}
+
+async function collectBaseline(root: string, taskRef: string, ancestors: ReadonlySet<string>): Promise<BaselineResult> {
   const problems: Diagnostic[] = [];
   let index: NoteIndex;
   try {
@@ -263,6 +283,9 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
   }
   const repoId = index.repoId;
   const uriOf = (id: string): string => noteUri(repoId, id);
+  if (taskRef.startsWith('note://') && !taskRef.startsWith(`note://${repoId}/`)) {
+    return { ok: false, problems: [diag('UNRESOLVED_REFERENCE', `task belongs to another checkout: ${taskRef}`)] };
+  }
   const taskEntry = index.byId.get(tailId(taskRef))
     ?? index.entries.find((e) => e.relPath === taskRef || e.relPath.endsWith(`/${taskRef}`));
   if (!taskEntry?.note) {
@@ -279,25 +302,34 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
     return { ok: false, problems: [diag('NOT_READY', `task executes only from accepted (now ${task.meta.lifecycle})`, 'lifecycle')] };
   }
   const taskUri = uriOf(task.meta.id);
-  // First visit wins per target: relation file order is deterministic, and a
-  // pinned subset stays a fixed, verifiable pin. Two edges covering
-  // different criteria subsets of one target is pathological; the second
-  // edge's extra criteria simply do not extend staleness detection.
+  if (ancestors.has(taskUri)) return { ok: false, problems: [diag('INVALID_RELATION', `receipt dependency cycle: ${taskUri}`)] };
+  const visiting = new Set(ancestors).add(taskUri);
+  // Each target has one digest. Multiple paths merge their criterion sets.
   const inputs: BaselineInput[] = [];
   const done = new Set<string>([taskUri]);
 
   const targetOf = (uri: string): { target: Target } | { missing: boolean } | { invalid: string } => {
+    if (!uri.startsWith(`note://${repoId}/`)) return { missing: true };
     const entry = index.byId.get(tailId(uri));
     if (!entry) return { missing: true };
     if (!entry.note || entry.diagnostics.length > 0) return { invalid: entry.relPath };
     return { target: { uri: uriOf(entry.note.meta.id), note: entry.note } };
   };
 
+  const required = new Set<string>();
+  for (const ref of task.meta.work!.acceptanceRefs) {
+    const resolved = targetOf(ref.uri);
+    if (!('target' in resolved)) return { ok: false, problems: [diag('UNRESOLVED_REFERENCE', `unresolved acceptance target: ${ref.uri}`)] };
+    const note = resolved.target.note;
+    if (!note.acs.some((ac) => ac.id === ref.criterionId) || (ref.uri !== taskUri && !['requirement', 'initiative'].includes(note.meta.kind))) return { ok: false, problems: [diag('INVALID_RELATION', `invalid acceptance reference: ${ref.uri}#${ref.criterionId}`)] };
+    if (note.meta.kind === 'requirement') required.add(`${ref.uri}#${ref.criterionId}`);
+  }
+  const intended = new Set((task.meta.relations ?? []).filter((rel) => rel.type === 'implements').flatMap((rel) => (rel.criteria ?? []).map((id) => `${rel.target}#${id}`)));
+  if (required.size !== intended.size || [...required].some((key) => !intended.has(key))) return { ok: false, problems: [diag('INVALID_RELATION', 'implements criteria must match work.acceptanceRefs', 'work.acceptanceRefs')] };
+
   const pinTarget = async (uri: string, via: string, edgeCriteria: string[] | undefined, stack: string[]): Promise<void> => {
-    if (done.has(uri)) {
-      if (stack.includes(uri)) {
-        problems.push(diag('INVALID_RELATION', `dependency cycle: ${[...stack, uri].join(' -> ')}`));
-      }
+    if (stack.includes(uri)) {
+      problems.push(diag('INVALID_RELATION', `dependency cycle: ${[...stack, uri].join(' -> ')}`));
       return;
     }
     const resolved = targetOf(uri);
@@ -315,8 +347,24 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
       problems.push(diag('INVALID_RELATION', `${via} needs ${(EXPECTED_KIND[via] ?? []).join('/')} but targets ${kind}: ${uri}`));
       return;
     }
+    if (target.note.meta.lifecycle !== 'accepted' && !(kind === 'decision' && target.note.meta.lifecycle === 'implemented')) {
+      problems.push(diag('NOT_READY', `execution input is not adopted: ${uri}`, 'lifecycle'));
+      return;
+    }
+    // Implementing a requirement does not require it to be implemented
+    // already. A dependency does, even if another edge pinned it first.
+    if (kind === 'requirement' && via === 'depends-on') {
+      const proof = await proveRequirementCoverage(root, repoId, target.uri, target.note, visiting);
+      if (!proof.covered) {
+        problems.push(diag('DEPENDENCY_UNSATISFIED', `requirement ${target.uri} has uncovered acceptance: ${proof.uncovered.join(', ') || 'no acceptance criteria'}`));
+        return;
+      }
+    }
+    const firstVisit = !done.has(uri);
+    if (!firstVisit && kind !== 'requirement' && kind !== 'initiative') return;
     const lines = acLines(target.note);
-    const wanted = edgeCriteria?.length ? edgeCriteria : Object.keys(lines);
+    const existing = inputs.find((input) => input.uri === uri);
+    const wanted = [...new Set([...(edgeCriteria?.length ? edgeCriteria : Object.keys(lines)), ...(existing?.criteria ?? [])])].sort();
     for (const id of edgeCriteria ?? []) {
       if (!(id in lines)) {
         problems.push(diag('INVALID_RELATION', `unknown criterion ${id} on ${uri}`));
@@ -327,17 +375,14 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
     for (const id of wanted) criteria[id] = lines[id];
     done.add(uri);
 
-    if (kind === 'requirement') {
-      const proof = await proveRequirementCoverage(root, repoId, target.uri, target.note);
-      if (!proof.covered) {
-        problems.push(diag('DEPENDENCY_UNSATISFIED', `requirement ${target.uri} has uncovered acceptance: ${proof.uncovered.join(', ')}`));
-        return;
-      }
+    if (kind === 'requirement' || kind === 'initiative') {
       const digest = contentDigest({
         uri: target.uri, kind, lifecycle: target.note.meta.lifecycle,
         sections: pickSections(target.note, kind), criteria,
       });
-      inputs.push({ uri: target.uri, contentHash: digest.digest, criteria: Object.keys(criteria) });
+      const pin = { uri: target.uri, contentHash: digest.digest, criteria: Object.keys(criteria) };
+      if (existing) Object.assign(existing, pin);
+      else inputs.push(pin);
     } else if (kind === 'decision') {
       const digest = contentDigest({
         uri: target.uri, kind, lifecycle: target.note.meta.lifecycle,
@@ -356,6 +401,11 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
       }
       const dependencies: Array<{ uri: string; contractHash: string; receiptHash: string }> = [];
       const depContract = taskContractHash(target.note);
+      if (execution.baseline.taskContractHash !== depContract) {
+        problems.push(diag('STALE_BASELINE', `predecessor contract changed: ${target.uri}`));
+        return;
+      }
+      let validReceipt = false;
       for (const id of execution.receipts) {
         if (typeof id !== 'string') continue;
         const found = await findReceiptBytes(root, id);
@@ -363,7 +413,17 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
           problems.push(diag('UNRESOLVED_REFERENCE', `predecessor receipt not found: ${id} (via ${target.uri})`));
           return;
         }
+        let receipt: Receipt;
+        try { receipt = JSON.parse(Buffer.from(found.bytes).toString('utf8')) as Receipt; }
+        catch { continue; }
+        if (validateReceiptShape(receipt).length > 0 || receipt.id !== id || receipt.taskUri !== target.uri || receipt.mode !== execution.mode || receipt.attempt !== execution.attempt) continue;
+        if ((await receiptProblems(root, repoId, receipt, visiting)).length > 0) continue;
+        validReceipt = true;
         dependencies.push({ uri: target.uri, contractHash: depContract, receiptHash: sha256HexBytes(found.bytes) });
+      }
+      if (!validReceipt) {
+        problems.push(diag('DEPENDENCY_UNSATISFIED', `predecessor has no current passing receipt: ${target.uri}`));
+        return;
       }
       const digest = contentDigest({
         uri: target.uri, kind, lifecycle: target.note.meta.lifecycle,
@@ -373,9 +433,10 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
       inputs.push({ uri: target.uri, contentHash: digest.digest, criteria: Object.keys(criteria) });
     }
 
-    if (kind === 'requirement' || kind === 'task') {
+    if (!firstVisit) return;
+    if (kind === 'requirement' || kind === 'task' || kind === 'initiative') {
       for (const rel of target.note.meta.relations ?? []) {
-        if (rel.type !== 'depends-on') continue;
+        if (rel.type !== 'depends-on' && rel.type !== 'governed-by') continue;
         await pinTarget(rel.target, rel.type, rel.criteria, [...stack, target.uri]);
         if (problems.length > 0) return;
       }
@@ -385,6 +446,14 @@ export async function collectTaskBaseline(root: string, taskRef: string): Promis
   for (const rel of task.meta.relations ?? []) {
     if (!BASELINE_EDGE_TYPES.includes(rel.type)) continue;
     await pinTarget(rel.target, rel.type, rel.criteria, [taskUri]);
+    if (problems.length > 0) return { ok: false, problems };
+  }
+  const inherited = new Map<string, string[]>();
+  for (const ref of task.meta.work!.acceptanceRefs) {
+    if (ref.uri !== taskUri) inherited.set(ref.uri, [...(inherited.get(ref.uri) ?? []), ref.criterionId]);
+  }
+  for (const [uri, criteria] of inherited) {
+    await pinTarget(uri, 'acceptance', criteria, [taskUri]);
     if (problems.length > 0) return { ok: false, problems };
   }
   const sorted = [...inputs].sort((a, b) => (a.uri < b.uri ? -1 : 1));

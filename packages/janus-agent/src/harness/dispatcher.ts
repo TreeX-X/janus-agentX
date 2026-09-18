@@ -18,6 +18,8 @@ import {
   NOTE_URI_RE,
   codeKey,
   type BaselineInput,
+  type AcceptanceRef,
+  type VerificationStep,
   type Diagnostic,
   type ExecutionState,
   type HarnessMode,
@@ -72,7 +74,7 @@ function storeError(e: unknown, run: HarnessRun | null): Diagnostic[] {
   if (e instanceof RunStoreError) {
     const code = e.code === 'NOT_FOUND' ? 'NOT_FOUND'
       : e.code === 'CORRUPT' ? 'RECOVERY_REQUIRED'
-      : e.code === 'BAD_ID' ? 'SCHEMA_INVALID' : 'IO_ERROR';
+      : e.code === 'BAD_ID' ? 'SCHEMA_INVALID' : e.code === 'CONFLICT' ? 'CONFLICT' : 'IO_ERROR';
     return [diag(code as Diagnostic['code'], e.message)];
   }
   return [diag('IO_ERROR', `run store failed: ${(e as Error).message}`)];
@@ -107,7 +109,9 @@ export interface LiveSnapshot {
   taskContractHash: string;
   inputHashes: Array<[string, string]>;
   criterionHashes: Array<[string, Array<[string, string]>]>;
-  codeHashes: Array<[string, string]>;
+  codeHashes: Array<[string, string | null]>;
+  acceptanceRefs: AcceptanceRef[];
+  verification: VerificationStep[];
   implementor: string;
 }
 
@@ -129,6 +133,8 @@ function toValidityContext(live: LiveSnapshot): ValidityContext {
     inputHashes: new Map(live.inputHashes),
     criterionHashes: new Map(live.criterionHashes.map(([uri, pairs]) => [uri, new Map(pairs)])),
     codeHashes: new Map(live.codeHashes),
+    acceptanceRefs: live.acceptanceRefs,
+    verification: live.verification,
     implementor: live.implementor,
   };
 }
@@ -148,6 +154,15 @@ function idleCtx(): Parameters<typeof checkOp>[2] {
     receiptReady: true,
     repairBudgetLeft: true,
   };
+}
+
+/** Compare complete sets, including absence/deletion and criterion subsets. */
+function inputKey(inputs: BaselineInput[]): string {
+  return JSON.stringify(inputs.map((row) => [row.uri, row.contentHash, [...(row.criteria ?? [])].sort()]).sort());
+}
+
+function manifestKey(rows: CodeRow[]): string {
+  return JSON.stringify(rows.map((row) => [row.repoId, row.path, row.sha256 ?? null, row.deleted === true]).sort());
 }
 
 export async function dispatchRun(root: string, input: DispatchInput): Promise<OpResult<{ runId: string }>> {
@@ -288,12 +303,17 @@ export async function recordReceipt(
     const leaseProblems = leaseMismatch(run, token);
     if (leaseProblems.length > 0) return fail(run, leaseProblems, { receiptId: '' });
     const problems = validateReceiptShape(receipt);
-    if (receipt.taskUri !== undefined && receipt.taskUri !== run.taskUri) {
+    if (problems.length > 0) return fail(run, problems, { receiptId: '' });
+    if (run.state !== 'verifying') {
+      problems.push(diag('NOT_READY', `record receipts only while verifying (now ${run.state})`, 'state'));
+    }
+    if (receipt.taskUri !== run.taskUri) {
       problems.push(diag('SCHEMA_INVALID', `receipt targets ${receipt.taskUri}, run owns ${run.taskUri}`, 'taskUri'));
     }
-    if (receipt.taskContractHash !== undefined && receipt.taskContractHash !== run.baseline.taskContractHash) {
+    if (receipt.taskContractHash !== run.baseline.taskContractHash) {
       problems.push(diag('STALE_BASELINE', 'receipt pins a different contract than this run', 'taskContractHash'));
     }
+    if (inputKey(receipt.inputs) !== inputKey(run.baseline.inputs)) problems.push(diag('STALE_BASELINE', 'receipt inputs differ from the pinned run inputs', 'inputs'));
     if (receipt.mode !== run.mode) {
       problems.push(diag('SCHEMA_INVALID', `receipt mode ${receipt.mode} differs from run mode ${run.mode}`, 'mode'));
     }
@@ -333,9 +353,18 @@ export async function finishRun(
       return fail(run, storeError(e, run), { receiptId });
     }
     const problems = checkedState(run, 'finish', { ...idleCtx(), receiptReady: run.receipts.includes(receiptId) });
+    const shapeProblems = validateReceiptShape(receipt);
+    if (shapeProblems.length > 0) return fail(run, shapeProblems, { receiptId });
+    if (receipt.taskUri !== run.taskUri || receipt.taskContractHash !== run.baseline.taskContractHash || receipt.attempt !== run.attempt || receipt.mode !== run.mode || inputKey(receipt.inputs) !== inputKey(run.baseline.inputs)) {
+      problems.push(diag('STALE_BASELINE', 'receipt does not belong to this run baseline and attempt', 'receipts'));
+    }
+    if (!run.verification || manifestKey(receipt.codeManifest) !== manifestKey(run.verification.codeManifest)) {
+      problems.push(diag('STALE_BASELINE', 'receipt manifest differs from the files pinned at verify', 'codeManifest'));
+    }
     problems.push(...evaluateReceipt(receipt, toValidityContext(live)));
     if (problems.length > 0) return fail(run, problems, { receiptId });
     run.state = 'done';
+    run.completedReceiptId = receiptId;
     run.lease = null;
     try {
       await saveRun(root, run);
@@ -539,7 +568,12 @@ export async function takeoverRun(
 
 export async function closeoutRun(root: string, runId: string, check: CloseoutCheck): Promise<OpResult<CloseoutReport>> {
   return withRun<CloseoutReport>(root, runId, async (run) => {
-    const latestId = run.receipts[run.receipts.length - 1];
+    if (run.state !== 'done') {
+      return fail(run, [diag('NOT_READY', 'closeout requires a successfully verified run', 'state')], {
+        strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'run has not completed verification',
+      });
+    }
+    const latestId = run.completedReceiptId;
     if (!latestId) {
       return fail(run, [diag('NOT_READY', 'closeout needs at least one receipt', 'receipts')], {
         strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'no receipt recorded',

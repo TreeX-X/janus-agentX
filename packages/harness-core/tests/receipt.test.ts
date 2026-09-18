@@ -17,7 +17,7 @@ function receipt(over: Partial<Receipt> = {}): Receipt {
     taskContractHash: CONTRACT,
     inputs: [{ uri: REQ, contentHash: 'a'.repeat(64), criteria: ['AC-1'] }],
     codeManifest: [{ repoId: R, path: 'src/a.ts', sha256: 'b'.repeat(64) }],
-    checks: [{ id: 'V-1', kind: 'command', required: true, status: 'passed', repoId: R, exitCode: 0, summary: 'ok', performedBy: 'cli' }],
+    checks: [{ id: 'V-1', kind: 'command', required: true, status: 'passed', repoId: R, command: { program: 'node', args: ['--test'], cwd: '.' }, exitCode: 0, summary: 'ok', performedBy: 'cli' }],
     coverage: [{ uri: REQ, criterionId: 'AC-1', criterionHash: 'c'.repeat(64), checkIds: ['V-1'] }],
     review: { kind: 'self', verdict: 'approved', reviewedManifestHash: 'd'.repeat(64), actor: 'cli' },
     createdAt: '2026-09-16T00:00:00Z',
@@ -31,6 +31,8 @@ const liveCtx = () => ({
   inputHashes: new Map([[REQ, 'a'.repeat(64)]]),
   criterionHashes: new Map([[REQ, new Map([['AC-1', 'c'.repeat(64)]])]]),
   codeHashes: new Map([[codeKey(R, 'src/a.ts'), 'b'.repeat(64)]]),
+  acceptanceRefs: [{ uri: REQ, criterionId: 'AC-1' }],
+  verification: [{ id: 'V-1', kind: 'command' as const, required: true, repoId: R, cwd: '.', program: 'node', args: ['--test'] }],
   implementor: 'cli',
 });
 
@@ -74,5 +76,61 @@ describe('receipt', () => {
   it('never averages an empty required set to complete', () => {
     expect(coverageRatio(0, 0)).toBeUndefined();
     expect(coverageRatio(1, 2)).toBe(0.5);
+  });
+
+  it('rejects malformed nested values without throwing', () => {
+    for (const field of ['inputs', 'codeManifest', 'checks', 'coverage']) {
+      for (const value of [undefined, null, {}, [null], [1]]) {
+        expect(validateReceiptShape({ ...receipt(), [field]: value }), `${field}: ${JSON.stringify(value)}`).not.toEqual([]);
+      }
+    }
+    expect(validateReceiptShape({ ...receipt(), review: null })).not.toEqual([]);
+  });
+
+  it('requires live evidence for every input, criterion, and file', () => {
+    for (const patch of [
+      { inputHashes: new Map() },
+      { criterionHashes: new Map() },
+      { codeHashes: new Map() },
+    ]) {
+      expect(evaluateReceipt(receipt(), { ...liveCtx(), ...patch }).some((d) => d.code === 'STALE_BASELINE')).toBe(true);
+    }
+    expect(evaluateReceipt(receipt({ inputs: [] }), liveCtx())).not.toEqual([]);
+    expect(evaluateReceipt(receipt({ coverage: [] }), liveCtx())).not.toEqual([]);
+  });
+
+  it('cannot omit or downgrade a required check from the task contract', () => {
+    const optional = receipt({ checks: [{ ...receipt().checks[0], required: false }] });
+    expect(evaluateReceipt(optional, liveCtx())).not.toEqual([]);
+    const other = receipt({
+      checks: [{ ...receipt().checks[0], id: 'different' }],
+      coverage: [{ ...receipt().coverage[0], checkIds: ['different'] }],
+    });
+    expect(evaluateReceipt(other, liveCtx())).not.toEqual([]);
+  });
+
+  it('accepts a failed independent review as evidence but never as completion', () => {
+    for (const verdict of ['needs-fix', 'blocked'] as const) {
+      const r = receipt({ mode: 'xflow', review: { ...receipt().review, kind: 'independent', actor: 'reviewer', verdict } });
+      expect(validateReceiptShape(r)).toEqual([]);
+      expect(evaluateReceipt(r, liveCtx()).some((d) => d.code === 'NOT_READY')).toBe(true);
+    }
+    expect(evaluateReceipt(receipt({ review: { ...receipt().review, verdict: 'needs-fix' } }), liveCtx())).not.toEqual([]);
+  });
+
+  it('requires explicit confirmation that a deleted file is absent', () => {
+    const r = receipt({ codeManifest: [{ repoId: R, path: 'src/a.ts', deleted: true }] });
+    expect(evaluateReceipt(r, liveCtx())).not.toEqual([]);
+    expect(evaluateReceipt(r, { ...liveCtx(), codeHashes: new Map() })).not.toEqual([]);
+    expect(evaluateReceipt(r, { ...liveCtx(), codeHashes: new Map([[codeKey(R, 'src/a.ts'), null]]) })).toEqual([]);
+  });
+
+  it('rejects ambiguous manifests, duplicate check ids, and unknown check results', () => {
+    const manifest = receipt().codeManifest;
+    expect(validateReceiptShape(receipt({ codeManifest: [...manifest, ...manifest] }))).not.toEqual([]);
+    expect(validateReceiptShape(receipt({ codeManifest: [{ ...manifest[0], deleted: true }] }))).not.toEqual([]);
+    expect(validateReceiptShape(receipt({ codeManifest: [{ repoId: R, path: '../outside', sha256: 'b'.repeat(64) }] }))).not.toEqual([]);
+    expect(validateReceiptShape(receipt({ checks: [...receipt().checks, ...receipt().checks] }))).not.toEqual([]);
+    expect(validateReceiptShape({ ...receipt(), checks: [{ ...receipt().checks[0], status: 'yes' }] })).not.toEqual([]);
   });
 });

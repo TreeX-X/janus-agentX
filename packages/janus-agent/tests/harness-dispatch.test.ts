@@ -47,6 +47,8 @@ function live(overrides: Partial<LiveSnapshot> = {}): LiveSnapshot {
     inputHashes: [[TASK, INPUT_HASH]],
     criterionHashes: [[TASK, [['AC-1', CRITERION_HASH]]]],
     codeHashes: [[`${REPO} src/a.ts`, CODE_HASH]],
+    acceptanceRefs: [{ uri: TASK, criterionId: 'AC-1' }],
+    verification: [{ id: 'c1', kind: 'command', required: true, repoId: REPO, program: 'node', args: ['--test'], cwd: '.' }],
     implementor: 'coder-1',
     ...overrides,
   };
@@ -65,6 +67,7 @@ function receipt(overrides: Partial<Receipt> = {}): Receipt {
     checks: [{
       id: 'c1', kind: 'command', required: true, status: 'passed',
       repoId: REPO, exitCode: 0, summary: 'tests pass', performedBy: 'coder-1',
+      command: { program: 'node', args: ['--test'], cwd: '.' },
     }],
     coverage: [{ uri: TASK, criterionId: 'AC-1', criterionHash: CRITERION_HASH, checkIds: ['c1'] }],
     review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 'coder-1' },
@@ -146,7 +149,7 @@ describe('harness dispatch kernel', () => {
       const runId = await dispatched(dir, 'xflow');
       await startRun(dir, runId, 'owner-1', AUTH);
       const token = (await readLease(dir, runId))?.token ?? '';
-      await verifyRun(dir, runId, token, []);
+      await verifyRun(dir, runId, token, receipt().codeManifest);
       const self = await recordReceipt(dir, runId, token, receipt({ id: 'r-self', mode: 'xflow', attempt: 1 }));
       expect(self.ok).toBe(false);
       expect(self.errors.some((e) => e.path === 'review')).toBe(true);
@@ -162,7 +165,7 @@ describe('harness dispatch kernel', () => {
       const sameActor = await dispatched(dir, 'xflow');
       await startRun(dir, sameActor, 'owner-1', AUTH);
       const token2 = (await readLease(dir, sameActor))?.token ?? '';
-      await verifyRun(dir, sameActor, token2, []);
+      await verifyRun(dir, sameActor, token2, receipt().codeManifest);
       await recordReceipt(dir, sameActor, token2, receipt({
         id: 'r-same', mode: 'xflow', attempt: 1,
         review: { kind: 'independent', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 'coder-1' },
@@ -299,6 +302,73 @@ describe('harness dispatch kernel', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('rejects taskless receipts and omitted baseline inputs on a task run', async () => {
+    const dir = root();
+    try {
+      const id = await dispatched(dir);
+      const started = await startRun(dir, id, 'owner-1', AUTH);
+      const token = started.run!.lease!.token;
+      await verifyRun(dir, id, token, receipt().codeManifest);
+      expect((await recordReceipt(dir, id, token, receipt({ taskUri: undefined, taskContractHash: undefined }))).ok).toBe(false);
+      expect((await recordReceipt(dir, id, token, receipt({ inputs: [] }))).ok).toBe(false);
+      expect((await recordReceipt(dir, id, token, receipt())).ok).toBe(true);
+      expect((await finishRun(dir, id, token, 'r1', live({ acceptanceRefs: [...live().acceptanceRefs, { uri: TASK, criterionId: 'AC-2' }] }))).ok).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('preserves a failed review for repair and refuses receipt rewrites and premature closeout', async () => {
+    const dir = root();
+    try {
+      const id = await dispatched(dir, 'xflow');
+      const started = await startRun(dir, id, 'owner-1', AUTH);
+      const token = started.run!.lease!.token;
+      const failed = receipt({ mode: 'xflow', review: { ...receipt().review, kind: 'independent', actor: 'reviewer', verdict: 'needs-fix' } });
+      expect((await recordReceipt(dir, id, token, failed)).ok).toBe(false);
+      await verifyRun(dir, id, token, failed.codeManifest);
+      expect((await recordReceipt(dir, id, token, failed)).ok).toBe(true);
+      expect((await recordReceipt(dir, id, token, failed)).ok).toBe(true);
+      const rewritten = await recordReceipt(dir, id, token, { ...failed, review: { ...failed.review, verdict: 'approved' } });
+      expect(rewritten.errors.some((d) => d.code === 'CONFLICT')).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, '.agents', '.local', 'runs', id, 'receipts', 'r1.json'), 'utf8')).review.verdict).toBe('needs-fix');
+      expect((await finishRun(dir, id, token, 'r1', live())).ok).toBe(false);
+      expect((await closeoutRun(dir, id, { repoRoot: dir })).data.satisfied).toBe(false);
+      expect((await repairRun(dir, id, token, { failureReceiptId: 'r1', summary: 'address the review', auto: true })).ok).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('cannot finish with a manifest different from the verification snapshot', async () => {
+    const dir = root();
+    try {
+      const id = await dispatched(dir);
+      const started = await startRun(dir, id, 'owner-1', AUTH);
+      const token = started.run!.lease!.token;
+      await verifyRun(dir, id, token, receipt().codeManifest);
+      expect((await recordReceipt(dir, id, token, receipt({ codeManifest: [] }))).ok).toBe(true);
+      const finished = await finishRun(dir, id, token, 'r1', live());
+      expect(finished.ok).toBe(false);
+      expect(finished.errors.some((d) => d.path === 'codeManifest')).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('closes out against the receipt that passed finish, not a later failure', async () => {
+    const dir = root();
+    try {
+      mkdirSync(join(dir, 'src'));
+      writeFileSync(join(dir, 'src', 'a.ts'), 'verified bytes');
+      const hash = sha256HexBytes(readFileSync(join(dir, 'src', 'a.ts')));
+      const d = await dispatchRun(dir, { taskUri: TASK, mode: 'xdo', taskContractHash: CONTRACT, inputs: [{ uri: TASK, contentHash: INPUT_HASH }], closeout: 'working-tree-authorized', authorizationRef: 'user-request' });
+      const started = await startRun(dir, d.data.runId, 'owner-1', AUTH);
+      const token = started.run!.lease!.token;
+      const good = receipt({ codeManifest: [{ repoId: REPO, path: 'src/a.ts', sha256: hash }] });
+      await verifyRun(dir, d.data.runId, token, good.codeManifest);
+      expect((await recordReceipt(dir, d.data.runId, token, good)).ok).toBe(true);
+      expect((await recordReceipt(dir, d.data.runId, token, receipt({ id: 'failed-later', review: { ...good.review, verdict: 'needs-fix' } }))).ok).toBe(true);
+      const finished = await finishRun(dir, d.data.runId, token, good.id, live({ codeHashes: [[`${REPO} src/a.ts`, hash]] }));
+      expect(finished.run?.completedReceiptId).toBe(good.id);
+      expect((await closeoutRun(dir, d.data.runId, { repoRoot: dir })).data.satisfied).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

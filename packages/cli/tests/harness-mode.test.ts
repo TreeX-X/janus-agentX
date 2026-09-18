@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { criterionHash } from '@janus-agent/harness-core';
+import { criterionHash, parseNote, taskContractHash } from '@janus-agent/harness-core';
 import { HarnessController, cliOwner, createHarnessHost } from '../src/harness-mode.js';
 
 const REPO = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
@@ -79,6 +79,10 @@ function seed(root: string, opts: { evidence?: boolean } = {}): void {
     `    taskContractHash: ${'a'.repeat(64)}`, '    inputs: []', '  attempt: 1',
     '  receipts: [rc-dep]', '  closeout: commit-required',
   ].join('\n')));
+  const depPath = join(root, '.agents', 'notes', '2026-09-17-dep--44444444.md');
+  const depText = readFileSync(depPath, 'utf8').replace(`uri: ${REQ_URI}`, `uri: note://${REPO}/${DEP}`);
+  const depHash = taskContractHash(parseNote(depText));
+  writeFileSync(depPath, depText.replace('a'.repeat(64), depHash));
   writeFileSync(join(root, '.agents', 'notes', '2026-09-17-main--55555555.md'), taskNote(MAIN, 'Main task', [
     'relations:',
     '  - type: implements', `    target: ${REQ_URI}`, '    criteria: [AC-1]',
@@ -96,7 +100,14 @@ function seed(root: string, opts: { evidence?: boolean } = {}): void {
       review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 's' },
       createdAt: '2026-09-17T00:00:00.000Z', actor: 's',
     }));
-    writeFileSync(join(root, '.agents', 'evidence', 'rc-dep.json'), JSON.stringify({ ok: true }));
+    writeFileSync(join(root, '.agents', 'evidence', 'rc-dep.json'), JSON.stringify({
+      schema: 'harness-receipt/1', id: 'rc-dep', taskUri: `note://${REPO}/${DEP}`, mode: 'xdo', attempt: 1,
+      taskContractHash: depHash, inputs: [], codeManifest: [],
+      checks: [{ id: 'v1', kind: 'manual', required: true, status: 'passed', repoId: REPO, summary: 'observed', performedBy: 's' }],
+      coverage: [{ uri: `note://${REPO}/${DEP}`, criterionId: 'AC-1', criterionHash: criterionHash('- [ ] AC-1: thing done'), checkIds: ['v1'] }],
+      review: { kind: 'manual', verdict: 'approved', reviewedManifestHash: 'e'.repeat(64), actor: 's' },
+      createdAt: '2026-09-17T00:00:00.000Z', actor: 's',
+    }));
   }
 }
 
@@ -193,6 +204,7 @@ describe('harness mode shell', () => {
     const root = mkdtempSync(join(tmpdir(), 'cli-harness-'));
     try {
       seed(root, { evidence: false });
+      writeFileSync(join(root, '.agents', 'notes', '2026-09-17-main--55555555.md'), taskNote(MAIN, 'Blocked task', `relations:\n  - type: implements\n    target: ${REQ_URI}\n    criteria: [AC-1]\n  - type: depends-on\n    target: ${REQ_URI}`));
       const c = controller(root);
       const unknown = await c.enter('99999999-9999-4999-8999-999999999999');
       expect(unknown.stderr.join('')).toContain('NOT_FOUND');
