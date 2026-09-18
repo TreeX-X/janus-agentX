@@ -20,7 +20,7 @@ contract hash comes from the shared hasher. Direct `implements`,
 `governed-by`, and `depends-on` targets pin through per-kind normative
 digests, with dependency and governance edges followed transitively and cycles refused.
 Implementation goals need no prior completion evidence. Requirement predecessors prove every acceptance criterion
-against evidence and run receipts: matching criterion hash, cited checks
+against formal evidence receipts: matching criterion hash, cited checks
 passed with all required checks passed, and code manifests rehashed
 against the worktree. Task predecessors need a done state with
 current valid receipt files, pinned as contract-plus-receipt hashes.

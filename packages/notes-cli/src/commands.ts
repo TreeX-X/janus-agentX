@@ -19,14 +19,21 @@ import {
   applyChangeSet,
   buildNoteIndex,
   noteUri,
+  readTaskResult,
   sha256HexBytes,
   type ApplyOpts,
+  type TaskResult,
 } from '@janus-agent/harness-node';
 
 export interface CliResult<T = unknown> {
   ok: boolean;
   data?: T;
   errors: Diagnostic[];
+}
+
+export async function cmdResult(root: string, ref: string, closeout = false): Promise<CliResult<TaskResult>> {
+  const data = await readTaskResult(root, ref, { closeout });
+  return { ok: data.errors.length === 0, data, errors: data.errors };
 }
 
 /** Fixed codes: 0 ok, 2 input, 3 conflict, 4 auth, 5 io/recovery, 6 capability. */

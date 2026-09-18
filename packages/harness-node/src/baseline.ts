@@ -14,9 +14,11 @@ import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   contentDigest,
+  canon,
   codeKey,
   criterionHash,
   evaluateReceipt,
+  receiptContentHash,
   taskContractHash,
   validateReceiptShape,
   type BaselineInput,
@@ -25,6 +27,9 @@ import {
   type Receipt,
 } from '@janus-agent/harness-core';
 import { buildNoteIndex, isWithin, noteUri, sha256HexBytes, type NoteIndex } from './repository.js';
+import { assertAssetPath, withAssetLock } from './transaction.js';
+import { TaskScope } from './task-scope.js';
+import { isGitRepo } from './git-evidence.js';
 
 function diag(code: Diagnostic['code'], message: string, path?: string): Diagnostic {
   return path === undefined ? { code, message } : { code, message, path };
@@ -83,14 +88,6 @@ async function readJsonFile(path: string): Promise<unknown | null> {
 async function listEvidenceReceipts(root: string): Promise<Receipt[]> {
   const out: Receipt[] = [];
   const dirs: string[] = [join(root, '.agents', 'evidence')];
-  try {
-    const runs = await readdir(join(root, '.agents', '.local', 'runs'), { withFileTypes: true });
-    for (const run of runs) {
-      if (run.isDirectory()) dirs.push(join(root, '.agents', '.local', 'runs', run.name, 'receipts'));
-    }
-  } catch {
-    // No local runs yet: the evidence directory alone decides coverage.
-  }
   for (const dir of dirs) {
     let files: string[] = [];
     try {
@@ -99,6 +96,7 @@ async function listEvidenceReceipts(root: string): Promise<Receipt[]> {
       continue;
     }
     for (const file of files) {
+      try { await assertAssetPath(root, `.agents/evidence/${file}`); } catch { continue; }
       const value = await readJsonFile(join(dir, file));
       if (validateReceiptShape(value).length === 0 && (value as Receipt).id === file.replace(/\.json$/, '')) out.push(value as Receipt);
     }
@@ -106,35 +104,15 @@ async function listEvidenceReceipts(root: string): Promise<Receipt[]> {
   return out;
 }
 
-/** Raw bytes of one receipt by id, evidence directory first, then run records. */
+/** Only formal evidence establishes portable completion. */
 async function findReceiptBytes(root: string, receiptId: string): Promise<{ bytes: Uint8Array; from: string } | null> {
   if (!RECEIPT_ID_RE.test(receiptId)) return null;
   const direct = join(root, '.agents', 'evidence', `${receiptId}.json`);
   try {
+    await assertAssetPath(root, `.agents/evidence/${receiptId}.json`);
     const bytes = await readFile(direct);
     return { bytes, from: `evidence/${receiptId}.json` };
-  } catch {
-    // Fall through to run records.
-  }
-  let runs: string[] = [];
-  try {
-    runs = (await readdir(join(root, '.agents', '.local', 'runs'), { withFileTypes: true }))
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort();
-  } catch {
-    return null;
-  }
-  for (const run of runs) {
-    const path = join(root, '.agents', '.local', 'runs', run, 'receipts', `${receiptId}.json`);
-    try {
-      const bytes = await readFile(path);
-      return { bytes, from: `runs/${run}/receipts/${receiptId}.json` };
-    } catch {
-      continue;
-    }
-  }
-  return null;
+  } catch { return null; }
 }
 
 export interface CoverageProof {
@@ -149,7 +127,7 @@ export interface CoverageProof {
  * with all required checks passed, and whose code manifest still matches
  * the worktree. Expensive on purpose: coverage is a proof, not a guess.
  */
-export async function proveRequirementCoverage(
+async function proveCoverage(
   root: string,
   repoId: string,
   uri: string,
@@ -180,8 +158,12 @@ export async function proveRequirementCoverage(
   return { covered: note.acs.length > 0 && uncovered.length === 0, uncovered, receipts: [...used].sort() };
 }
 
+export async function proveRequirementCoverage(root: string, repoId: string, uri: string, note: ParsedNote): Promise<CoverageProof> {
+  return withAssetLock(root, () => proveCoverage(root, repoId, uri, note));
+}
+
 /** Rebuild validity from the repository; receipt claims never supply live hashes. */
-async function receiptProblems(root: string, repoId: string, receipt: Receipt, ancestors: ReadonlySet<string>): Promise<Diagnostic[]> {
+export async function receiptProblems(root: string, repoId: string, receipt: Receipt, ancestors: ReadonlySet<string> = new Set()): Promise<Diagnostic[]> {
   const shape = validateReceiptShape(receipt);
   if (shape.length > 0) return shape;
   const index = await buildNoteIndex(root);
@@ -195,7 +177,10 @@ async function receiptProblems(root: string, repoId: string, receipt: Receipt, a
   const task = receipt.taskUri ? lookup(receipt.taskUri) : undefined;
   if (receipt.taskUri) {
     if (!task || task.meta.kind !== 'task' || !task.meta.work) return [diag('NOT_READY', 'receipt task is unresolved')];
+    if (task.meta.execution?.state !== 'done' || !task.meta.execution.receipts.includes(receipt.id)) return [diag('NOT_READY', 'receipt is not attached to a completed task')];
     if (task.meta.execution && (task.meta.execution.mode !== receipt.mode || task.meta.execution.attempt !== receipt.attempt)) return [diag('STALE_BASELINE', 'receipt differs from the recorded task mode or attempt')];
+    const inputsKey = (inputs: BaselineInput[]) => canon(inputs.map((row) => ({ ...row, ...(row.criteria ? { criteria: [...row.criteria].sort() } : {}) })).sort((a, b) => a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0));
+    if (task.meta.execution.baseline.taskContractHash !== receipt.taskContractHash || inputsKey(task.meta.execution.baseline.inputs) !== inputsKey(receipt.inputs)) return [diag('STALE_BASELINE', 'receipt differs from the recorded task baseline')];
     const base = await collectBaseline(root, receipt.taskUri, ancestors);
     if (!base.ok) return base.problems;
     contract = base.baseline.taskContractHash;
@@ -222,6 +207,14 @@ async function receiptProblems(root: string, repoId: string, receipt: Receipt, a
     if (note) criterionHashes.set(cov.uri, new Map(note.acs.map((ac) => [ac.id, criterionHash(`- [ ] ${ac.id}: ${ac.text}`)])));
   }
   const codeHashes = new Map<string, string | null>();
+  if (task?.meta.work && isGitRepo(root)) {
+    try {
+      const current = await new TaskScope(root, repoId, task.meta.work).manifest();
+      if (current.some((row) => !receipt.codeManifest.some((recorded) => codeKey(row.repoId, row.path) === codeKey(recorded.repoId, recorded.path)))) {
+        return [diag('STALE_BASELINE', 'task scope contains files absent from the tested manifest')];
+      }
+    } catch (error) { return [diag('CAPABILITY_UNAVAILABLE', (error as Error).message)]; }
+  }
   for (const row of receipt.codeManifest) {
     if (row.repoId !== repoId) return [diag('UNRESOLVED_REFERENCE', `receipt file belongs to another checkout: ${row.repoId}`)];
     const file = join(root, row.path);
@@ -267,7 +260,8 @@ const EXPECTED_KIND: Record<string, string[]> = {
 };
 
 export async function collectTaskBaseline(root: string, taskRef: string): Promise<BaselineResult> {
-  return collectBaseline(root, taskRef, new Set());
+  try { return await withAssetLock(root, () => collectBaseline(root, taskRef, new Set())); }
+  catch (error) { return { ok: false, problems: [diag((error as { code?: Diagnostic['code'] }).code ?? 'IO_ERROR', (error as Error).message)] }; }
 }
 
 async function collectBaseline(root: string, taskRef: string, ancestors: ReadonlySet<string>): Promise<BaselineResult> {
@@ -354,7 +348,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
     // Implementing a requirement does not require it to be implemented
     // already. A dependency does, even if another edge pinned it first.
     if (kind === 'requirement' && via === 'depends-on') {
-      const proof = await proveRequirementCoverage(root, repoId, target.uri, target.note, visiting);
+      const proof = await proveCoverage(root, repoId, target.uri, target.note, visiting);
       if (!proof.covered) {
         problems.push(diag('DEPENDENCY_UNSATISFIED', `requirement ${target.uri} has uncovered acceptance: ${proof.uncovered.join(', ') || 'no acceptance criteria'}`));
         return;
@@ -419,7 +413,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
         if (validateReceiptShape(receipt).length > 0 || receipt.id !== id || receipt.taskUri !== target.uri || receipt.mode !== execution.mode || receipt.attempt !== execution.attempt) continue;
         if ((await receiptProblems(root, repoId, receipt, visiting)).length > 0) continue;
         validReceipt = true;
-        dependencies.push({ uri: target.uri, contractHash: depContract, receiptHash: sha256HexBytes(found.bytes) });
+        dependencies.push({ uri: target.uri, contractHash: depContract, receiptHash: receiptContentHash(receipt) });
       }
       if (!validReceipt) {
         problems.push(diag('DEPENDENCY_UNSATISFIED', `predecessor has no current passing receipt: ${target.uri}`));

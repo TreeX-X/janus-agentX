@@ -85,7 +85,7 @@ function seed(root: string, opts: { evidence?: boolean } = {}): void {
     '  receipts: [rc-dep]', '  closeout: commit-required',
   ].join('\n')));
   const depPath = join(root, '.agents', 'notes', '2026-09-17-dep--44444444.md');
-  const depText = readFileSync(depPath, 'utf8').replace(`uri: ${REQ_URI}`, `uri: note://${REPO}/${DEP}`);
+  const depText = readFileSync(depPath, 'utf8').replace(`uri: ${REQ_URI}`, `uri: note://${REPO}/${DEP}`).replace("paths: ['./']", "paths: ['dependency/']");
   const depHash = taskContractHash(parseNote(depText));
   writeFileSync(depPath, depText.replace('a'.repeat(64), depHash));
   writeFileSync(join(root, '.agents', 'notes', '2026-09-17-main--55555555.md'), taskNote(MAIN, 'Main task', [
@@ -305,7 +305,7 @@ describe('harness mode shell', () => {
       expect(result.stderr).toEqual([]);
       expect(result.stdout.join('')).toContain('done; closeout remains separate');
       expect((await listRuns(root))[0].state).toBe('done');
-      expect((await c.control('closeout')).stdout.join('')).toContain('no reachable commit');
+      expect((await c.control('closeout')).stdout.join('')).toContain('no current-branch commit');
     } finally {
       await session?.close();
       rmSync(root, { recursive: true, force: true });

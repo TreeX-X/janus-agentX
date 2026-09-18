@@ -27,24 +27,33 @@ import {
   type LiveSnapshot,
 } from '../src/harness/dispatcher.js';
 import { readLease } from '../src/harness/run-store.js';
-import { codeManifestHash, type Receipt } from '@janus-agent/harness-core';
+import { codeManifestHash, criterionHash, parseNote, taskContractHash, type Receipt } from '@janus-agent/harness-core';
 
 const REPO = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
 const NOTE = '11111111-1111-4111-8111-111111111111';
 const TASK = `note://${REPO}/${NOTE}`;
-const CONTRACT = 'a'.repeat(64);
+const TASK_TEXT = ['---', 'schema: harness-note/1', `id: ${NOTE}`, 'kind: task', 'lifecycle: accepted', 'created: 2026-09-18',
+  'work:', `  scope: [{repoId: ${REPO}, paths: [src/]}]`, `  acceptanceRefs: [{uri: '${TASK}', criterionId: AC-1}]`,
+  `  verification: [{id: c1, kind: command, required: true, repoId: ${REPO}, cwd: '.', program: node, args: ['--test']}]`,
+  '---', '', '# Test task', '', '## Scope', '', 'Source.', '', '## Acceptance criteria', '', '- [ ] AC-1: source works', '', '## Verification', '', 'Run tests.', '',
+].join('\n');
+const CONTRACT = taskContractHash(parseNote(TASK_TEXT));
 const INPUT_HASH = 'b'.repeat(64);
-const CRITERION_HASH = 'c'.repeat(64);
+const CRITERION_HASH = criterionHash('- [ ] AC-1: source works');
 const CODE_HASH = 'd'.repeat(64);
 
 function root(): string {
-  return mkdtempSync(join(tmpdir(), 'harness-dispatch-'));
+  const dir = mkdtempSync(join(tmpdir(), 'harness-dispatch-'));
+  mkdirSync(join(dir, '.agents', 'notes'), { recursive: true });
+  writeFileSync(join(dir, '.agents', 'harness.json'), JSON.stringify({ repoId: REPO }));
+  writeFileSync(join(dir, '.agents', 'notes', 'task.md'), TASK_TEXT);
+  return dir;
 }
 
 function live(overrides: Partial<LiveSnapshot> = {}): LiveSnapshot {
   return {
     taskContractHash: CONTRACT,
-    inputHashes: [[TASK, INPUT_HASH]],
+    inputHashes: [],
     criterionHashes: [[TASK, [['AC-1', CRITERION_HASH]]]],
     codeHashes: [[`${REPO} src/a.ts`, CODE_HASH]],
     acceptanceRefs: [{ uri: TASK, criterionId: 'AC-1' }],
@@ -63,7 +72,7 @@ function receipt(overrides: Partial<Receipt> = {}): Receipt {
     mode: 'xdo',
     attempt: 1,
     taskContractHash: CONTRACT,
-    inputs: [{ uri: TASK, contentHash: INPUT_HASH }],
+    inputs: [],
     codeManifest: manifest,
     checks: [{
       id: 'c1', kind: 'command', required: true, status: 'passed',
@@ -79,11 +88,13 @@ function receipt(overrides: Partial<Receipt> = {}): Receipt {
 }
 
 async function dispatched(dir: string, mode: 'xdo' | 'xdel' | 'xflow' = 'xdo') {
+  // Independent kernel scenarios in one test reuse the initial task fixture.
+  writeFileSync(join(dir, '.agents', 'notes', 'task.md'), TASK_TEXT);
   const d = await dispatchRun(dir, {
     taskUri: TASK,
     mode,
     taskContractHash: CONTRACT,
-    inputs: [{ uri: TASK, contentHash: INPUT_HASH }],
+    inputs: [],
     closeout: 'commit-required',
   });
   expect(d.ok).toBe(true);
@@ -185,7 +196,7 @@ describe('harness dispatch kernel', () => {
     try {
       const d = await dispatchRun(dir, {
         taskUri: TASK, mode: 'xdo', taskContractHash: CONTRACT,
-        inputs: [{ uri: TASK, contentHash: INPUT_HASH }],
+        inputs: [],
         closeout: 'commit-required', maxAutoRepairs: 1,
       });
       const runId = d.data.runId;
@@ -273,11 +284,11 @@ describe('harness dispatch kernel', () => {
       expect(marked.run?.state).toBe('blocked');
       await pauseRun(dir, runId, token);
       const rebase = await rebaselineRun(dir, runId, token,
-        { taskContractHash: '9'.repeat(64), inputs: [{ uri: TASK, contentHash: INPUT_HASH }] },
+        { taskContractHash: CONTRACT, inputs: [] },
         { by: 'owner-1' });
       expect(rebase.ok).toBe(true);
       expect(rebase.run?.state).toBe('queued');
-      expect(rebase.run?.baseline.taskContractHash).toBe('9'.repeat(64));
+      expect(rebase.run?.baseline.taskContractHash).toBe(CONTRACT);
       expect(await readLease(dir, runId)).toBeNull();
       expect((await startRun(dir, runId, 'owner-1', AUTH)).ok).toBe(true);
       expect((await cancelRun(dir, runId, null)).ok).toBe(true);
@@ -315,7 +326,7 @@ describe('harness dispatch kernel', () => {
       const token = started.run!.lease!.token;
       await verifyRun(dir, id, token, receipt().codeManifest);
       expect((await recordReceipt(dir, id, token, receipt({ taskUri: undefined, taskContractHash: undefined }))).ok).toBe(false);
-      expect((await recordReceipt(dir, id, token, receipt({ inputs: [] }))).ok).toBe(false);
+      expect((await recordReceipt(dir, id, token, receipt({ inputs: [{ uri: TASK, contentHash: INPUT_HASH }] }))).ok).toBe(false);
       expect((await recordReceipt(dir, id, token, receipt())).ok).toBe(true);
       expect((await finishRun(dir, id, token, 'r1', live({ acceptanceRefs: [...live().acceptanceRefs, { uri: TASK, criterionId: 'AC-2' }] }))).ok).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -334,7 +345,7 @@ describe('harness dispatch kernel', () => {
       expect((await recordReceipt(dir, id, token, failed)).ok).toBe(true);
       const rewritten = await recordReceipt(dir, id, token, { ...failed, review: { ...failed.review, verdict: 'approved' } });
       expect(rewritten.errors.some((d) => d.code === 'CONFLICT')).toBe(true);
-      expect(JSON.parse(readFileSync(join(dir, '.agents', '.local', 'runs', id, 'receipts', 'r1.json'), 'utf8')).review.verdict).toBe('needs-fix');
+      expect(JSON.parse(readFileSync(join(dir, '.agents', 'evidence', 'r1.json'), 'utf8')).review.verdict).toBe('needs-fix');
       expect((await finishRun(dir, id, token, 'r1', live())).ok).toBe(false);
       expect((await closeoutRun(dir, id, { repoRoot: dir })).data.satisfied).toBe(false);
       expect((await repairRun(dir, id, token, { failureReceiptId: 'r1', summary: 'address the review', auto: true })).ok).toBe(true);
@@ -361,7 +372,7 @@ describe('harness dispatch kernel', () => {
       mkdirSync(join(dir, 'src'));
       writeFileSync(join(dir, 'src', 'a.ts'), 'verified bytes');
       const hash = sha256HexBytes(readFileSync(join(dir, 'src', 'a.ts')));
-      const d = await dispatchRun(dir, { taskUri: TASK, mode: 'xdo', taskContractHash: CONTRACT, inputs: [{ uri: TASK, contentHash: INPUT_HASH }], closeout: 'working-tree-authorized', authorizationRef: 'user-request' });
+      const d = await dispatchRun(dir, { taskUri: TASK, mode: 'xdo', taskContractHash: CONTRACT, inputs: [], closeout: 'working-tree-authorized', authorizationRef: 'user-request' });
       const started = await startRun(dir, d.data.runId, 'owner-1', AUTH);
       const token = started.run!.lease!.token;
       const good = receipt({ codeManifest: [{ repoId: REPO, path: 'src/a.ts', sha256: hash }] });
@@ -393,8 +404,8 @@ describe.runIf(gitAvailable(tmpdir()))('harness closeout on git', () => {
   }
 
   it('lands commit-required closeout on the landing commit', async () => {
-    const dir = root();
     const repo = repoWithContract();
+    const dir = repo.dir;
     try {
       const runId = await dispatched(dir);
       await startRun(dir, runId, 'owner-1', AUTH);
@@ -407,10 +418,12 @@ describe.runIf(gitAvailable(tmpdir()))('harness closeout on git', () => {
       await finishRun(dir, runId, token, 'r1', live({
         codeHashes: [[`${REPO} src/a.ts`, sha]],
       }));
+      git(dir, 'add', '.agents/notes', '.agents/evidence');
+      git(dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--no-gpg-sign', '-m', 'land task and evidence');
       const out = await closeoutRun(dir, runId, { repoRoot: repo.dir });
       expect(out.ok).toBe(true);
       expect(out.data.satisfied).toBe(true);
-      expect(out.data.commit).toBe(repo.commit);
+      expect(out.data.commit).toBe(git(dir, 'rev-parse', 'HEAD').trim());
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(repo.dir, { recursive: true, force: true });
@@ -451,12 +464,12 @@ describe.runIf(gitAvailable(tmpdir()))('harness closeout on git', () => {
   });
 
   it('gates working-tree closeout on authorization', async () => {
-    const dir = root();
     const repo = repoWithContract();
+    const dir = repo.dir;
     try {
       const d = await dispatchRun(dir, {
         taskUri: TASK, mode: 'xdo', taskContractHash: CONTRACT,
-        inputs: [{ uri: TASK, contentHash: INPUT_HASH }],
+        inputs: [],
         closeout: 'working-tree-authorized', authorizationRef: 'user-said-so',
       });
       await startRun(dir, d.data.runId, 'owner-1', AUTH);

@@ -5,10 +5,10 @@
  * edits belong to the file repository (S3); this module only guarantees
  * parse -> serialize -> parse stability.
  */
-import { Document, isMap } from 'yaml';
+import { Document, isMap, isScalar, parseDocument } from 'yaml';
 import type { ParsedNode } from 'yaml';
-import { sliceSections } from './parse.js';
-import type { ParsedNote } from './schema.js';
+import { parseNote, sliceSections, splitFrontmatter } from './parse.js';
+import type { ParsedNote, TaskExecution } from './schema.js';
 
 export function normalizeEol(text: string, eol: '\n' | '\r\n'): string {
   return eol === '\r\n' ? text.replace(/\r?\n/g, '\r\n') : text.replace(/\r\n/g, '\n');
@@ -60,4 +60,28 @@ export function serializeNote(note: ParsedNote): string {
 export function contractSections(note: ParsedNote): Record<string, string> {
   const bodyLf = note.body.replace(/\r\n/g, '\n');
   return sliceSections(bodyLf, ['Scope', 'Acceptance criteria', 'Verification']);
+}
+
+/** Change only the execution pair, preserving other YAML and all body bytes. */
+export function patchTaskExecution(raw: string, execution: TaskExecution): string {
+  const note = parseNote(raw);
+  if (note.meta.kind !== 'task') throw Object.assign(new Error('execution belongs to a task'), { code: 'SCHEMA_INVALID' });
+  const { fmText, eol } = splitFrontmatter(raw);
+  const doc = parseDocument(fmText);
+  if (!isMap(doc.contents) || doc.contents.flow) throw Object.assign(new Error('execution update needs block frontmatter'), { code: 'SCHEMA_INVALID' });
+  const pair = doc.contents.items.find((item) => isScalar(item.key) && item.key.value === 'execution');
+  const replacement = String(new Document({ execution })).trimEnd();
+  let next: string;
+  if (pair) {
+    const start = (pair.key as ParsedNode).range?.[0];
+    const end = (pair.value as ParsedNode | null)?.range?.[2];
+    if (start === undefined || end === undefined) throw Object.assign(new Error('execution source range unavailable'), { code: 'SCHEMA_INVALID' });
+    next = fmText.slice(0, start) + replacement + '\n' + fmText.slice(end);
+  } else {
+    next = fmText + (fmText.endsWith('\n') ? '' : '\n') + replacement;
+  }
+  // The source splitter normalizes its copy. Offsets in the original remain byte-stable.
+  const openEnd = raw.indexOf('\n') + 1;
+  const originalFmLength = normalizeEol(fmText, eol).length;
+  return raw.slice(0, openEnd) + normalizeEol(next.replace(/\n$/, ''), eol) + raw.slice(openEnd + originalFmLength);
 }

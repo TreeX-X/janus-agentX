@@ -17,8 +17,7 @@ and drift on the first conflict.
 `packages/janus-agent/src/harness/` owns run records from dispatch to
 closeout. `run-store.ts` keeps local-only records under
 `.agents/.local/runs/<runId>/`: state, attempt, lease, baseline, repair
-budget and packets, receipts, takeovers, and closeout strategy. Writes
-are atomic temp-file renames; leases use exclusive creation and never
+budget and packets, receipt references, takeovers, and closeout strategy. Formal receipts and task execution use the [portable asset transaction](2026-09-18-harness-portable-results.md); leases use exclusive creation and never
 auto-expire. `dispatcher.ts` runs every op through the shared `checkOp`
 table and returns diagnostics instead of throwing for contract
 violations. Start claims the lease before checking premises and releases
@@ -29,8 +28,7 @@ budget (default one); authorized manual repairs do not. Takeover is
 explicit, recorded, and also covers paused runs, because a lost lease
 file must not strand a run that only needs a re-claim. Cancel and
 terminal states release the lease. Closeout proves landing through the
-Git primitives: the newest commit carrying the contract hash inside the
-receipt paths must match the receipt manifest byte for byte, and dirty
+Git primitives: a HEAD-reachable tree must contain the task contract, receipt and matching code manifest, and drifted
 worktrees fail closed; working-tree strategy needs an authorization
 reference plus a matching tree. `handoff.md` carries ids, hashes, budget,
 and the local-only lease token with the rules for coming back, and
@@ -71,8 +69,7 @@ promises no CLI syntax.
   workspace.
 - **Costs and limits**: no model, shell, CLI, or UI wiring — runners call
   this kernel and bring their own live snapshots. Run records are
-  best-effort atomic renames without a journal; they rebuild from task
-  notes plus receipts and never substitute note truth. Closeout verifies
-  the newest touching commit only and assumes the single-write-repo
+  local coordination records written alongside formal assets by the shared journal. Historical results rebuild from task
+  notes plus receipts and never grant local execution ownership. Closeout examines current-branch candidates and assumes the single-write-repo
   contract; multi-repo work coordinates through multiple runs. Revisit
   when the CLI adapter, the built-in runner, or persistent threads land.

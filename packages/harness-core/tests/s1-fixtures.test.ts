@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { parseNote, validateNote } from '../src/index.js';
+import { parseNote, receiptContentHash, validateNote, validateReceiptShape } from '../src/index.js';
 
 const GIT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const STD = join(GIT, 'WorkFlowX', 'standards', 'harness-note', '1');
@@ -11,6 +11,16 @@ const PRESENT = existsSync(join(STD, 'manifest.json'));
 
 describe.runIf(PRESENT)('S1 fixture reuse', () => {
   const manifest = JSON.parse(readFileSync(join(STD, 'manifest.json'), 'utf8'));
+  it('pins portable receipt identity while preserving string and array semantics', () => {
+    const fixture = JSON.parse(readFileSync(join(STD, 'fixtures', 'receipt-content-hash.json'), 'utf8'));
+    expect(validateReceiptShape(fixture.receipt)).toEqual([]);
+    expect(receiptContentHash(fixture.receipt)).toBe(fixture.expectedHash);
+    const reversed = Object.fromEntries(Object.entries(fixture.receipt).reverse());
+    expect(receiptContentHash(JSON.parse(JSON.stringify(reversed, null, 2).replace(/\n/g, '\r\n')))).toBe(fixture.expectedHash);
+    const changed = structuredClone(fixture.receipt);
+    changed.checks[0].summary = changed.checks[0].summary.replace('[x]', '[ ]');
+    expect(receiptContentHash(changed)).not.toBe(fixture.expectedHash);
+  });
   it('manifest lists files that exist', () => {
     for (const f of manifest.files as string[]) {
       expect(existsSync(join(STD, f)), f).toBe(true);

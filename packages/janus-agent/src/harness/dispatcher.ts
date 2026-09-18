@@ -12,6 +12,7 @@
 import {
   checkOp,
   evaluateReceipt,
+  receiptContentHash,
   nextAttempt,
   validateReceiptShape,
   HEX64_RE,
@@ -29,10 +30,7 @@ import {
   type ValidityContext,
 } from '@janus-agent/harness-core';
 import {
-  findTouchingCommits,
-  showAt,
-  sha256HexBytes,
-  worktreeMatches,
+  readTaskResult,
 } from '@janus-agent/harness-node';
 import {
   acquireLease,
@@ -43,7 +41,6 @@ import {
   readLease,
   releaseLease,
   saveRun,
-  storeReceipt,
   storeRepairPacket,
   writeHandoff,
   RunStoreError,
@@ -77,6 +74,8 @@ function storeError(e: unknown, run: HarnessRun | null): Diagnostic[] {
       : e.code === 'BAD_ID' ? 'SCHEMA_INVALID' : e.code === 'CONFLICT' ? 'CONFLICT' : 'IO_ERROR';
     return [diag(code as Diagnostic['code'], e.message)];
   }
+  const code = (e as { code?: Diagnostic['code'] }).code;
+  if (code && ['NOT_FOUND', 'NOT_READY', 'BUSY', 'CONFLICT', 'STALE_BASELINE', 'RECOVERY_REQUIRED', 'SCHEMA_INVALID', 'PERMISSION_DENIED'].includes(code)) return [diag(code, (e as Error).message)];
   return [diag('IO_ERROR', `run store failed: ${(e as Error).message}`)];
 }
 
@@ -224,7 +223,8 @@ async function withRun<T>(
   } catch (e) {
     return fail(null, storeError(e, null), undefined as T);
   }
-  return op(run);
+  try { return await op(run); }
+  catch (error) { return fail(run, storeError(error, run), undefined as T); }
 }
 
 function leaseMismatch(run: HarnessRun, token: string): Diagnostic[] {
@@ -254,7 +254,7 @@ export async function startRun(
       authorized: preconditions.authorization !== null,
     });
     if (problems.length > 0) {
-      await releaseLease(root, runId);
+      await releaseLease(root, runId, claim.lease.token);
       return fail(run, problems, { attempt: run.attempt });
     }
     run.lease = claim.lease;
@@ -265,7 +265,7 @@ export async function startRun(
       await saveRun(root, run);
       return pass(run, { attempt: run.attempt });
     } catch (e) {
-      await releaseLease(root, runId);
+      await releaseLease(root, runId, claim.lease.token);
       return fail(run, storeError(e, run), { attempt: run.attempt });
     }
   });
@@ -300,6 +300,13 @@ export async function recordReceipt(
   receipt: Receipt,
 ): Promise<OpResult<{ receiptId: string }>> {
   return withRun(root, runId, async (run) => {
+    const shape = validateReceiptShape(receipt);
+    if (shape.length) return fail(run, shape, { receiptId: '' });
+    if (run.receipts.includes(receipt.id)) {
+      const stored = await loadReceipt(root, runId, receipt.id);
+      return receiptContentHash(stored) === receiptContentHash(receipt) ? pass(run, { receiptId: receipt.id })
+        : fail(run, [diag('CONFLICT', `receipt ${receipt.id} already exists with different content`)], { receiptId: '' });
+    }
     const leaseProblems = leaseMismatch(run, token);
     if (leaseProblems.length > 0) return fail(run, leaseProblems, { receiptId: '' });
     const problems = validateReceiptShape(receipt);
@@ -321,14 +328,9 @@ export async function recordReceipt(
       problems.push(diag('STALE_BASELINE', `receipt attempt ${receipt.attempt} is not the live attempt ${run.attempt}`, 'attempt'));
     }
     if (problems.length > 0) return fail(run, problems, { receiptId: '' });
-    try {
-      await storeReceipt(root, runId, receipt);
-    } catch (e) {
-      return fail(run, storeError(e, run), { receiptId: '' });
-    }
     if (!run.receipts.includes(receipt.id)) run.receipts.push(receipt.id);
     try {
-      await saveRun(root, run);
+      await saveRun(root, run, receipt);
       return pass(run, { receiptId: receipt.id });
     } catch (e) {
       return fail(run, storeError(e, run), { receiptId: '' });
@@ -344,6 +346,10 @@ export async function finishRun(
   live: LiveSnapshot,
 ): Promise<OpResult<{ receiptId: string }>> {
   return withRun(root, runId, async (run) => {
+    if (run.state === 'done' && run.completedReceiptId === receiptId) {
+      const result = await readTaskResult(root, run.taskUri, { receiptId });
+      return result.validity === 'valid' ? pass(run, { receiptId }) : fail(run, result.errors, { receiptId });
+    }
     const leaseProblems = leaseMismatch(run, token);
     if (leaseProblems.length > 0) return fail(run, leaseProblems, { receiptId });
     let receipt: Receipt;
@@ -371,7 +377,6 @@ export async function finishRun(
     } catch (e) {
       return fail(run, storeError(e, run), { receiptId });
     }
-    await releaseLease(root, runId);
     return pass(run, { receiptId });
   });
 }
@@ -489,7 +494,6 @@ export async function rebaselineRun(
     if (authorization?.ref && !run.authorizationRef) run.authorizationRef = authorization.ref;
     try {
       await saveRun(root, run);
-      await releaseLease(root, runId);
       return pass(run, undefined);
     } catch (e) {
       return fail(run, storeError(e, run), undefined);
@@ -512,7 +516,6 @@ export async function cancelRun(root: string, runId: string, token: string | nul
     } catch (e) {
       return fail(run, storeError(e, run), undefined);
     }
-    await releaseLease(root, runId);
     return pass(run, undefined);
   });
 }
@@ -553,7 +556,7 @@ export async function takeoverRun(
     }
     if (!reason.trim()) return fail(run, [diag('SCHEMA_INVALID', 'takeover needs a reason', 'reason')], { token: '' });
     const from = run.lease ? run.lease.owner : 'none';
-    await releaseLease(root, runId);
+    await releaseLease(root, runId, run.lease?.token);
     const claim = await acquireLease(root, runId, newOwner).catch((e: unknown) => ({ acquired: false as const, holder: null, error: e }));
     if (!claim.acquired) {
       return fail(run, [diag('BUSY', 'lost the lease race during takeover; retry explicitly', 'lease')], { token: '' });
@@ -571,100 +574,17 @@ export async function takeoverRun(
 
 export async function closeoutRun(root: string, runId: string, check: CloseoutCheck): Promise<OpResult<CloseoutReport>> {
   return withRun<CloseoutReport>(root, runId, async (run) => {
-    if (run.state !== 'done') {
+    if (run.state !== 'done' || !run.completedReceiptId) {
       return fail(run, [diag('NOT_READY', 'closeout requires a successfully verified run', 'state')], {
         strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'run has not completed verification',
       });
     }
-    const latestId = run.completedReceiptId;
-    if (!latestId) {
-      return fail(run, [diag('NOT_READY', 'closeout needs at least one receipt', 'receipts')], {
-        strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'no receipt recorded',
-      });
-    }
-    let receipt;
-    try {
-      receipt = await loadReceipt(root, runId, latestId);
-    } catch (e) {
-      return fail(run, storeError(e, run), {
-        strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'receipt unreadable',
-      });
-    }
-    const manifest = receipt.codeManifest.map((row) => ({
-      repoPath: row.path,
-      ...(row.sha256 ? { sha256: row.sha256 } : {}),
-      ...(row.deleted ? { deleted: true as const } : {}),
-    }));
-    if (manifest.length < 1) {
-      return fail(run, [diag('NOT_READY', 'receipt carries no code manifest to land', 'codeManifest')], {
-        strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'empty manifest',
-      });
-    }
-    const tree = await worktreeMatches(check.repoRoot, manifest);
-    if (run.closeout === 'working-tree-authorized') {
-      if (!run.authorizationRef) {
-        return fail(run, [diag('APPROVAL_REQUIRED', 'working-tree closeout needs an authorization reference', 'authorizationRef')], {
-          strategy: run.closeout, satisfied: false, worktreeMatches: tree.ok, detail: 'missing authorization',
-        });
-      }
-      return pass(run, {
-        strategy: run.closeout,
-        satisfied: tree.ok,
-        worktreeMatches: tree.ok,
-        detail: tree.ok ? 'worktree matches the receipt manifest under explicit authorization'
-          : `worktree drifted: ${tree.mismatched.join(', ')}`,
-      });
-    }
-    if (!tree.ok) {
-      return pass(run, {
-        strategy: run.closeout,
-        satisfied: false,
-        worktreeMatches: false,
-        detail: `worktree drifted since the receipt: ${tree.mismatched.join(', ')}`,
-      });
-    }
-    const paths = manifest.map((row) => row.repoPath);
-    const candidates = findTouchingCommits(check.repoRoot, run.baseline.taskContractHash, paths);
-    if (candidates.length < 1) {
-      return pass(run, {
-        strategy: run.closeout,
-        satisfied: false,
-        worktreeMatches: true,
-        detail: 'no reachable commit carries the contract hash in the receipt paths',
-      });
-    }
-    const commit = candidates[0];
-    for (const row of manifest) {
-      const at = showAt(check.repoRoot, commit, row.repoPath);
-      if (row.deleted) {
-        if (at !== null) {
-          return pass(run, {
-            strategy: run.closeout, satisfied: false, worktreeMatches: true,
-            detail: `${commit.slice(0, 12)} still carries supposedly deleted ${row.repoPath}`,
-          });
-        }
-        continue;
-      }
-      if (at === null || !row.sha256) {
-        return pass(run, {
-          strategy: run.closeout, satisfied: false, worktreeMatches: true,
-          detail: `${commit.slice(0, 12)} misses manifest row ${row.repoPath}`,
-        });
-      }
-      if (sha256HexBytes(Buffer.from(at, 'utf8')) !== row.sha256) {
-        return pass(run, {
-          strategy: run.closeout, satisfied: false, worktreeMatches: true,
-          detail: `${commit.slice(0, 12)} content differs for ${row.repoPath}`,
-        });
-      }
-    }
-    return pass(run, {
-      strategy: run.closeout,
-      satisfied: true,
-      commit,
-      worktreeMatches: true,
-      detail: `${commit.slice(0, 12)} carries the contract hash with matching manifest content`,
+    const result = await readTaskResult(check.repoRoot, run.taskUri, { closeout: true, receiptId: run.completedReceiptId });
+    if (!result.validReceipts.includes(run.completedReceiptId)) return pass(run, {
+      strategy: run.closeout, satisfied: false, worktreeMatches: false,
+      detail: result.errors.map((error) => error.message).join('; ') || 'the completed receipt is not currently valid',
     });
+    return pass(run, result.closeout ?? { strategy: run.closeout, satisfied: false, worktreeMatches: false, detail: 'formal result is unavailable' });
   });
 }
 

@@ -8,6 +8,7 @@ export * from './repository.js';
 export * from './baseline.js';
 export * from './task-snapshot.js';
 export * from './task-scope.js';
+export * from './task-result.js';
 export * from './resolver.js';
 export * from './journal.js';
 export * from './transaction.js';

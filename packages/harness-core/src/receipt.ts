@@ -18,6 +18,13 @@ export function codeKey(repoId: string, path: string): string {
   return `${repoId} ${path}`;
 }
 
+/** JSON layout and object key order are transport details; values and array order are evidence. */
+export function receiptContentHash(receipt: Receipt): string {
+  const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted)
+    : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, sorted(item)])) : value;
+  return sha256Hex(JSON.stringify(sorted(JSON.parse(JSON.stringify(receipt)))));
+}
+
 export interface ReceiptCheck {
   id: string;
   kind: 'command' | 'manual';

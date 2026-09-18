@@ -4,7 +4,7 @@
  * classifies every touched file as before/after/neither and only resumes
  * when nothing foreign appeared. Readers publish only fully settled scans.
  */
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { sha256HexBytes } from './repository.js';
 
@@ -35,9 +35,15 @@ export interface CommittedOps {
   results: Array<{ operationId: string; status: string; relPath?: string }>;
 }
 
+async function writeFlushed(path: string, bytes: Uint8Array | string): Promise<void> {
+  const handle = await open(path, 'w');
+  try { await handle.writeFile(bytes); await handle.sync(); }
+  finally { await handle.close(); }
+}
+
 export async function writeJournal(root: string, journal: Journal): Promise<void> {
   await mkdir(txDir(root, journal.id), { recursive: true });
-  await writeFile(join(txDir(root, journal.id), 'journal.json'), JSON.stringify(journal, null, 2), 'utf8');
+  await writeFlushed(join(txDir(root, journal.id), 'journal.json'), JSON.stringify(journal, null, 2));
 }
 
 export async function readJournal(root: string, txId: string): Promise<Journal | null> {
@@ -50,7 +56,7 @@ export async function readJournal(root: string, txId: string): Promise<Journal |
 
 export async function writeTxFile(root: string, txId: string, name: string, bytes: Uint8Array | string): Promise<void> {
   await mkdir(txDir(root, txId), { recursive: true });
-  await writeFile(join(txDir(root, txId), name), bytes);
+  await writeFlushed(join(txDir(root, txId), name), bytes);
 }
 
 export async function readTxFile(root: string, txId: string, name: string): Promise<Uint8Array | null> {

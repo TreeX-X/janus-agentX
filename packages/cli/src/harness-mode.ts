@@ -9,6 +9,7 @@ import { hostname, userInfo } from 'node:os';
 import {
   buildNoteIndex,
   collectTaskBaseline,
+  readTaskResult,
 } from '@janus-agent/harness-node';
 import {
   cancelRun,
@@ -125,6 +126,11 @@ export class HarnessController {
     if (mode !== 'xdo' && mode !== 'xdel' && mode !== 'xflow') {
       return { stdout: [], stderr: [`janus: unknown harness mode "${mode}" (xdo|xdel|xflow).`] };
     }
+    const portable = await readTaskResult(root, ref);
+    if (portable.execution && TERMINAL_RUN.has(portable.execution.state)) {
+      return { stdout: [`task ${portable.taskUri}: ${portable.execution.state}; evidence ${portable.validity}; closeout ${portable.execution.closeout}`,
+        `wfx-notes result ${portable.taskUri} --closeout`], stderr: pretty(portable.errors) };
+    }
     const collected = await collectTaskBaseline(root, ref).catch((e: unknown) => ({
       ok: false as const,
       problems: [{ code: 'IO_ERROR' as const, message: String(e) }],
@@ -193,6 +199,7 @@ export class HarnessController {
       return { stdout: [], stderr: ['janus: run record is gone; left harness mode.'] };
     }
     const lease = await readLease(root, runId);
+    const result = await readTaskResult(root, run.taskUri);
     return {
       stdout: [
         `run ${run.runId.slice(0, 8)} · ${run.state} · attempt ${run.attempt} · ${run.mode}`,
@@ -200,6 +207,7 @@ export class HarnessController {
         `contract ${run.baseline.taskContractHash.slice(0, 12)}… · ${run.baseline.inputs.length} pinned inputs`,
         `repair budget ${run.repairBudget.usedAuto}/${run.repairBudget.maxAuto} · receipts ${run.receipts.length} · closeout ${run.closeout}`,
         `lease ${lease ? `${lease.owner} since ${lease.since}` : '(none)'}`,
+        `evidence ${result.validity}`,
       ],
       stderr: [],
     };
@@ -338,7 +346,7 @@ export class HarnessController {
       if (!note) return [`task ${taskUri}`];
       const lines = [`task: ${note.title} [${note.meta.kind}/${note.meta.lifecycle}]`];
       if (note.acs.length > 0) {
-        lines.push(`acceptance: ${note.acs.map((ac) => `${ac.id}${ac.checked ? ' (done)' : ''}`).join(', ')}`);
+        lines.push(`acceptance: ${note.acs.map((ac) => ac.id).join(', ')}`);
       }
       const scope = note.meta.work?.scope ?? [];
       if (scope.length > 0) {

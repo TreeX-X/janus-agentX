@@ -2,8 +2,8 @@
 /**
  * @file Harness run store (S8 slice 8a).
  * @description Local-only run records under `.agents/.local/runs/<runId>/`:
- *  run state, owner leases, receipts, repair packets, and handoff files.
- *  Run snapshots use atomic temp-file renames; receipts and leases use exclusive creation so two
+ *  run state, owner leases, repair packets, and handoff files.
+ *  Task execution and formal receipts share the asset journal with run snapshots. Leases use exclusive creation so two
  *  owners never hold one run. Leases never auto-expire: a dead owner needs
  *  an explicit, recorded takeover. Records are best-effort and rebuildable
  *  from task notes plus receipts; they never substitute the note truth.
@@ -17,6 +17,8 @@ import type {
   HarnessMode,
 } from '@janus-agent/harness-core';
 import type { Receipt } from '@janus-agent/harness-core';
+import { parseNote, patchTaskExecution, receiptContentHash, taskContractHash, validateNote, validateReceiptShape, type TaskExecution } from '@janus-agent/harness-core';
+import { assertAssetPath, buildNoteIndex, commitAssetFiles, sha256HexBytes, withAssetLock, type CrashInject } from '@janus-agent/harness-node';
 
 export interface RunLease {
   owner: string;
@@ -69,6 +71,9 @@ export interface HarnessRun {
   blocker?: { code: string; summary: string };
   createdAt: string;
   updatedAt: string;
+  revision?: number;
+  /** File hash captured when loading the task, for compare-and-swap writes. */
+  noteHash?: string;
 }
 
 export class RunStoreError extends Error {
@@ -102,11 +107,6 @@ function leaseFile(root: string, runId: string): string {
   return join(runDir(root, runId), 'lease.json');
 }
 
-function receiptFile(root: string, runId: string, receiptId: string): string {
-  assertRunId(receiptId, 'receipt');
-  return join(runDir(root, runId), 'receipts', `${receiptId}.json`);
-}
-
 export function handoffFile(root: string, runId: string): string {
   return join(runDir(root, runId), 'handoff.md');
 }
@@ -138,12 +138,75 @@ export function newLeaseToken(): string {
   return randomUUID();
 }
 
-export async function saveRun(root: string, run: HarnessRun): Promise<void> {
-  run.updatedAt = nowIso();
-  await writeAtomic(runFile(root, run.runId), JSON.stringify(run, null, 2));
+export function runExecution(run: HarnessRun): TaskExecution {
+  return { mode: run.mode, state: run.state, baseline: run.baseline, attempt: run.attempt,
+    receipts: run.receipts, closeout: run.closeout,
+    ...(run.blocker ? { blocker: run.blocker } : {}),
+    ...(run.authorizationRef ? { authorizationRef: run.authorizationRef } : {}) };
 }
 
-export async function loadRun(root: string, runId: string): Promise<HarnessRun> {  assertRunId(runId, 'run');
+async function taskEntry(root: string, taskUri: string) {
+  const index = await buildNoteIndex(root);
+  const entry = index.byId.get(taskUri.split('/').pop()!);
+  if (!taskUri.startsWith(`note://${index.repoId}/`) || !entry?.note || entry.note.meta.kind !== 'task') throw Object.assign(new Error(`task not found: ${taskUri}`), { code: 'NOT_FOUND' });
+  if (index.diagnostics.length || entry.diagnostics.length) throw Object.assign(new Error('task repository has invalid identity or task metadata'), { code: 'SCHEMA_INVALID' });
+  await assertAssetPath(root, entry.relPath);
+  return entry as typeof entry & { note: NonNullable<typeof entry.note> };
+}
+
+// Note: Note, receipt and local cache commit together - see .agents/notes/implemented/architecture/2026-09-18-harness-portable-results.md
+export async function saveRun(root: string, run: HarnessRun, receipt?: Receipt, inject?: CrashInject): Promise<void> {
+  await withAssetLock(root, async () => {
+    const localPath = `.agents/.local/runs/${run.runId}/run.json`;
+    assertRunId(run.runId, 'run');
+    await assertAssetPath(root, localPath);
+    let previousBytes: Buffer | null = null;
+    try { previousBytes = await readFile(join(root, localPath)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const previous = previousBytes ? JSON.parse(previousBytes.toString('utf8')) as HarnessRun : undefined;
+    if ((previous?.revision ?? 0) !== (run.revision ?? 0) || (!previous && run.revision)) throw Object.assign(new Error('run changed; reload before retrying'), { code: 'CONFLICT' });
+    const expectedLease = run.lease ?? previous?.lease;
+    if (expectedLease && (await readLease(root, run.runId))?.token !== expectedLease.token) throw Object.assign(new Error('lease changed during operation'), { code: 'BUSY' });
+    const entry = await taskEntry(root, run.taskUri);
+    if (run.noteHash && entry.sha256 !== run.noteHash) throw Object.assign(new Error('task changed during operation'), { code: 'CONFLICT' });
+    if (!previous && entry.note.meta.execution) throw Object.assign(new Error('task already has execution; reattach its owner or inspect its portable result'), { code: 'NOT_READY' });
+    if (previous && JSON.stringify(entry.note.meta.execution) !== JSON.stringify(runExecution(previous))) throw Object.assign(new Error('task execution differs from the local run; explicit recovery required'), { code: 'CONFLICT' });
+    if (entry.note.meta.lifecycle !== 'accepted') throw Object.assign(new Error('execution requires an accepted task'), { code: 'NOT_READY' });
+    if (!['paused', 'blocked', 'cancelled'].includes(run.state) && taskContractHash(entry.note) !== run.baseline.taskContractHash) throw Object.assign(new Error('task contract changed'), { code: 'STALE_BASELINE' });
+    const text = await readFile(join(root, entry.relPath), 'utf8');
+    if (sha256HexBytes(Buffer.from(text)) !== entry.sha256) throw Object.assign(new Error('task changed while reading'), { code: 'CONFLICT' });
+    const after = patchTaskExecution(text, runExecution(run));
+    const parsed = parseNote(after);
+    if (validateNote(parsed).length || taskContractHash(parsed) !== taskContractHash(entry.note)) throw Object.assign(new Error('execution update changed or invalidated the contract'), { code: 'SCHEMA_INVALID' });
+    const files: Array<{ path: string; before: string | null; after: string | null }> = [];
+    for (const id of run.receipts) {
+      assertRunId(id, 'receipt');
+      const path = `.agents/evidence/${id}.json`;
+      await assertAssetPath(root, path);
+      let bytes: string | null = null;
+      try { bytes = await readFile(join(root, path), 'utf8'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      if (receipt?.id === id) {
+        if (validateReceiptShape(receipt).length) throw Object.assign(new Error('invalid receipt'), { code: 'SCHEMA_INVALID' });
+        const expected = JSON.stringify(receipt, null, 2);
+        if (bytes !== null && receiptContentHash(JSON.parse(bytes)) !== receiptContentHash(receipt)) throw new RunStoreError('CONFLICT', `receipt ${id} already exists with different content`);
+        if (bytes === null) files.push({ path, before: null, after: expected });
+      } else if (bytes === null) throw Object.assign(new Error(`formal receipt missing: ${id}`), { code: 'RECOVERY_REQUIRED' });
+    }
+    const next = { ...run, revision: (run.revision ?? 0) + 1, updatedAt: nowIso(), noteHash: sha256HexBytes(Buffer.from(after)) };
+    files.push({ path: entry.relPath, before: entry.sha256, after });
+    files.push({ path: localPath, before: previousBytes ? sha256HexBytes(previousBytes) : null, after: JSON.stringify(next, null, 2) });
+    if (!run.lease && previous?.lease) {
+      const leaseBytes = await readFile(leaseFile(root, run.runId));
+      files.push({ path: `.agents/.local/runs/${run.runId}/lease.json`, before: sha256HexBytes(leaseBytes), after: null });
+    }
+    await commitAssetFiles(root, files, inject);
+    Object.assign(run, next);
+  });
+}
+
+async function readRun(root: string, runId: string): Promise<HarnessRun> {
+  assertRunId(runId, 'run');
   let raw: string;
   try {
     raw = await readFile(runFile(root, runId), 'utf8');
@@ -160,6 +223,16 @@ export async function loadRun(root: string, runId: string): Promise<HarnessRun> 
     if (e instanceof RunStoreError) throw e;
     throw new RunStoreError('CORRUPT', `run record unreadable: ${runId}`);
   }
+}
+
+export async function loadRun(root: string, runId: string): Promise<HarnessRun> {
+  return withAssetLock(root, async () => {
+    const run = await readRun(root, runId);
+    const entry = await taskEntry(root, run.taskUri);
+    if (JSON.stringify(entry.note.meta.execution) !== JSON.stringify(runExecution(run))) throw Object.assign(new Error('task execution differs from the local run'), { code: 'CONFLICT' });
+    run.noteHash = entry.sha256;
+    return run;
+  });
 }
 
 /** Every readable run record, newest first. Unreadable entries are skipped, never fatal. */
@@ -189,6 +262,10 @@ export async function acquireLease(
   runId: string,
   owner: string,
 ): Promise<{ acquired: true; lease: RunLease } | { acquired: false; holder: RunLease | null }> {
+  return withAssetLock(root, () => claimLease(root, runId, owner));
+}
+
+async function claimLease(root: string, runId: string, owner: string): Promise<{ acquired: true; lease: RunLease } | { acquired: false; holder: RunLease | null }> {
   const path = leaseFile(root, runId);
   const lease: RunLease = { owner, token: newLeaseToken(), since: nowIso() };
   try {
@@ -216,31 +293,22 @@ export async function readLease(root: string, runId: string): Promise<RunLease |
   }
 }
 
-export async function releaseLease(root: string, runId: string): Promise<void> {
-  try {
-    await unlink(leaseFile(root, runId));
-  } catch {
-    // Already released: releasing is idempotent.
-  }
-}
-
-export async function storeReceipt(root: string, runId: string, receipt: Receipt): Promise<void> {
-  const path = receiptFile(root, runId, receipt.id);
-  const bytes = JSON.stringify(receipt, null, 2);
-  await mkdir(dirname(path), { recursive: true });
-  try {
-    await writeFile(path, bytes, { flag: 'wx', encoding: 'utf8' });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    // Same request is retryable; an existing id never authorizes new evidence.
-    if (await readFile(path, 'utf8') !== bytes) throw new RunStoreError('CONFLICT', `receipt ${receipt.id} already exists with different content`);
-  }
+export async function releaseLease(root: string, runId: string, expectedToken?: string): Promise<void> {
+  await withAssetLock(root, async () => {
+    if (expectedToken && (await readLease(root, runId))?.token !== expectedToken) return;
+    try { await unlink(leaseFile(root, runId)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  });
 }
 
 export async function loadReceipt(root: string, runId: string, receiptId: string): Promise<Receipt> {
   assertRunId(receiptId, 'receipt');
   try {
-    return JSON.parse(await readFile(receiptFile(root, runId, receiptId), 'utf8')) as Receipt;
+    const path = `.agents/evidence/${receiptId}.json`;
+    await assertAssetPath(root, path);
+    const receipt = JSON.parse(await readFile(join(root, path), 'utf8')) as Receipt;
+    if (receipt.id !== receiptId || validateReceiptShape(receipt).length) throw new Error('invalid formal receipt');
+    return receipt;
   } catch {
     throw new RunStoreError('NOT_FOUND', `unknown receipt ${receiptId} on run ${runId}`);
   }

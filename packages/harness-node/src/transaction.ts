@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
   parseNote,
@@ -41,6 +41,61 @@ import {
   type CommittedOps,
   type Journal,
 } from './journal.js';
+
+// Note: execution assets use the same recoverable writer - see .agents/notes/implemented/architecture/2026-09-18-harness-portable-results.md
+export async function withAssetLock<T>(root: string, action: () => Promise<T>): Promise<T> {
+  await assertAssetPath(root, '.agents/.local/runs/.path-check');
+  const mine = await acquireLock(root);
+  try {
+    const recovery = await recoverPending(root);
+    if (recovery.blocked.length) throw Object.assign(new Error(recovery.blocked.map((item) => item.reason).join('; ')), { code: 'RECOVERY_REQUIRED' });
+    return await action();
+  } finally { await releaseLock(root, mine); }
+}
+
+/** Host-owned paths only. Refuse link traversal before reads, writes and recovery. */
+export async function assertAssetPath(root: string, relPath: string): Promise<void> {
+  if (!/^\.agents\/(?:notes\/|evidence\/|\.local\/runs\/)/.test(relPath) || relPath.split('/').some((part) => !part || part === '.' || part === '..' || /[\\:]/.test(part))) {
+    throw Object.assign(new Error(`invalid asset path: ${relPath}`), { code: 'PERMISSION_DENIED' });
+  }
+  let path = resolve(root);
+  const parts = relPath.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    path = join(path, parts[i]);
+    try {
+      const st = await lstat(path);
+      if (st.isSymbolicLink() || (i < parts.length - 1 ? !st.isDirectory() : !st.isFile() || st.nlink > 1)) {
+        throw Object.assign(new Error(`linked or non-regular asset: ${relPath}`), { code: 'PERMISSION_DENIED' });
+      }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+}
+
+/** Caller holds the asset lock. The existing journal also recovers these writes. */
+export async function commitAssetFiles(root: string, files: Array<{ path: string; before: string | null; after: string | null }>, inject?: CrashInject): Promise<void> {
+  const id = randomUUID();
+  const journal: Journal = { id, changeSetId: id, revision: 1, requestDigest: '', files: [] };
+  for (const [i, file] of files.entries()) {
+    await assertAssetPath(root, file.path);
+    if (await currentHash(root, file.path) !== file.before) throw Object.assign(new Error(`asset changed: ${file.path}`), { code: 'CONFLICT' });
+    const afterHash = file.after === null ? null : sha256HexBytes(Buffer.from(file.after));
+    if (afterHash === file.before) continue;
+    await mkdir(dirname(resolve(root, file.path)), { recursive: true });
+    journal.files.push({ operationId: String(i), relPath: file.path, existed: file.before !== null, beforeHash: file.before,
+      afterHash, snapName: null, tmpName: `${i}.after` });
+    if (file.after !== null) await writeTxFile(root, id, `${i}.after`, file.after);
+  }
+  await writeJournal(root, journal);
+  if (inject?.failAfter === 'journal' || inject?.failAfter === 'temp') throw crash('asset journal');
+  for (const [i, row] of journal.files.entries()) {
+    await assertAssetPath(root, row.relPath);
+    if (await currentHash(root, row.relPath) !== row.beforeHash) throw Object.assign(new Error(`asset changed: ${row.relPath}`), { code: 'CONFLICT' });
+    if (row.afterHash === null) await rm(resolve(root, row.relPath), { force: true });
+    else await finalizeRename(root, id, row.tmpName, row.relPath);
+    if (inject?.failAfter === i) throw crash(`asset ${i}`);
+  }
+  await markCommitted(root, id, { committed: true, results: journal.files.map((file) => ({ operationId: file.operationId, status: 'applied', relPath: file.relPath })) });
+}
 
 function diag(code: Diagnostic['code'], message: string, path?: string): Diagnostic {
   return path === undefined ? { code, message } : { code, message, path };
@@ -125,6 +180,7 @@ export async function recoverPending(root: string): Promise<RecoverReport> {
     if (!journal) continue; // Crashed before any note byte could move.
     const classes = new Map<string, 'before' | 'after' | 'neither'>();
     for (const row of journal.files) {
+      await assertAssetPath(root, row.relPath);
       classes.set(row.relPath, classifyFile(await currentHash(root, row.relPath), row));
     }
     const values = [...classes.values()];
@@ -156,6 +212,8 @@ export async function recoverPending(root: string): Promise<RecoverReport> {
       continue;
     }
     for (const row of needApply) {
+      await assertAssetPath(root, row.relPath);
+      if (classifyFile(await currentHash(root, row.relPath), row) === 'neither') throw Object.assign(new Error('asset changed during recovery'), { code: 'RECOVERY_REQUIRED' });
       if (row.afterHash === null) {
         await rm(resolve(root, row.relPath), { force: true });
       } else {

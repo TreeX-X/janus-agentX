@@ -6,7 +6,7 @@
  */
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { cmdApply, cmdCheck, cmdCreate, cmdList, cmdShow, exitFor, type CliResult, type CreateInput } from './commands.js';
+import { cmdApply, cmdCheck, cmdCreate, cmdList, cmdResult, cmdShow, exitFor, type CliResult, type CreateInput } from './commands.js';
 
 export interface RunOut {
   exit: number;
@@ -19,6 +19,7 @@ function usage(): string {
     'wfx-notes [--root <dir>] [--json] <command> [args]',
     '  list [--kind K] [--lifecycle L] [--tag T] [--q TEXT]',
     '  show <id|uri|path>',
+    '  result <id|uri|path> [--closeout]',
     '  create --kind K --title T --body-file F [--lifecycle L] [--class C] [--tags a,b]',
     '  check',
     '  apply <changeset.json> [--only op1,op2] [--allow-delete]',
@@ -68,6 +69,10 @@ export async function run(rawArgv: string[], cwd: string): Promise<RunOut> {
       case 'show': {
         if (!rest[0]) return { exit: 2, stdout: json ? JSON.stringify({ ok: false, data: null, errors: [{ code: 'SCHEMA_INVALID', message: 'show needs a ref' }] }) + '\n' : usage() + '\n', stderr: '' };
         return emit(await cmdShow(root, rest[0]));
+      }
+      case 'result': {
+        if (!rest[0] || rest[0].startsWith('--')) return emit({ ok: false, errors: [{ code: 'SCHEMA_INVALID', message: 'result needs a task ref' }] });
+        return emit(await cmdResult(root, rest[0], rest.includes('--closeout')));
       }
       case 'create': {
         const a = [...rest];

@@ -46,8 +46,8 @@ export async function worktreeMatches(repoRoot: string, manifest: ManifestEntry[
       try {
         await readFile(resolve(repoRoot, row.repoPath));
         mismatched.push(row.repoPath);
-      } catch {
-        // Still deleted: matches.
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') mismatched.push(row.repoPath);
       }
       continue;
     }
@@ -68,7 +68,7 @@ export async function worktreeMatches(repoRoot: string, manifest: ManifestEntry[
  */
 export function findTouchingCommits(repoRoot: string, needle: string, paths: string[]): string[] {
   if (!needle || paths.length === 0) return [];
-  const r = runGit(repoRoot, ['log', '--all', '--format=%H', `-S${needle}`, '--', ...paths]);
+  const r = runGit(repoRoot, ['log', '--format=%H', `-S${needle}`, 'HEAD', '--', ...paths]);
   if (!r.ok) return [];
   return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
 }
@@ -77,4 +77,23 @@ export function findTouchingCommits(repoRoot: string, needle: string, paths: str
 export function showAt(repoRoot: string, sha: string, repoPath: string): string | null {
   const r = runGit(repoRoot, ['show', `${sha}:${repoPath}`]);
   return r.ok ? r.stdout : null;
+}
+
+export function landingCandidates(root: string, paths: string[]): string[] {
+  const head = runGit(root, ['rev-parse', '--verify', 'HEAD']);
+  if (!head.ok) return [];
+  const history = runGit(root, ['log', '--format=%H', 'HEAD', '--', ...paths]);
+  if (!history.ok) return [];
+  return [...new Set([head.stdout.trim(), ...history.stdout.trim().split('\n')].filter(Boolean))];
+}
+
+/** Distinguish an absent Git entry from failed reads; binary bytes stay intact. */
+export function gitFileAt(root: string, commit: string, path: string): { ok: true; bytes: Buffer | null } | { ok: false } {
+  const tree = runGit(root, ['ls-tree', '-z', commit, '--', path]);
+  if (!tree.ok) return { ok: false };
+  if (!tree.stdout) return { ok: true, bytes: null };
+  const entry = /^(100644|100755) blob ([a-f0-9]+)\t/.exec(tree.stdout);
+  if (!entry) return { ok: false };
+  const result = spawnSync('git', ['cat-file', 'blob', entry[2]], { cwd: root, timeout: 30000, maxBuffer: 64 * 1024 * 1024 });
+  return result.status === 0 && !result.error ? { ok: true, bytes: result.stdout } : { ok: false };
 }
