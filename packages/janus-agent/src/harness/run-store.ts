@@ -9,7 +9,7 @@
  *  from task notes plus receipts; they never substitute the note truth.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   BaselineInput,
@@ -364,4 +364,40 @@ export async function writeHandoff(root: string, run: HarnessRun): Promise<strin
   const path = handoffFile(root, run.runId);
   await writeAtomic(path, buildHandoffMarkdown(run));
   return path;
+}
+
+export interface LaunchRecord {
+  providerId: string;
+  program: string;
+  args: string[];
+  pid: number | null;
+  by: string;
+  at: string;
+}
+
+function launchesFile(root: string, runId: string): string {
+  return join(runDir(root, runId), 'launches.jsonl');
+}
+
+/**
+ * External launch history: every spawned process for a run, newest last.
+ * Local-only, never shared. The record never proves completion: process
+ * exit is an event, and only files plus the shared kernel decide evidence.
+ */
+export async function recordLaunch(root: string, runId: string, record: LaunchRecord): Promise<void> {
+  assertRunId(runId, 'run');
+  await mkdir(dirname(launchesFile(root, runId)), { recursive: true });
+  await appendFile(launchesFile(root, runId), `${JSON.stringify(record)}\n`, 'utf8');
+}
+
+export async function readLaunches(root: string, runId: string): Promise<LaunchRecord[]> {
+  assertRunId(runId, 'run');
+  let text: string;
+  try {
+    text = await readFile(launchesFile(root, runId), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new RunStoreError('IO_ERROR', `read failed for launches of ${runId}: ${(error as Error).message}`);
+  }
+  return text.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line) as LaunchRecord);
 }

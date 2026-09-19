@@ -97,6 +97,8 @@ export function commandHelpText(): string {
     '                          Run controls inside harness mode.',
     '  /harness verify|repair <reason>|rebaseline|closeout',
     '                          Verify evidence, repair, or check closeout.',
+    '  /harness launch --provider <id> -- <program> [args...]',
+    '                          Launch an external runner, or show the entry command.',
     '  /exit                 Leave janus (leaves harness mode first).',
       'Keys: Enter send · ↑/↓ input history · Shift+←→/↑↓/Home/End select text · Ctrl+A select all · Ctrl+C copy selection (else non-empty input clears first and keeps the turn; empty cancels the turn; twice within 1s exit) · Ctrl+X cut · Ctrl+V paste · Esc clear selection / cancel turn · Ctrl+D exit · Ctrl+T thinking · Ctrl+O tool output · Ctrl+E todos · PgUp/PgDn scroll · Ctrl+Home/End top/bottom · Ctrl+↑/↓ step.',
     '      Mouse: drag inside the input to select text; release copies without borders or prompts. Wheel scrolls history. For native terminal selection (including output), use the terminal Shift+drag override where supported, or start with JANUS_NO_MOUSE=1 / JANUS_MOUSE=0 (tmux capture needs `set -g mouse on`).',

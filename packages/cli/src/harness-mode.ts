@@ -31,6 +31,7 @@ import {
   type TaskTurnContext,
   type TaskVerificationPorts,
 } from '@janus-agent/janus-agent';
+import { launchExternalRun, type SpawnFn } from './external-runner.js';
 import type { CommandOutcome } from './tui/exec.js';
 
 export interface HarnessHost {
@@ -299,6 +300,20 @@ export class HarnessController {
     } catch (error) { return { stdout: [], stderr: [String(error)] }; }
   }
 
+  async launchExternal(providerId: string, program: string | undefined, args: string[], opts?: { spawn?: SpawnFn }): Promise<CommandOutcome> {
+    const bound = this.requireBinding();
+    if (!bound.ok) return bound;
+    try {
+      const launched = await launchExternalRun(bound.run.root, bound.run.runId, {
+        by: this.owner, providerId, ...(program ? { program, args } : {}),
+      }, opts);
+      if (!launched.launched) {
+        return { stdout: ['external entry (copy into a terminal):', ...(launched.entry ? [launched.entry] : [])], stderr: [] };
+      }
+      return { stdout: [`launched ${program} (pid ${launched.pid ?? 'unknown'}) for run ${bound.run.runId.slice(0, 8)}.`, 'process exit is an event only; evidence lands as files.'], stderr: [] };
+    } catch (error) { return { stdout: [], stderr: [String(error)] }; }
+  }
+
   async cancel(): Promise<CommandOutcome> {
     const bound = this.requireBinding();
     if (!bound.ok) return bound;
@@ -397,6 +412,13 @@ export function createHarnessHost(controller: HarnessController, execution?: {
       if (first === 'start' || first === 'resume' || first === 'rebaseline' || first === 'repair' || first === 'closeout') return controller.control(first, rest.join(' '));
       if (first === 'verify') return execution ? controller.verify(execution.ports, execution.signal()) : { stdout: [], stderr: ['CAPABILITY_UNAVAILABLE: no task execution host'] };
       if (first === 'cancel') return controller.cancel();
+      if (first === 'launch') {
+        const launchArgs = [...rest];
+        const providerId = takeFlag(launchArgs, '--provider') ?? 'external';
+        const dash = launchArgs.indexOf('--');
+        const command = dash >= 0 ? launchArgs.slice(dash + 1) : [];
+        return controller.launchExternal(providerId, command[0], command.slice(1));
+      }
       if (first === 'takeover') return controller.takeover(rest.join(' '));
       if (first === 'exit') return { stdout: controller.exitMode(), stderr: [] };
       if (first === 'enter' || !first.startsWith('-')) {
