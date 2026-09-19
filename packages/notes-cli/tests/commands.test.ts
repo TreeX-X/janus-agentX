@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /** CLI command surface over tmp repos: create/list/show/check/apply. */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ function makeRepo(): string {
   mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
   writeFileSync(
     join(root, '.agents', 'harness.json'),
-    JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 't', profile: { id: 'workflowx', version: '1.0.0-s1', digest: 'x' } }),
+    JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 't', profile: SUPPORTED_HARNESS_PROFILE }),
   );
   return root;
 }
@@ -25,6 +26,13 @@ const REQ_SECTIONS = {
 };
 
 describe('commands', () => {
+  it('reports foreign working notes without making check fail', async () => {
+    const root = makeRepo();
+    writeFileSync(join(root, '.agents/notes/working.md'), '# Agent Note: History\n\nStatus: implemented\n');
+    expect(await cmdCheck(root)).toMatchObject({ ok: true, errors: [], data: { rows: [{ foreign: true, diagnostics: [] }] } });
+    writeFileSync(join(root, '.agents/notes/future.md'), '---\nschema: harness-note/2\n---\n# Future\n');
+    expect((await cmdCheck(root)).errors.some((e) => e.code === 'UNSUPPORTED_SCHEMA')).toBe(true);
+  });
   it('creates, lists, shows, and checks a requirement', async () => {
     const root = makeRepo();
     const created = await cmdCreate(root, { kind: 'requirement', title: 'T', sections: REQ_SECTIONS, lifecycle: 'proposed' });
@@ -98,7 +106,7 @@ describe('commands', () => {
   it('flags broken files with exit 2', async () => {
     const root = makeRepo();
     mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
-    writeFileSync(join(root, '.agents', 'notes', 'bad.md'), 'no frontmatter\n');
+    writeFileSync(join(root, '.agents', 'notes', 'bad.md'), '---\nschema: harness-note/1\n---\n# Broken');
     const checked = await cmdCheck(root);
     expect(checked.ok).toBe(false);
     expect(exitFor(checked.errors)).toBe(2);

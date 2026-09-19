@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /**
  * `janus notes`: same operations as wfx-notes over the same command
  * functions; only argv parsing and the envelope live here. Temp
@@ -43,7 +44,7 @@ function checkout(): string {
   mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
   writeFileSync(
     join(root, '.agents', 'harness.json'),
-    JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'T' }),
+    JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'T', profile: SUPPORTED_HARNESS_PROFILE }),
   );
   writeFileSync(join(root, '.agents', 'notes', '2026-09-17-fast--11111111.md'), IDEA_MD);
   return root;

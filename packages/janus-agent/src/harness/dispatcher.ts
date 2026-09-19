@@ -75,7 +75,7 @@ function storeError(e: unknown, run: HarnessRun | null): Diagnostic[] {
     return [diag(code as Diagnostic['code'], e.message)];
   }
   const code = (e as { code?: Diagnostic['code'] }).code;
-  if (code && ['NOT_FOUND', 'NOT_READY', 'BUSY', 'CONFLICT', 'STALE_BASELINE', 'RECOVERY_REQUIRED', 'SCHEMA_INVALID', 'PERMISSION_DENIED'].includes(code)) return [diag(code, (e as Error).message)];
+  if (code && ['NOT_FOUND', 'NOT_READY', 'BUSY', 'CONFLICT', 'STALE_BASELINE', 'RECOVERY_REQUIRED', 'SCHEMA_INVALID', 'UNSUPPORTED_SCHEMA', 'PERMISSION_DENIED'].includes(code)) return [diag(code, (e as Error).message)];
   return [diag('IO_ERROR', `run store failed: ${(e as Error).message}`)];
 }
 

@@ -12,6 +12,7 @@ async function collectSnapshot(root: string, taskRef: string) {
   const base = await collectTaskBaseline(root, taskRef);
   if (!base.ok) return { ok: false as const, errors: base.problems };
   const index = await buildNoteIndex(root);
+  if (index.diagnostics.length) return { ok: false as const, errors: index.diagnostics };
   const task = index.byId.get(base.baseline.taskUri.split('/').pop()!)?.note;
   const fail = (code: Diagnostic['code'], message: string) => ({ ok: false as const, errors: [{ code, message }] });
   if (!task?.meta.work) return fail('NOT_READY', 'task work contract is missing');

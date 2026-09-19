@@ -15,7 +15,7 @@ landed.
 
 `.agents/harness.json` carries `schemaVersion: 1`, a stable repo id,
 the name janus-agentX, and a profile pinning the consumed standard
-`1.0.0-s1` with the manifest digest (SHA-256 over LF-normalized manifest
+`1.0.0-s1.1` with the manifest digest (SHA-256 over LF-normalized manifest
 bytes of the WorkFlowX bundle). The repo id is a fresh UUID: ordinary
 clones keep it, renames and moves never change it, and a fork that joins
 the same blueprint graph mints a new one while recording its source.
@@ -42,10 +42,9 @@ an identity from this side.
   evidence addressing. Verification: read-only rescan reports
   `repoId=62b44166-82f0-41ff-838d-e2b02388ed06` with 45 scanned entries;
   `npm run typecheck --workspace=@janus-agent/harness-node` passes.
-- **Costs and limits**: all 45 existing notes report `SCHEMA_INVALID`
-  under the new schema because they use the old note format; the graph
-  projection shows them as invalid until the S9 migration, which is
-  expected and not data loss. The profile digest must be re-pinned
-  whenever the consumed standard revs. Sibling checkouts carry their own
-  identities from their own commits. Revisit when handoff files start
-  recording repo addresses.
+- **Costs and limits**: historical working Notes stay foreign under the
+  [shared namespace and profile gate](2026-09-19-harness-profile-namespace.md),
+  without migration or invalid diagnostics. Managed writes and execution
+  require the exact supported standard version and digest. The pin must
+  move with tested consumer support whenever the standard changes; sibling
+  checkouts retain their own repository identities.

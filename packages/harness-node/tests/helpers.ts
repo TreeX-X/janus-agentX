@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '../src/profile.js';
 /** Tmp-repo helper shared by harness-node suites (not a test itself). */
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +11,7 @@ export function makeRepo(): string {
   mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
   writeFileSync(
     join(root, '.agents', 'harness.json'),
-    JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 't', profile: { id: 'workflowx', version: '1.0.0-s1', digest: 'x' } }),
+    JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 't', profile: SUPPORTED_HARNESS_PROFILE }),
   );
   return root;
 }

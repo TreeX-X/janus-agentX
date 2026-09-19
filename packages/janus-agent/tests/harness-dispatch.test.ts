@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /**
  * Harness dispatch kernel: run records, leases, transitions, repair budget,
  * receipts, handoff, and closeout. Temp dirs only; the git closeout block
@@ -45,7 +46,7 @@ const CODE_HASH = 'd'.repeat(64);
 function root(): string {
   const dir = mkdtempSync(join(tmpdir(), 'harness-dispatch-'));
   mkdirSync(join(dir, '.agents', 'notes'), { recursive: true });
-  writeFileSync(join(dir, '.agents', 'harness.json'), JSON.stringify({ repoId: REPO }));
+  writeFileSync(join(dir, '.agents', 'harness.json'), JSON.stringify({ name: 'Test', schemaVersion: 1, repoId: REPO, profile: SUPPORTED_HARNESS_PROFILE }));
   writeFileSync(join(dir, '.agents', 'notes', 'task.md'), TASK_TEXT);
   return dir;
 }
@@ -104,6 +105,21 @@ async function dispatched(dir: string, mode: 'xdo' | 'xdel' | 'xflow' = 'xdo') {
 const AUTH = { baselineValid: true, dependenciesReady: true, authorization: { by: 'owner-1' } };
 
 describe('harness dispatch kernel', () => {
+  it('preserves profile diagnostics and leaves queued assets unchanged', async () => {
+    const dir = root();
+    try {
+      const runId = await dispatched(dir);
+      const path = join(dir, '.agents/notes/task.md');
+      const before = readFileSync(path, 'utf8');
+      writeFileSync(join(dir, '.agents/harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'Test', profile: { ...SUPPORTED_HARNESS_PROFILE, version: '2.0.0' } }));
+      const result = await startRun(dir, runId, 'owner-1', AUTH);
+      expect(result.ok).toBe(false);
+      expect(result.errors[0].code).toBe('UNSUPPORTED_SCHEMA');
+      expect(readFileSync(path, 'utf8')).toBe(before);
+      expect(await readLease(dir, runId)).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('rejects bad dispatch input without writing a run', async () => {
     const dir = root();
     try {

@@ -276,6 +276,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
     return { ok: false, problems: [diag('NOT_READY', 'init .agents/harness.json with a repoId first')] };
   }
   const repoId = index.repoId;
+  if (index.diagnostics.length) return { ok: false, problems: index.diagnostics };
   const uriOf = (id: string): string => noteUri(repoId, id);
   if (taskRef.startsWith('note://') && !taskRef.startsWith(`note://${repoId}/`)) {
     return { ok: false, problems: [diag('UNRESOLVED_REFERENCE', `task belongs to another checkout: ${taskRef}`)] };

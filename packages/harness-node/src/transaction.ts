@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { assertWritableHarness, readHarnessIdentity } from './profile.js';
 import {
   parseNote,
   validateChangeSet,
@@ -73,6 +74,7 @@ export async function assertAssetPath(root: string, relPath: string): Promise<vo
 
 /** Caller holds the asset lock. The existing journal also recovers these writes. */
 export async function commitAssetFiles(root: string, files: Array<{ path: string; before: string | null; after: string | null }>, inject?: CrashInject): Promise<void> {
+  await assertWritableHarness(root);
   const id = randomUUID();
   const journal: Journal = { id, changeSetId: id, revision: 1, requestDigest: '', files: [] };
   for (const [i, file] of files.entries()) {
@@ -169,8 +171,13 @@ export interface RecoverReport {
 /** Resume or park every unfinished transaction. Never invents after-bytes. */
 export async function recoverPending(root: string): Promise<RecoverReport> {
   const report: RecoverReport = { resumed: [], completed: [], blocked: [] };
+  const identity = await readHarnessIdentity(root);
   for (const txId of await listPendingTx(root)) {
     if (await readCommitted(root, txId)) continue;
+    if (identity.diagnostics.length) {
+      report.blocked.push({ txId, reason: identity.diagnostics[0].message });
+      continue;
+    }
     const marker = await isRecoveryRequired(root, txId);
     if (marker !== null) {
       report.blocked.push({ txId, reason: marker });
@@ -336,6 +343,8 @@ async function applyLocked(
   txId: string,
   opts: ApplyOpts,
 ): Promise<ApplyReport> {
+  const identity = await readHarnessIdentity(root);
+  if (identity.diagnostics.length) return { ok: false, txId, results: [], errors: identity.diagnostics };
   const recovery = await recoverPending(root);
   if (recovery.blocked.length > 0) {
     return {
@@ -384,6 +393,7 @@ async function applyLocked(
     planned = cs.operations.filter((o) => keep.has(o.operationId));
   }
   const index: NoteIndex = await buildNoteIndex(root);
+  if (index.diagnostics.length) return { ok: false, txId, results: [], errors: index.diagnostics };
   const taken = new Set(index.entries.map((e) => e.relPath.toLowerCase()));
   // Plan + validate every operation before touching bytes.
   for (const op of planned) {

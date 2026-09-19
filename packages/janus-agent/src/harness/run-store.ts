@@ -147,9 +147,10 @@ export function runExecution(run: HarnessRun): TaskExecution {
 
 async function taskEntry(root: string, taskUri: string) {
   const index = await buildNoteIndex(root);
+  if (index.diagnostics.length) throw Object.assign(new Error(index.diagnostics[0]!.message), index.diagnostics[0]);
   const entry = index.byId.get(taskUri.split('/').pop()!);
   if (!taskUri.startsWith(`note://${index.repoId}/`) || !entry?.note || entry.note.meta.kind !== 'task') throw Object.assign(new Error(`task not found: ${taskUri}`), { code: 'NOT_FOUND' });
-  if (index.diagnostics.length || entry.diagnostics.length) throw Object.assign(new Error('task repository has invalid identity or task metadata'), { code: 'SCHEMA_INVALID' });
+  if (entry.diagnostics.length) throw Object.assign(new Error(entry.diagnostics[0]!.message), entry.diagnostics[0]);
   await assertAssetPath(root, entry.relPath);
   return entry as typeof entry & { note: NonNullable<typeof entry.note> };
 }

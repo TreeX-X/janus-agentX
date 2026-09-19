@@ -349,8 +349,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   >(null)
   const exitRef = useRef(onExit)
   const harnessHost = useMemo(() => createInkHarnessHost({
-    workspaceRoot: () => sessionRef.current.getWorkspaceRoot(),
-    ports: (actor) => sessionRef.current.taskVerificationPorts(actor),
+    session: () => sessionRef.current,
     signal: () => {
       const current = controllerRef.current?.signal;
       return current && !current.aborted ? current : undefined;
@@ -510,14 +509,15 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     controllerRef.current = controller
     let completed = false
     try {
-      const result = await current.sendTurn(
+      const result = await harnessHost.executeTurn((task) => current.sendTurn(
         prompt,
         {
           onEvent: ({ event }) => dispatchStreamEvent(event as ChatAgentEvent),
           onDisplayEvent: (event) => dispatch(event),
         },
         controller.signal,
-      )
+        task,
+      ), controller.signal)
       flushStreamBatch()
       dispatch({ type: 'turn-done', cancelled: result.cancelled, assistantText: result.text })
       completed = !result.cancelled && !controller.signal.aborted
@@ -553,7 +553,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
         }
       }
     }
-  }, [refreshContext, dispatchStreamEvent, flushStreamBatch])
+  }, [refreshContext, dispatchStreamEvent, flushStreamBatch, harnessHost])
 
   const runCommand = useCallback(async (command: string, args: string[]): Promise<void> => {
     // /connect always opens the visual setup panel (the roster + wizard);

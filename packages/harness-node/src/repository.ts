@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { parseNote, validateNote, type Diagnostic, type ParsedNote } from '@janus-agent/harness-core';
+import { claimsHarnessSchema, readHarnessIdentity } from './profile.js';
 
 export const NOTES_DIR = join('.agents', 'notes');
 export const LOCAL_DIR = join('.agents', '.local');
@@ -95,6 +96,7 @@ export interface IndexEntry {
   sha256: string;
   note?: ParsedNote;
   diagnostics: Diagnostic[];
+  foreign?: boolean;
 }
 
 export interface NoteIndex {
@@ -109,14 +111,9 @@ export async function buildNoteIndex(root: string): Promise<NoteIndex> {
   const diagnostics: Diagnostic[] = [];
   const { files, diagnostics: scanDiags } = await listNoteFiles(root);
   diagnostics.push(...scanDiags);
-  let repoId: string | null = null;
-  try {
-    const harnessRaw = await readFile(resolve(root, '.agents', 'harness.json'), 'utf8');
-    const harness = JSON.parse(harnessRaw) as { repoId?: unknown };
-    if (typeof harness.repoId === 'string') repoId = harness.repoId;
-  } catch {
-    repoId = null;
-  }
+  const identity = await readHarnessIdentity(root);
+  const repoId = identity.repoId;
+  diagnostics.push(...identity.diagnostics);
   const entries: IndexEntry[] = [];
   for (const f of files) {
     let read: ReadNote;
@@ -125,6 +122,10 @@ export async function buildNoteIndex(root: string): Promise<NoteIndex> {
     } catch {
       const entry: IndexEntry = { relPath: f.relPath, sha256: '', diagnostics: [diag('IO_ERROR', `unreadable: ${f.relPath}`, f.relPath)] };
       entries.push(entry);
+      continue;
+    }
+    if (!claimsHarnessSchema(read.text)) {
+      entries.push({ relPath: f.relPath, sha256: read.sha256, diagnostics: [], foreign: true });
       continue;
     }
     try {

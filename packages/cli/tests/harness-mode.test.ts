@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /**
  * TUI harness mode shell: enter/status/reattach/pause/cancel/takeover/exit
  * against the real dispatch kernel. Temp checkouts only, no model.
@@ -76,7 +77,7 @@ function taskNote(id: string, title: string, relations: string, execution = ''):
 function seed(root: string, opts: { evidence?: boolean } = {}): void {
   const { evidence = true } = opts;
   mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
-  writeFileSync(join(root, '.agents', 'harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'T' }));
+  writeFileSync(join(root, '.agents', 'harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'T', profile: SUPPORTED_HARNESS_PROFILE }));
   writeFileSync(join(root, '.agents', 'notes', '2026-09-17-req--11111111.md'), requirement());
   writeFileSync(join(root, '.agents', 'notes', '2026-09-17-dec--33333333.md'), decision());
   writeFileSync(join(root, '.agents', 'notes', '2026-09-17-dep--44444444.md'), taskNote(DEP, 'Dep task', '', [

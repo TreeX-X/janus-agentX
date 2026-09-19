@@ -1,9 +1,10 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /**
  * Ink harness host: the task-bound controller behind the Ink loop.
  * Real CliSession over memory store; failing command plus stub review.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -32,14 +33,14 @@ function textStub(): StreamFn {
   })) as StreamFn;
 }
 
-async function openSession(workspace: string): Promise<CliSession> {
+async function openSession(workspace: string, streamTextFn = textStub()): Promise<CliSession> {
   const session = await CliSession.create({
     workspace,
     model: 'm',
     apiKey: 'k',
     store: memoryConversationStore(),
     catalog: parseCatalog({ providers: [{ id: 'a', models: ['m', 'm2'] }] }),
-    streamTextFn: textStub(),
+    streamTextFn,
     env: {} as NodeJS.ProcessEnv,
   });
   if (isSessionValidationError(session)) throw new Error(session.message);
@@ -49,13 +50,71 @@ async function openSession(workspace: string): Promise<CliSession> {
 function seed(root: string): void {
   mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
   mkdirSync(join(root, 'src'), { recursive: true });
-  writeFileSync(join(root, '.agents', 'harness.json'), JSON.stringify({ repoId: REPO }));
+  writeFileSync(join(root, '.agents', 'harness.json'), JSON.stringify({ name: 'Test', schemaVersion: 1, repoId: REPO, profile: SUPPORTED_HARNESS_PROFILE }));
   writeFileSync(join(root, '.agents', 'notes', 'task.md'), TASK_TEXT);
   writeFileSync(join(root, 'src', 'file.txt'), 'initial');
   execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
 }
 
 describe('ink harness host', () => {
+  it('routes chat into task history and refuses paused turns before calling the model', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ink-harness-turn-'));
+    let session: CliSession | undefined;
+    const prompts: string[] = [];
+    try {
+      seed(root);
+      session = await openSession(root, async (options) => {
+        prompts.push(JSON.stringify(options.messages));
+        return { textStream: (async function* () { yield 'report only' })() };
+      });
+      const live = session;
+      const host = createInkHarnessHost({ session: () => live, signal: () => undefined, owner: 'tester' });
+      const send = (prompt: string) => host.executeTurn((task) => live.sendTurn(prompt, {}, undefined, task));
+      await send('ordinary secret');
+      expect((await host.run([TASK])).stderr).toEqual([]);
+      await send('task request');
+      expect(prompts[1]).toContain('Task-bound execution');
+      expect(prompts[1]).not.toContain('ordinary secret');
+      await host.run(['pause']);
+      await expect(send('must not run')).rejects.toThrow('task is paused');
+      expect(prompts).toHaveLength(2);
+      await host.run(['resume']);
+      await host.executeTurn(async () => ({ cancelled: true }));
+      expect((await host.run(['status'])).stdout.join('')).toContain('paused');
+      host.exitMode();
+      await send('ordinary again');
+      expect(prompts[2]).toContain('ordinary secret');
+      expect(JSON.parse(prompts[2]).filter((message: { role: string }) => message.role === 'user').map((message: { content: string }) => message.content)).not.toContain('task request');
+    } finally { await session?.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['src/output.txt', 'outside.txt', '.agents/notes/task.md'])('constrains Ink model writes: %s', async (path) => {
+    const root = mkdtempSync(join(tmpdir(), 'ink-harness-write-'));
+    let session: CliSession | undefined;
+    let rounds = 0;
+    try {
+      seed(root);
+      session = await openSession(root, async () => {
+        if (rounds++ === 0) return {
+          textStream: (async function* () {})(),
+          fullStream: (async function* () {
+            yield { type: 'tool-call', toolCallId: 'create', toolName: 'workspace_create', args: { path, content: 'task output' } };
+            yield { type: 'finish', finishReason: 'tool-calls' };
+          })(),
+        };
+        return { textStream: (async function* () { yield 'report only' })() };
+      });
+      const live = session;
+      const host = createInkHarnessHost({ session: () => live, signal: () => undefined, owner: 'tester' });
+      expect((await host.run([TASK])).stderr).toEqual([]);
+      await host.executeTurn((task) => live.sendTurn('Create the task output file.', {}, undefined, task));
+      if (path.startsWith('.agents/')) {
+        expect(readFileSync(join(root, path), 'utf8')).not.toBe('task output');
+        expect((await host.run(['status'])).stdout.join('')).toContain('running');
+      } else expect(existsSync(join(root, path))).toBe(path.startsWith('src/'));
+    } finally { await session?.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('reports the mode off without a binding', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ink-harness-'));
     try {

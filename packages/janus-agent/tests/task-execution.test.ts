@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 import { mkdir, mkdtemp, readFile, rm, writeFile, symlink, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +20,7 @@ async function fixture(mode: 'xdo' | 'xflow' = 'xdo', manual = false) {
   await mkdir(join(root, '.agents', 'notes'), { recursive: true });
   await mkdir(join(root, 'src'));
   await writeFile(join(root, 'src', 'file.txt'), 'hello');
-  await writeFile(join(root, '.agents', 'harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'Test' }));
+  await writeFile(join(root, '.agents', 'harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'Test', profile: SUPPORTED_HARNESS_PROFILE }));
   const taskPath = join(root, '.agents', 'notes', '2026-09-18-task--55555555.md');
   await writeFile(taskPath, [
     '---', 'schema: harness-note/1', `id: ${TASK}`, 'kind: task', 'lifecycle: accepted', 'created: 2026-09-18',

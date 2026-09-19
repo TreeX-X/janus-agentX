@@ -189,11 +189,12 @@ export interface CheckRow {
   relPath: string;
   id: string | null;
   diagnostics: Diagnostic[];
+  foreign?: boolean;
 }
 
 export async function cmdCheck(root: string): Promise<CliResult<{ files: number; rows: CheckRow[]; repoDiagnostics: Diagnostic[] }>> {
   const index = await buildNoteIndex(root);
-  const rows: CheckRow[] = index.entries.map((e) => ({ relPath: e.relPath, id: e.note?.meta.id ?? null, diagnostics: e.diagnostics }));
+  const rows: CheckRow[] = index.entries.map((e) => ({ relPath: e.relPath, id: e.note?.meta.id ?? null, diagnostics: e.diagnostics, ...(e.foreign ? { foreign: true } : {}) }));
   const repoDiagnostics: Diagnostic[] = [...index.diagnostics];
   if (index.repoId) {
     const nodes = index.entries

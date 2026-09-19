@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /** S1 bundle through the real CLI path: copied fixtures check clean. */
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ describe.runIf(PRESENT)('S1 fixtures via CLI', () => {
     mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
     writeFileSync(
       join(root, '.agents', 'harness.json'),
-      JSON.stringify({ schemaVersion: 1, repoId: '8fa19f17-c717-43a8-93a7-810a5e0cbc91', name: 't', profile: { id: 'workflowx', version: '1.0.0-s1', digest: 'x' } }),
+      JSON.stringify({ schemaVersion: 1, repoId: '8fa19f17-c717-43a8-93a7-810a5e0cbc91', name: 't', profile: SUPPORTED_HARNESS_PROFILE }),
     );
     for (const f of readdirSync(STD).filter((x) => x.startsWith('valid-') && x.endsWith('.md'))) {
       writeFileSync(join(root, '.agents', 'notes', f), readFileSync(join(STD, f)));

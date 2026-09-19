@@ -1,3 +1,4 @@
+import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /**
  * Automatic repair scheduling: the kernel spends the repair budget when the
  * live attempt recorded failed required checks. Temp dirs only.
@@ -32,7 +33,7 @@ const CODE_HASH = 'd'.repeat(64);
 function root(): string {
   const dir = mkdtempSync(join(tmpdir(), 'harness-auto-repair-'));
   mkdirSync(join(dir, '.agents', 'notes'), { recursive: true });
-  writeFileSync(join(dir, '.agents', 'harness.json'), JSON.stringify({ repoId: REPO }));
+  writeFileSync(join(dir, '.agents', 'harness.json'), JSON.stringify({ name: 'Test', schemaVersion: 1, repoId: REPO, profile: SUPPORTED_HARNESS_PROFILE }));
   writeFileSync(join(dir, '.agents', 'notes', 'task.md'), TASK_TEXT);
   return dir;
 }

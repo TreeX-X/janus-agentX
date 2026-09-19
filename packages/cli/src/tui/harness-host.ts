@@ -9,7 +9,7 @@
  *  the Ink side of the host contract.
  */
 import { HarnessController, createHarnessHost } from '../harness-mode.js';
-import type { TaskVerificationPorts } from '@janus-agent/janus-agent';
+import type { TaskTurnContext, TaskVerificationPorts } from '@janus-agent/janus-agent';
 import type { HarnessHost } from './exec.js';
 
 export interface InkHarnessSession {
@@ -17,17 +17,24 @@ export interface InkHarnessSession {
   taskVerificationPorts(actor: string): TaskVerificationPorts;
 }
 
+export interface InkHarnessHost extends HarnessHost {
+  executeTurn<T extends { cancelled: boolean }>(send: (task?: TaskTurnContext) => Promise<T>, signal?: AbortSignal): Promise<T>;
+}
+
 export function createInkHarnessHost(deps: {
   session: () => InkHarnessSession;
   signal: () => AbortSignal | undefined;
   owner?: string;
   ports?: (actor: string, session: InkHarnessSession) => TaskVerificationPorts;
-}): HarnessHost {
+}): InkHarnessHost {
   const controller = deps.owner !== undefined
     ? new HarnessController(() => deps.session().getWorkspaceRoot(), deps.owner)
     : new HarnessController(() => deps.session().getWorkspaceRoot());
-  return createHarnessHost(controller, {
-    ports: (actor) => deps.ports ? deps.ports(actor, deps.session()) : deps.session().taskVerificationPorts(actor),
-    signal: deps.signal,
-  });
+  return {
+    ...createHarnessHost(controller, {
+      ports: (actor) => deps.ports ? deps.ports(actor, deps.session()) : deps.session().taskVerificationPorts(actor),
+      signal: deps.signal,
+    }),
+    executeTurn: (send, signal) => controller.isActive() ? controller.executeTurn(send, signal) : send(),
+  };
 }
