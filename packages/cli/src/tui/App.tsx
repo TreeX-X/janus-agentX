@@ -25,6 +25,7 @@ import {
   type TimelineBlock,
 } from './store.js'
 import { executeCommand } from './exec.js'
+import { createInkHarnessHost } from './harness-host.js'
 import type { TestConnectionFn } from '../connect.js'
 import { testConnection } from '../connect.js'
 import { listProviderModels, isProviderEnabled } from '../providers.js'
@@ -347,6 +348,14 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
     | null
   >(null)
   const exitRef = useRef(onExit)
+  const harnessHost = useMemo(() => createInkHarnessHost({
+    workspaceRoot: () => sessionRef.current.getWorkspaceRoot(),
+    ports: (actor) => sessionRef.current.taskVerificationPorts(actor),
+    signal: () => {
+      const current = controllerRef.current?.signal;
+      return current && !current.aborted ? current : undefined;
+    },
+  }), [])
   const lastInterruptRef = useRef<number | null>(null)
   // Fresh input snapshot for `handleInterrupt`: the callback must know whether
   // the composer holds a draft without re-closing over stale state.
@@ -576,6 +585,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       return
     }
     const outcome = await executeCommand(sessionRef.current, command, args, {
+      harness: harnessHost,
       recreateWorkspace: async (dir) => {
         const created = await host.createSession(dir)
         if (typeof (created as { error?: string }).error === 'string') {
