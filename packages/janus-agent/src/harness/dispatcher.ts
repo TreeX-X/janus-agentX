@@ -429,8 +429,63 @@ export async function repairRun(
   });
 }
 
-export async function pauseRun(root: string, runId: string, token: string): Promise<OpResult<undefined>> {
-  return withRun(root, runId, async (run) => {
+export interface AutoRepairOutcome {
+  repaired: boolean;
+  attempt?: number;
+  reason?: 'wrong-state' | 'no-failed-checks' | 'stale-receipt' | 'budget-spent';
+}
+
+/**
+ * Automatic repair scheduling (T3). Spends the run's automatic budget when
+ * the live attempt recorded a receipt with failed required checks and the
+ * host asks what to do next, instead of leaving the failure for a human
+ * to notice. The summary names the failed checks so the next attempt
+ * inherits the failure context through the standard repair packet; mode
+ * gates (self/independent review, finish validity) still apply downstream.
+ * Skips without touching the run when there is nothing to repair, the
+ * evidence belongs to an older attempt, or the budget is spent — manual
+ * repair stays available in those cases. Loop safety comes from budget
+ * accounting plus the attempt match: every new failure records a new
+ * receipt, so retriggering always needs fresh evidence.
+ */
+// Note: automatic repair spends the budget here — see .agents/notes/implemented/architecture/2026-09-19-harness-auto-repair.md
+export async function maybeAutoRepair(
+  root: string,
+  runId: string,
+  token: string,
+): Promise<OpResult<AutoRepairOutcome>> {
+  return withRun<AutoRepairOutcome>(root, runId, async (run) => {
+    if (run.state !== 'verifying') {
+      return pass(run, { repaired: false, reason: 'wrong-state' });
+    }
+    const leaseProblems = leaseMismatch(run, token);
+    if (leaseProblems.length > 0) return fail(run, leaseProblems, { repaired: false });
+    const latestId = run.receipts.at(-1);
+    if (!latestId) return pass(run, { repaired: false, reason: 'no-failed-checks' });
+    let receipt: Receipt;
+    try {
+      receipt = await loadReceipt(root, runId, latestId);
+    } catch (e) {
+      return fail(run, storeError(e, run), { repaired: false });
+    }
+    if (receipt.attempt !== run.attempt) {
+      return pass(run, { repaired: false, reason: 'stale-receipt' });
+    }
+    const failed = receipt.checks.filter((check) => check.required && check.status === 'failed');
+    if (failed.length === 0) {
+      return pass(run, { repaired: false, reason: 'no-failed-checks' });
+    }
+    if (run.repairBudget.usedAuto >= run.repairBudget.maxAuto) {
+      return pass(run, { repaired: false, reason: 'budget-spent' });
+    }
+    const summary = `Auto repair (attempt ${run.attempt + 1}): required checks failed [${failed.map((check) => check.id).join(', ')}]: ${(failed[0].summary ?? '').slice(0, 240)}`;
+    const repaired = await repairRun(root, runId, token, { failureReceiptId: latestId, summary, auto: true });
+    if (!repaired.ok) return fail(repaired.run, repaired.errors, { repaired: false });
+    return pass(repaired.run as HarnessRun, { repaired: true, attempt: repaired.data.attempt });
+  });
+}
+
+export async function pauseRun(root: string, runId: string, token: string): Promise<OpResult<undefined>> {  return withRun(root, runId, async (run) => {
     const leaseProblems = run.state === 'queued' ? [] : leaseMismatch(run, token);
     if (leaseProblems.length > 0) return fail(run, leaseProblems, undefined);
     const problems = checkedState(run, 'pause', idleCtx());

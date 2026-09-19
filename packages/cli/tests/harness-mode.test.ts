@@ -312,6 +312,39 @@ describe('harness mode shell', () => {
     }
   });
 
+  it('auto repairs once after failed verification, then stops at spent budget', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cli-harness-autorepair-'));
+    let session: CliSession | undefined;
+    try {
+      executionSeed(root);
+      const created = await CliSession.create({ workspace: root, model: 'm', env: {}, streamTextFn: async (options) => {
+        const messages = options.messages as Array<{ role: string; content: string }>;
+        const prompt = messages.filter((message) => message.role === 'user').at(-1)!.content;
+        const lines = prompt.split('\n');
+        const shape = JSON.parse(lines.at(-1)!);
+        shape.review.verdict = 'approved';
+        shape.coverage = shape.coverage.map((row: object) => ({ ...row, checkIds: ['v1'] }));
+        return { textStream: (async function* () { yield JSON.stringify(shape) })() };
+      } });
+      if (isSessionValidationError(created)) throw new Error(created.message);
+      session = created;
+      const c = controller(root);
+      expect((await c.enter(MAIN)).stderr).toEqual([]);
+      const failing = (actor: string) => ({
+        ...created.taskVerificationPorts(actor),
+        command: async () => ({ ok: false, exitCode: 1, summary: 'boom' }),
+      });
+      const first = await c.verify(failing);
+      expect(first.stdout.join('')).toContain('auto repair started (attempt 2)');
+      const second = await c.verify(failing);
+      expect(second.stdout.join('')).toContain('not complete');
+      expect(second.stdout.join('')).not.toContain('auto repair started');
+    } finally {
+      await session?.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['src/new.txt', 'outside.txt'])('enforces the task scope on an actual model tool call: %s', async (path) => {
     const root = mkdtempSync(join(tmpdir(), 'cli-harness-write-'));
     let session: CliSession | undefined;

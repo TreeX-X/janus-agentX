@@ -20,6 +20,7 @@ export type {
 } from './ports.js'
 export { ASKUSER_TOOL_NAME, askUserParameters } from './orchestrator/ask-tool.js'
 export type {
+  AutoRepairOutcome,
   CloseoutCheck,
   CloseoutReport,
   DispatchInput,
@@ -35,6 +36,7 @@ export {
   finishRun,
   handoffRun,
   markRun,
+  maybeAutoRepair,
   pauseRun,
   rebaselineRun,
   recordReceipt,

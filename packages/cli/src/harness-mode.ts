@@ -18,6 +18,7 @@ import {
   handoffRun,
   listRuns,
   loadRun,
+  maybeAutoRepair,
   pauseRun,
   prepareTaskTurn,
   rebaselineRun,
@@ -288,7 +289,13 @@ export class HarnessController {
     if (!token.ok) return token;
     try {
       const result = await verifyTaskExecution(bound.run.root, bound.run.runId, token.token, ports(this.owner), signal);
-      return { stdout: [`receipt ${result.receipt.id}: ${result.completed ? 'done; closeout remains separate' : 'not complete'}`], stderr: result.errors };
+      const summary = `receipt ${result.receipt.id}: ${result.completed ? 'done; closeout remains separate' : 'not complete'}`;
+      if (result.completed) return { stdout: [summary], stderr: result.errors };
+      const auto = await maybeAutoRepair(bound.run.root, bound.run.runId, token.token);
+      if (auto.ok && auto.data.repaired) {
+        return { stdout: [summary, `auto repair started (attempt ${auto.data.attempt}).`], stderr: result.errors };
+      }
+      return { stdout: [summary], stderr: result.errors };
     } catch (error) { return { stdout: [], stderr: [String(error)] }; }
   }
 
