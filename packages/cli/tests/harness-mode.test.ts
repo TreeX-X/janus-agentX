@@ -14,6 +14,8 @@ import { runGit } from '@janus-agent/harness-node';
 import { listRuns } from '@janus-agent/janus-agent';
 import { arrayLineSource, runRepl } from '../src/repl.js';
 import { memoryConversationStore } from '../src/conversations.js';
+import { createInkHarnessHost } from '../src/tui/harness-host.js';
+import type { ChatTurnPorts } from '@janus-agent/janus-agent';
 
 const REPO = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
 const REQ = '11111111-1111-4111-8111-111111111111';
@@ -280,6 +282,60 @@ describe('harness mode shell', () => {
       expect(errors.join('')).toContain('task is paused');
       expect((await listRuns(root))[0].state).toBe('running');
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['plain:xdel', 'plain:xflow', 'ink:xdel', 'ink:xflow'])('executes %s through a real session and isolated review', async (entry) => {
+    const [surface, mode] = entry.split(':');
+    const root = mkdtempSync(join(tmpdir(), 'cli-delegated-'));
+    const stages: string[] = [];
+    let session: CliSession | undefined;
+    const streamTextFn: ChatTurnPorts['streamTextFn'] = async (options) => {
+      const messages = options.messages as Array<{ role: string; content: string }>;
+      const prompt = messages.filter((message) => message.role === 'user').at(-1)!.content;
+      if (!prompt.includes('Return only one JSON object')) {
+        expect(JSON.stringify(messages)).toContain(':implementor:');
+        if (!stages.includes('implement')) {
+          stages.push('implement');
+          return { textStream: (async function* () {})(), fullStream: (async function* () {
+            yield { type: 'tool-call', toolCallId: 'create', toolName: 'workspace_create', args: { path: 'src/delegated.txt', content: '43' } };
+            yield { type: 'finish', finishReason: 'tool-calls' };
+          })() };
+        }
+        return { textStream: (async function* () { yield 'private implementation observation' })() };
+      }
+      expect(JSON.stringify(messages)).not.toContain('private implementation observation');
+      expect(Object.keys(options.tools as object)).not.toContain('workspace_edit');
+      const claim = JSON.parse(prompt.split('\n').at(-1)!);
+      stages.push(claim.review.kind);
+      claim.review.verdict = 'approved';
+      claim.coverage = claim.coverage.map((row: object) => ({ ...row, checkIds: ['v1'] }));
+      return { textStream: (async function* () { yield JSON.stringify(claim) })() };
+    };
+    try {
+      executionSeed(root);
+      if (surface === 'plain') {
+        const errors: string[] = [];
+        await runRepl({ workspace: root, model: 'm', plain: true, apiKey: 'fixture-key' }, {
+          env: {}, store: memoryConversationStore(), configPath: null, authPath: null, streamTextFn,
+          lines: arrayLineSource([`/harness ${MAIN} --mode ${mode}`, '/harness execute', '/exit', '/exit']),
+          stdout: () => undefined, stderr: (text) => errors.push(text),
+        });
+        expect(errors).toEqual([]);
+      } else {
+        const created = await CliSession.create({ workspace: root, model: 'm', env: {}, streamTextFn });
+        if (isSessionValidationError(created)) throw new Error(created.message);
+        session = created;
+        const host = createInkHarnessHost({ session: () => created, signal: () => undefined });
+        expect((await host.run([MAIN, '--mode', mode])).stderr).toEqual([]);
+        expect((await host.run(['execute'])).stderr).toEqual([]);
+      }
+      expect(stages).toEqual(mode === 'xflow' ? ['implement', 'self', 'independent'] : ['implement', 'self']);
+      const run = (await listRuns(root))[0];
+      expect(run.state).toBe('done');
+      expect(readFileSync(join(root, 'src/delegated.txt'), 'utf8')).toBe('43');
+      const receipt = JSON.parse(readFileSync(join(root, '.agents/evidence', `${run.completedReceiptId}.json`), 'utf8'));
+      expect(receipt.review.actor === receipt.actor).toBe(mode === 'xdel');
+    } finally { await session?.close(); rmSync(root, { recursive: true, force: true }); }
   });
 
   it('executes real verification commands and parses a read-only self-review', async () => {

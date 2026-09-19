@@ -3,7 +3,7 @@
  * @file Task-bound plain CLI execution and lifecycle controls.
  * @description Leaving the mode keeps the lease. Re-entry rechecks the
  *  baseline; task turns, verification, review and receipts use the shared
- *  execution host. Ink must supply its own host before enabling this mode.
+ *  execution host. Ink and plain CLI each own a controller behind the shared adapter.
  */
 import { hostname, userInfo } from 'node:os';
 import {
@@ -15,6 +15,7 @@ import {
   cancelRun,
   closeoutRun,
   dispatchRun,
+  executeTaskExecution,
   handoffRun,
   listRuns,
   loadRun,
@@ -92,7 +93,7 @@ export function harnessUsage(): string[] {
     '  /harness <task-uri|id|path> [--mode xdo|xdel|xflow]   enter (dispatches or reattaches)',
     '  /harness [status]                                      show the bound run',
     '  /harness start | pause | resume | cancel | takeover <reason> | exit',
-    '  /harness verify | repair <reason> | rebaseline | closeout',
+    '  /harness execute | verify | repair <reason> | rebaseline | closeout',
     '  /exit                                                  leave harness mode (the run keeps its lease)',
   ];
 }
@@ -300,6 +301,18 @@ export class HarnessController {
     } catch (error) { return { stdout: [], stderr: [String(error)] }; }
   }
 
+  async execute(ports: (actor: string) => TaskVerificationPorts,
+    implement: (turn: TaskTurnContext, signal?: AbortSignal) => Promise<{ cancelled: boolean }>, signal?: AbortSignal): Promise<CommandOutcome> {
+    const bound = this.requireBinding();
+    if (!bound.ok) return bound;
+    const token = await this.ownToken(bound.run.root, bound.run.runId);
+    if (!token.ok) return token;
+    try {
+      const result = await executeTaskExecution(bound.run.root, bound.run.runId, token.token, { ...ports(this.owner), implement }, signal);
+      return { stdout: [`receipt ${result.receipt.id}: ${result.completed ? 'done; closeout remains separate' : 'not complete'}`], stderr: result.errors };
+    } catch (error) { return { stdout: [], stderr: [String(error)] }; }
+  }
+
   async launchExternal(providerId: string, program: string | undefined, args: string[], opts?: { spawn?: SpawnFn }): Promise<CommandOutcome> {
     const bound = this.requireBinding();
     if (!bound.ok) return bound;
@@ -385,10 +398,11 @@ export class HarnessController {
   }
 }
 
-/** Shared-command adapter: one entry for the plain loop; Ink passes no host until wired. */
+/** Shared-command adapter for the plain loop and Ink. */
 export function createHarnessHost(controller: HarnessController, execution?: {
   ports: (actor: string) => TaskVerificationPorts;
   signal: () => AbortSignal | undefined;
+  implement?: (turn: TaskTurnContext, signal?: AbortSignal) => Promise<{ cancelled: boolean }>;
 }): {
   isActive(): boolean;
   run(args: string[]): Promise<CommandOutcome>;
@@ -411,6 +425,7 @@ export function createHarnessHost(controller: HarnessController, execution?: {
       if (first === 'pause') return controller.pause();
       if (first === 'start' || first === 'resume' || first === 'rebaseline' || first === 'repair' || first === 'closeout') return controller.control(first, rest.join(' '));
       if (first === 'verify') return execution ? controller.verify(execution.ports, execution.signal()) : { stdout: [], stderr: ['CAPABILITY_UNAVAILABLE: no task execution host'] };
+      if (first === 'execute') return execution?.implement ? controller.execute(execution.ports, execution.implement, execution.signal()) : { stdout: [], stderr: ['CAPABILITY_UNAVAILABLE: no task implementation host'] };
       if (first === 'cancel') return controller.cancel();
       if (first === 'launch') {
         const launchArgs = [...rest];

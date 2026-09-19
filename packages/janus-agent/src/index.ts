@@ -55,5 +55,6 @@ export type {
   TakeoverRecord,
 } from './harness/run-store.js'
 export { listRuns, loadRun, readLaunches, readLease, recordLaunch } from './harness/run-store.js'
-export { prepareTaskTurn, verifyTaskExecution, taskManifestHash } from './harness/task-execution.js'
+export { prepareTaskTurn, verifyTaskExecution, executeTaskExecution, taskManifestHash } from './harness/task-execution.js'
+export { loadReceipt } from './harness/run-store.js'
 export type { TaskTurnContext, TaskVerificationPorts } from './harness/task-execution.js'

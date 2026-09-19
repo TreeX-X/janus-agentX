@@ -8,7 +8,7 @@ A bound task needs executable scope and evidence. A prompt label alone permits o
 
 ## Decision
 
-The plain CLI sends bound input through `prepareTaskTurn` in `janus-agent`. The shared host checks the current run, lease token, contract and input digests before the turn and before each tool call. Only internal xdo execution is available. Delegated modes, foreign repositories, wildcard scopes and unsupported verification capabilities report `CAPABILITY_UNAVAILABLE`.
+The plain CLI and Ink send bound input through `prepareTaskTurn` in `janus-agent`. The host checks the current run, lease token, attempt, contract and input digests before the turn and before each tool call. Internal xdo, xdel and xflow follow the [delegated execution policy](2026-09-19-delegated-task-hosts.md). Foreign repositories, wildcard scopes and unsupported verification capabilities report `CAPABILITY_UNAVAILABLE`.
 
 Task conversations persist separately under `.agents/.local/conversations`, keyed by run and attempt. Reattachment restores task history without inserting ordinary chat history. Harness turns use attached runtime resources but skip personal memory recall and capture. File mutations use the existing runtime tools and approvals. Literal file and directory scope, path traversal, links, hard-linked targets, ignored files and ledger paths have host checks. The model has no command, process or delegation capability. Reads can inspect the checkout beyond the mutation scope.
 
@@ -16,7 +16,7 @@ Task conversations persist separately under `.agents/.local/conversations`, keye
 
 `/harness pause|resume|repair|rebaseline|start|cancel` expose explicit recovery. Aborted task turns and verification pause the run. Rebaseline returns a run to queued, clears verification, and releases the old lease so a new start can claim it. A task with no related inputs can rebaseline because its own contract is already pinned. Manual repair requires a reason and a stored failure receipt; another attempt receives both in its task context without claiming an automatic repair.
 
-`harness-node` owns task snapshots and scope manifests. JanusX reuses the same live-snapshot implementation and can supply command and review ports to the shared executor. The desktop panel and Ink loop do not invoke this execution path yet.
+`harness-node` owns task snapshots and scope manifests. JanusX uses the same neutral snapshot and run kernel through its own desktop execution host. Ink invokes the CLI host through a separate controller and the shared command adapter.
 
 ## Alternatives considered
 
@@ -29,6 +29,6 @@ Task conversations persist separately under `.agents/.local/conversations`, keye
 
 `npm test --workspace=@janus-agent/janus-agent -- tests/task-execution.test.ts tests/chat-turn.test.ts` passes 33 checks. `npm test --workspace=@janus-agent/cli -- tests/harness-mode.test.ts` passes 15 checks. They cover scoped tool denial, lease and baseline drift, process failures, immutable evidence, repair, cancellation, isolated history, real command execution and the plain REPL route. The core receipt suite passes 11 checks, including canonical review digests. Workspace typecheck and build pass.
 
-This host executes one checkout and literal file scopes. `.agents` mutations, ignored output, directory deletion, manual verification and delegated review need separate capabilities. Manifest collection hashes every Git-visible scoped file, including unchanged files; broad scopes cost additional IO. Declared verification commands are trusted workspace code under runtime policy, not an operating-system sandbox. The evidence model does not prove absence of effects outside the checkout or in ignored files. External edits can race filesystem scans.
+This host executes one checkout and literal file scopes. `.agents` mutations, ignored output, directory deletion and manual verification need separate capabilities. Manifest collection hashes every Git-visible scoped file, including unchanged files; broad scopes cost additional IO. Declared verification commands are trusted workspace code under runtime policy, not an operating-system sandbox. The evidence model does not prove absence of effects outside the checkout or in ignored files. External edits can race filesystem scans.
 
-[Portable results](2026-09-18-harness-portable-results.md) persist execution in task Notes and receipts in formal evidence, with shared reconstruction and current-branch closeout. Automatic repair scheduling, external runner launch, desktop execution and detailed evidence UX, Ink integration and shared maintenance conversation control remain incomplete. These limits keep S8 and the standard cutover open. Candidate standards and old assets retain their current lifecycle.
+[Portable results](2026-09-18-harness-portable-results.md) persist execution in task Notes and receipts in formal evidence, with shared reconstruction and current-branch closeout. The delegated execution Note owns current mode behavior, verification commands and the single-checkout boundary. Cross-machine orchestration and versioned cutover remain separate work. Candidate standards and old assets retain their current lifecycle.

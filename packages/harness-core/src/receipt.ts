@@ -55,7 +55,7 @@ export interface Receipt {
   codeManifest: Array<{ repoId: string; path: string; sha256?: string; deleted?: boolean }>;
   checks: ReceiptCheck[];
   coverage: ReceiptCoverage[];
-  review: { kind: 'self' | 'independent' | 'manual'; verdict: 'approved' | 'needs-fix' | 'blocked'; reviewedManifestHash: string; actor: string };
+  review: { kind: 'self' | 'independent' | 'manual'; verdict: 'approved' | 'needs-fix' | 'blocked'; reviewedManifestHash: string; actor: string; summary?: string };
   createdAt: string;
   actor: string;
 }
@@ -167,6 +167,7 @@ export function validateReceiptShape(r: unknown): Diagnostic[] {
     out.push(diag('SCHEMA_INVALID', 'bad review verdict', 'review.verdict'));
   }
   if (!rev || !text(rev['actor']) || !matches(rev['reviewedManifestHash'], HEX64_RE)) invalid('review', 'review needs an actor and manifest hash');
+  if (rev && rev['summary'] !== undefined && (typeof rev['summary'] !== 'string' || rev['summary'].length > 4000)) invalid('review.summary', 'review summary must be text up to 4000 characters');
   if (String(v['mode']) === 'xflow' && rev && rev['kind'] !== 'independent') {
     out.push(diag('SCHEMA_INVALID', 'xflow needs an independent review', 'review'));
   }

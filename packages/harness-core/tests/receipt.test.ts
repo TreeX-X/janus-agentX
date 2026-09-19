@@ -38,6 +38,13 @@ const liveCtx = () => ({
 });
 
 describe('receipt', () => {
+  it('retains bounded review findings and refuses malformed summaries', () => {
+    const r = receipt();
+    r.review.summary = 'Handle the empty input in src/a.ts';
+    expect(validateReceiptShape(r)).toEqual([]);
+    expect(validateReceiptShape({ ...r, review: { ...r.review, summary: {} } }).some((row) => row.path === 'review.summary')).toBe(true);
+    expect(validateReceiptShape({ ...r, review: { ...r.review, summary: 'x'.repeat(4001) } }).some((row) => row.path === 'review.summary')).toBe(true);
+  });
   it('accepts a well-formed receipt', () => {
     expect(validateReceiptShape(receipt())).toEqual([]);
     expect(evaluateReceipt(receipt(), liveCtx())).toEqual([]);

@@ -584,35 +584,56 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       setOverlay({ kind: 'model' })
       return
     }
-    const outcome = await executeCommand(sessionRef.current, command, args, {
-      harness: harnessHost,
-      recreateWorkspace: async (dir) => {
-        const created = await host.createSession(dir)
-        if (typeof (created as { error?: string }).error === 'string') {
-          return { ok: false, message: (created as { error: string }).error }
-        }
-        await sessionRef.current.close()
-        const next = created as CliSession
-        sessionRef.current = next
-        setSession(next)
-        next.setApprovalHandler(bridgeApproval)
-        next.setQuestionHandler(bridgeQuestion)
-        return { ok: true, message: `workspace switched: ${next.getWorkspaceRoot()} (history cleared)` }
-      },
-    })
-    if (outcome.exit) {
-      exitRef.current(0)
-      return
+    const executesTask = command === 'harness' && ['execute', 'verify'].includes(args[0] ?? '')
+    if (executesTask) {
+      busyRef.current = true
+      setBusy(true)
+      controllerRef.current = new AbortController()
     }
-    // Hydrate first so the outcome lines land on top of fresh state instead
-    // of being wiped by it (new/switch/delete/clear/workspace reset the view).
-    const needsHydrate = command === 'clear' || command === 'workspace' || outcome.workspaceSwitched
-      || command === 'new' || command === 'switch' || command === 'delete'
-    if (needsHydrate) hydrate()
-    else refreshContext()
-    for (const line of outcome.stdout) dispatch({ type: 'info', text: line })
-    for (const line of outcome.stderr) dispatch({ type: 'error', text: line })
-  }, [host, hydrate, refreshContext, bridgeApproval, bridgeQuestion])
+    try {
+      const outcome = await executeCommand(sessionRef.current, command, args, {
+        harness: harnessHost,
+        recreateWorkspace: async (dir) => {
+          const created = await host.createSession(dir)
+          if (typeof (created as { error?: string }).error === 'string') {
+            return { ok: false, message: (created as { error: string }).error }
+          }
+          await sessionRef.current.close()
+          const next = created as CliSession
+          sessionRef.current = next
+          setSession(next)
+          next.setApprovalHandler(bridgeApproval)
+          next.setQuestionHandler(bridgeQuestion)
+          return { ok: true, message: `workspace switched: ${next.getWorkspaceRoot()} (history cleared)` }
+        },
+      })
+      if (outcome.exit) {
+        exitRef.current(0)
+        return
+      }
+      // Hydrate first so the outcome lines land on top of fresh state instead
+      // of being wiped by it (new/switch/delete/clear/workspace reset the view).
+      const needsHydrate = command === 'clear' || command === 'workspace' || outcome.workspaceSwitched
+        || command === 'new' || command === 'switch' || command === 'delete'
+      if (needsHydrate) hydrate()
+      else refreshContext()
+      for (const line of outcome.stdout) dispatch({ type: 'info', text: line })
+      for (const line of outcome.stderr) dispatch({ type: 'error', text: line })
+    } finally {
+      if (executesTask) {
+        controllerRef.current = null
+        busyRef.current = false
+        setBusy(false)
+        if (pendingRef.current.length > 0) {
+          const restored = pendingRef.current.join('\n\n')
+          pendingRef.current = []
+          setPending([])
+          setInput((draft) => draft ? `${restored}\n\n${draft}` : restored)
+          dispatch({ type: 'info', text: 'Pending messages restored to input.' })
+        }
+      }
+    }
+  }, [host, hydrate, refreshContext, bridgeApproval, bridgeQuestion, harnessHost])
 
   const submit = useCallback((raw: string): void => {
     const parsed = parseInputLine(raw)

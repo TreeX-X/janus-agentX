@@ -144,6 +144,7 @@ export class CliSession {
   private readonly registry: ConversationRegistry
   private readonly taskRegistries = new Map<string, ConversationRegistry>()
   private verificationSessionId: string | null = null
+  private taskSessionId: string | null = null
   private hookConversationId: string | null = null
   private readonly workspaceRoot: string
   private readonly catalog: ProviderCatalog
@@ -327,8 +328,7 @@ export class CliSession {
       },
       sessions: {
         getSession: (id) => {
-          if (id !== sessionId) return null
-          const current = runtime.getSession(sessionId)
+          const current = runtime.getSession(id)
           if (!current || current.status !== 'running') return null
           return {
             sessionId: current.id,
@@ -518,7 +518,7 @@ export class CliSession {
       const typed = event as { type?: string; request?: Partial<ApprovalRequestShape> }
       if (typed.type !== 'approval-requested') return
       const request = typed.request
-      if (!request || (request.sessionId !== this.sessionId && request.sessionId !== this.verificationSessionId) || typeof request.id !== 'string') return
+      if (!request || (request.sessionId !== this.sessionId && request.sessionId !== this.verificationSessionId && request.sessionId !== this.taskSessionId) || typeof request.id !== 'string') return
       const snapshot: ApprovalRequestShape = {
         id: request.id,
         sessionId: request.sessionId,
@@ -933,6 +933,7 @@ export class CliSession {
     this.approvalMode = mode
     this.runtime.setApprovalMode(this.sessionId, mode)
     if (this.verificationSessionId) this.runtime.setApprovalMode(this.verificationSessionId, mode)
+    if (this.taskSessionId) this.runtime.setApprovalMode(this.taskSessionId, mode)
   }
 
   /**
@@ -1005,8 +1006,14 @@ export class CliSession {
     this.hookConversationId = record.data.id
     // JanusX hook: turn boundaries are awaited (localhost) so Stop can never
     // overtake Start in the bridge; a late Start would strand a phantom turn.
-    await postJanusxHook({ ...hookBase, event: 'UserPromptSubmit', message: prompt, raw: { hook: 'send-turn' } })
+    const taskSession = task ? await this.runtime.createSession({ workspaceId: CLI_WORKSPACE_ID, workspaceRoot: this.workspaceRoot, approvalMode: this.approvalMode, timeoutMs: this.runtime.getSession(this.sessionId)?.timeoutMs }, APPROVAL_CALLER_ID) : undefined
+    this.taskSessionId = taskSession?.id ?? null
+    let cancellation: Promise<unknown> | undefined
+    const cancelTask = () => { if (taskSession) cancellation ??= this.runtime.cancelSession(taskSession.id) }
+    signal?.addEventListener('abort', cancelTask, { once: true })
     try {
+      if (task) signal?.throwIfAborted()
+      await postJanusxHook({ ...hookBase, event: 'UserPromptSubmit', message: prompt, raw: { hook: 'send-turn' } })
       let result: ChatTurnResult
       try {
         result = await runChatTurn(
@@ -1024,7 +1031,7 @@ export class CliSession {
             workspaceId: CLI_WORKSPACE_ID,
             workspacePath: this.workspaceRoot,
             workspaceName: this.getWorkspaceName(),
-            agentSessionId: this.sessionId,
+            agentSessionId: taskSession?.id ?? this.sessionId,
           }],
           toolTraces: record.data.toolTraces,
           chatSession: record.chatSession,
@@ -1101,15 +1108,34 @@ export class CliSession {
       await registry.persist(record.data.id)
       return result
     } finally {
+      signal?.removeEventListener('abort', cancelTask)
+      cancelTask()
+      await cancellation
+      this.taskSessionId = null
       this.approvalSignal = null
       this.hookConversationId = null
     }
   }
 
   // Note: task execution reuses runtime approval and command results - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
-  taskVerificationPorts(actor: string): TaskVerificationPorts {
+  taskVerificationPorts(_actor: string): TaskVerificationPorts {
     if (!this.modelId || (!this.hasApiKey() && !this.hasCustomTransport)) throw new Error('CAPABILITY_UNAVAILABLE: self-review needs a configured model and transport')
+    const review: NonNullable<TaskVerificationPorts['review']> = async (input, signal) => {
+      const result = await this.sendTurn([
+        `${input.kind === 'independent' ? 'Independent read-only evaluation' : 'Implementor self-review'}. Review this exact code manifest and declared check evidence. Read relevant files before deciding.`,
+        'Return only one JSON object with review and coverage. Include review.summary (up to 4000 characters) with concrete file findings and repair guidance. Never approve failing or insufficient evidence.',
+        'Coverage must cite passing check IDs that actually demonstrate each acceptance criterion.',
+        JSON.stringify({ manifest: input.manifest, checks: input.checks, criteria: input.criteria }),
+        JSON.stringify({ review: { kind: input.kind, verdict: 'approved|needs-fix|blocked', reviewedManifestHash: input.manifestHash, actor: input.actor }, coverage: input.criteria }),
+      ].join('\n'), {}, signal, { ...input.turn, conversationId: `${input.turn.conversationId}-${randomUUID()}` });
+      if (result.cancelled) throw new Error('NOT_READY: review cancelled');
+      if (result.toolTraces.some((trace) => trace.status !== 'completed')) throw new Error('NOT_READY: review tool failed or was refused');
+      try { return JSON.parse(result.text) as Awaited<ReturnType<NonNullable<TaskVerificationPorts['review']>>> }
+      catch { throw new Error('NOT_READY: reviewer did not return structured JSON evidence') }
+    };
     return {
+      review,
+      independentReview: review,
       command: async (step, signal) => {
         signal?.throwIfAborted()
         const session = await this.runtime.createSession({ workspaceId: CLI_WORKSPACE_ID, workspaceRoot: this.workspaceRoot, approvalMode: this.approvalMode }, APPROVAL_CALLER_ID)
@@ -1134,18 +1160,6 @@ export class CliSession {
           this.verificationSessionId = null
           this.approvalSignal = null
         }
-      },
-      review: async (input, signal) => {
-        const result = await this.sendTurn([
-          'Review this exact code manifest and declared check evidence. Read relevant files before deciding.',
-          'Return only one JSON object with review and coverage. Never approve failing or insufficient evidence.',
-          'Coverage must cite passing check IDs that actually demonstrate each acceptance criterion.',
-          JSON.stringify({ manifest: input.manifest, checks: input.checks, criteria: input.criteria }),
-          JSON.stringify({ review: { kind: 'self', verdict: 'approved|needs-fix|blocked', reviewedManifestHash: input.manifestHash, actor }, coverage: input.criteria }),
-        ].join('\n'), {}, signal, { ...input.turn, conversationId: `${input.turn.conversationId}-${randomUUID()}` })
-        if (result.cancelled) throw new Error('NOT_READY: review cancelled')
-        try { return JSON.parse(result.text) as Awaited<ReturnType<NonNullable<TaskVerificationPorts['review']>>> }
-        catch { throw new Error('NOT_READY: reviewer did not return structured JSON evidence') }
       },
     }
   }

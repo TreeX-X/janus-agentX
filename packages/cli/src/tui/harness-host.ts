@@ -15,6 +15,7 @@ import type { HarnessHost } from './exec.js';
 export interface InkHarnessSession {
   getWorkspaceRoot(): string;
   taskVerificationPorts(actor: string): TaskVerificationPorts;
+  sendTurn?(prompt: string, callbacks: {}, signal?: AbortSignal, task?: TaskTurnContext): Promise<{ cancelled: boolean }>;
 }
 
 export interface InkHarnessHost extends HarnessHost {
@@ -34,6 +35,11 @@ export function createInkHarnessHost(deps: {
     ...createHarnessHost(controller, {
       ports: (actor) => deps.ports ? deps.ports(actor, deps.session()) : deps.session().taskVerificationPorts(actor),
       signal: deps.signal,
+      implement: async (turn, signal) => {
+        const session = deps.session();
+        if (!session.sendTurn) throw new Error('CAPABILITY_UNAVAILABLE: no task implementation model');
+        return session.sendTurn('Implement the accepted task. Read the relevant files, make scoped edits, and address the failure receipt on repair. The host runs checks and review.', {}, signal, turn);
+      },
     }),
     executeTurn: (send, signal) => controller.isActive() ? controller.executeTurn(send, signal) : send(),
   };

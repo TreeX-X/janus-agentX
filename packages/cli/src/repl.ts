@@ -605,6 +605,7 @@ export async function runRepl(options: TuiOptions, io: ReplIO = {}): Promise<num
   state.harness = createHarnessHost(state.harnessController, {
     ports: (actor) => state.session.taskVerificationPorts(actor),
     signal: () => activeController?.signal,
+    implement: (turn, signal) => state.session.sendTurn('Implement the accepted task. Read the relevant files, make scoped edits, and address the failure receipt on repair. The host runs checks and review.', {}, signal, turn),
   });
 
   const created = await CliSession.create({

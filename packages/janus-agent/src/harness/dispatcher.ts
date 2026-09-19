@@ -432,7 +432,7 @@ export async function repairRun(
 export interface AutoRepairOutcome {
   repaired: boolean;
   attempt?: number;
-  reason?: 'wrong-state' | 'no-failed-checks' | 'stale-receipt' | 'budget-spent';
+  reason?: 'wrong-state' | 'no-failed-checks' | 'stale-receipt' | 'budget-spent' | 'mode-policy' | 'review-blocked';
 }
 
 /**
@@ -455,6 +455,7 @@ export async function maybeAutoRepair(
   token: string,
 ): Promise<OpResult<AutoRepairOutcome>> {
   return withRun<AutoRepairOutcome>(root, runId, async (run) => {
+    if (run.mode === 'xdel') return pass(run, { repaired: false, reason: 'mode-policy' });
     if (run.state !== 'verifying') {
       return pass(run, { repaired: false, reason: 'wrong-state' });
     }
@@ -472,13 +473,17 @@ export async function maybeAutoRepair(
       return pass(run, { repaired: false, reason: 'stale-receipt' });
     }
     const failed = receipt.checks.filter((check) => check.required && check.status === 'failed');
-    if (failed.length === 0) {
+    if (receipt.review.verdict === 'blocked') return pass(run, { repaired: false, reason: 'review-blocked' });
+    const reviewFailed = run.mode === 'xflow' && receipt.review.kind === 'independent' && receipt.review.verdict === 'needs-fix';
+    if (failed.length === 0 && !reviewFailed) {
       return pass(run, { repaired: false, reason: 'no-failed-checks' });
     }
     if (run.repairBudget.usedAuto >= run.repairBudget.maxAuto) {
       return pass(run, { repaired: false, reason: 'budget-spent' });
     }
-    const summary = `Auto repair (attempt ${run.attempt + 1}): required checks failed [${failed.map((check) => check.id).join(', ')}]: ${(failed[0].summary ?? '').slice(0, 240)}`;
+    const summary = failed.length > 0
+      ? `Auto repair (attempt ${run.attempt + 1}): required checks failed [${failed.map((check) => check.id).join(', ')}]: ${(failed[0].summary ?? '').slice(0, 240)}`
+      : `Auto repair (attempt ${run.attempt + 1}): independent review needs-fix; ${receipt.review.summary?.slice(0, 1000) ?? `inspect failure receipt ${latestId} and acceptance coverage`}`;
     const repaired = await repairRun(root, runId, token, { failureReceiptId: latestId, summary, auto: true });
     if (!repaired.ok) return fail(repaired.run, repaired.errors, { repaired: false });
     return pass(repaired.run as HarnessRun, { repaired: true, attempt: repaired.data.attempt });
