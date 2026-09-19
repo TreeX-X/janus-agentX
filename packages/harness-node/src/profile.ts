@@ -7,7 +7,7 @@ import type { Diagnostic } from '@janus-agent/harness-core';
 export const SUPPORTED_HARNESS_PROFILE = Object.freeze({
   id: 'workflowx',
   version: '1.0.0-s1.1',
-  digest: '62e2ae8b674dd5510c9e7b8a2526e4b81710c1b6ad8d075837673708eb3c4a7a',
+  digest: 'b8440b011556dd61c7f14914497d667b1fa3af5f5e53c4bc84fb7e177d1e0aa9',
 });
 
 export async function readHarnessIdentity(root: string): Promise<{ repoId: string | null; diagnostics: Diagnostic[] }> {
