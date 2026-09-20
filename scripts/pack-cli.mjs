@@ -147,7 +147,7 @@ const stagePkg = {
   description: cliPkg.description,
   type: 'module',
   license: cliPkg.license,
-  bin: { janus: './janus.js' },
+  bin: { janus: 'janus.js' },
   ...(cliPkg.engines ? { engines: cliPkg.engines } : {}),
   ...(cliPkg.repository ? { repository: cliPkg.repository } : {}),
   keywords: ['ai', 'agent', 'cli', 'coding-assistant', 'openai-compatible'],
