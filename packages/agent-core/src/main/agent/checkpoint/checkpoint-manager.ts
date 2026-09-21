@@ -8,6 +8,9 @@ import { GitAdapter } from './git-adapter'
 import { generateUnifiedDiff } from './diff-engine'
 
 const MAX_CHECKPOINTS = 40
+const RETENTION_DAYS = 30
+const MIN_RETAINED_CHECKPOINTS = 5
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000
 const SNAPSHOT_SKIP_DIRS = new Set([
   '.git',
   '.janusX',
@@ -271,10 +274,22 @@ export class CheckpointManager {
     const checkpoints = Array.from(state.checkpoints.values())
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
+    // Count cap: the newest MAX survive regardless of age.
     const excess = checkpoints.length - MAX_CHECKPOINTS
-    if (excess <= 0) return
+    for (const cp of checkpoints.slice(0, Math.max(0, excess))) {
+      await this.deleteCheckpoint(cp.id, state.workspacePath)
+    }
 
-    for (const cp of checkpoints.slice(0, excess)) {
+    // Age cap: older than the retention window goes, except the newest
+    // MIN_RETAINED which always survive. Unparseable dates are kept.
+    const remaining = Array.from(state.checkpoints.values())
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const keepNewest = new Set(remaining.slice(-MIN_RETAINED_CHECKPOINTS).map((cp) => cp.id))
+    const cutoff = Date.now() - RETENTION_MS
+    for (const cp of remaining) {
+      if (keepNewest.has(cp.id)) continue
+      const createdAt = Date.parse(cp.createdAt)
+      if (!Number.isFinite(createdAt) || createdAt >= cutoff) continue
       await this.deleteCheckpoint(cp.id, state.workspacePath)
     }
   }

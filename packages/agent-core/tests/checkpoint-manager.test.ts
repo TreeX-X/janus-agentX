@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { join } from 'path'
 
 // --- Mock infrastructure ---
@@ -459,5 +459,79 @@ describe('CheckpointManager', () => {
     // getDiff renders (current, snapshot): 1 added snapshot line, 4 removed current lines.
     expect(rec?.additions).toBe(1)
     expect(rec?.deletions).toBe(4)
+  })
+})
+
+describe('checkpoint retention', () => {
+  let manager: import('../src/main/agent/checkpoint/checkpoint-manager').CheckpointManager
+
+  async function settleCount(expected: number): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      const list = await manager.listCheckpoints()
+      if (list.length === expected) return
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    throw new Error(`retention did not settle (want ${expected})`)
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('caps workspaces at 40 checkpoints, newest survive', async () => {
+    const { CheckpointManager } = await import('../src/main/agent/checkpoint/checkpoint-manager')
+    manager = new CheckpointManager()
+    await manager.initialize('/workspace')
+    for (let i = 0; i < 42; i++) {
+      await manager.createCheckpoint({
+        terminalId: 'term-1', engine: 'claude', prompt: `cp-${i}`, cwd: '/workspace',
+      })
+    }
+    await settleCount(40)
+    const list = await manager.listCheckpoints()
+    expect(list.some((cp) => cp.prompt === 'cp-0')).toBe(false)
+    expect(list.some((cp) => cp.prompt === 'cp-41')).toBe(true)
+  })
+
+  it('prunes checkpoints older than 30 days but keeps the newest five', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const { CheckpointManager } = await import('../src/main/agent/checkpoint/checkpoint-manager')
+    manager = new CheckpointManager()
+    await manager.initialize('/workspace')
+    for (let i = 0; i < 7; i++) {
+      await manager.createCheckpoint({
+        terminalId: 'term-1', engine: 'claude', prompt: `old-${i}`, cwd: '/workspace',
+      })
+    }
+    vi.setSystemTime(new Date('2026-02-15T00:00:00.000Z'))
+    const fresh = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'fresh', cwd: '/workspace',
+    })
+    await vi.advanceTimersByTimeAsync(1000)
+    const list = await manager.listCheckpoints()
+    // 8 total, newest 5 survive: fresh plus old-5 and old-6.
+    expect(list).toHaveLength(5)
+    expect(list.some((cp) => cp.id === fresh.id)).toBe(true)
+    expect(list.some((cp) => cp.prompt === 'old-0')).toBe(false)
+  })
+
+  it('keeps small histories past the retention window', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const { CheckpointManager } = await import('../src/main/agent/checkpoint/checkpoint-manager')
+    manager = new CheckpointManager()
+    await manager.initialize('/workspace')
+    for (let i = 0; i < 3; i++) {
+      await manager.createCheckpoint({
+        terminalId: 'term-1', engine: 'claude', prompt: `old-${i}`, cwd: '/workspace',
+      })
+    }
+    vi.setSystemTime(new Date('2026-02-15T00:00:00.000Z'))
+    await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'fresh', cwd: '/workspace',
+    })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect((await manager.listCheckpoints())).toHaveLength(4)
   })
 })
