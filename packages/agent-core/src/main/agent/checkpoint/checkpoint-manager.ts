@@ -479,6 +479,7 @@ export class CheckpointManager {
   private async captureWorkspaceHashIndex(
     cwd: string,
   ): Promise<Record<string, { hash: string; size: number }>> {
+    const state = await this.getWorkspaceState(cwd)
     const files: Record<string, { hash: string; size: number }> = {}
     const filePaths = await this.listSnapshotFilePaths(cwd)
 
@@ -486,6 +487,26 @@ export class CheckpointManager {
       const absolutePath = this.resolveWorkspacePath(cwd, relPath)
       if (!absolutePath) continue
       try {
+        // Fast path mirrors snapshot capture: unchanged stat reuses the
+        // cached hash, so turn-end queries skip full reads on quiet trees.
+        // Oversized entries never enter the cache and always stat-compare.
+        let stats: Awaited<ReturnType<typeof stat>> | null = null
+        try {
+          stats = await stat(absolutePath)
+        } catch {
+          stats = null
+        }
+        if (stats) {
+          const cached = state.hashCache.get(relPath)
+          if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size && cached.sha1) {
+            files[relPath] = { hash: cached.sha1, size: cached.size }
+            continue
+          }
+          if (stats.size >= OVERSIZED_BLOB_BYTES) {
+            files[relPath] = { hash: '', size: stats.size }
+            continue
+          }
+        }
         const content = await readFile(absolutePath)
         files[relPath] = {
           hash: this.hashContent(content),

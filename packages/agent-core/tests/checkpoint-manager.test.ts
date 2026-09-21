@@ -16,6 +16,7 @@ vi.mock('crypto', () => {
 })
 
 const mockTrackedFiles = ['src/index.ts', 'README.md']
+const mockStatOverrides: Record<string, { mtimeMs: number; size: number }> = {}
 
 vi.mock('../src/main/agent/checkpoint/git-adapter', () => {
   return {
@@ -81,9 +82,13 @@ vi.mock('fs/promises', () => {
       throw new Error('ENOENT')
     }),
     stat: vi.fn().mockImplementation(async (path: string) => {
-      if (String(path).replace(/\\/g, '/').endsWith('assets/big.bin')) {
-        return { isDirectory: () => false, mtimeMs: 1, size: 3 * 1024 * 1024 }
+      const normalized = String(path).replace(/\\/g, '/')
+      if (normalized.endsWith('assets/big.bin')) {
+        // Size tracks content like a real filesystem would.
+        return { isDirectory: () => false, mtimeMs: 1, size: Buffer.byteLength(mockFiles[String(path)] ?? '') }
       }
+      const override = mockStatOverrides[normalized]
+      if (override) return { isDirectory: () => false, mtimeMs: override.mtimeMs, size: override.size }
       return { isDirectory: () => true }
     }),
     rm: vi.fn().mockResolvedValue(undefined),
@@ -98,6 +103,7 @@ describe('CheckpointManager', () => {
   beforeEach(async () => {
     // Reset counters and file state
     Object.keys(mockFiles).forEach(key => delete mockFiles[key])
+    Object.keys(mockStatOverrides).forEach(key => delete mockStatOverrides[key])
     storedBlobs.clear()
     storeCounter = 0
     uuidCounter = 0
@@ -516,8 +522,7 @@ describe('checkpoint retention', () => {
     expect(list.some((cp) => cp.prompt === 'old-0')).toBe(false)
   })
 
-  it('keeps small histories past the retention window', async () => {
-    vi.useFakeTimers()
+  it('keeps small histories past the retention window', async () => {    vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
     const { CheckpointManager } = await import('../src/main/agent/checkpoint/checkpoint-manager')
     manager = new CheckpointManager()
@@ -533,5 +538,49 @@ describe('checkpoint retention', () => {
     })
     await vi.advanceTimersByTimeAsync(1000)
     expect((await manager.listCheckpoints())).toHaveLength(4)
+  })
+})
+
+describe('hash index fast path', () => {
+  let manager: import('../src/main/agent/checkpoint/checkpoint-manager').CheckpointManager
+
+  function primeStat() {
+    for (const name of ['src/index.ts', 'README.md']) {
+      const key = `/workspace/${name}`
+      mockStatOverrides[key] = { mtimeMs: 1000, size: Buffer.byteLength(mockFiles[join('/workspace', name)] ?? '') }
+    }
+  }
+
+  it('skips reads for stat-unchanged trees', async () => {
+    primeStat()
+    const { CheckpointManager } = await import('../src/main/agent/checkpoint/checkpoint-manager')
+    manager = new CheckpointManager()
+    await manager.initialize('/workspace')
+    const checkpoint = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'fast', cwd: '/workspace',
+    })
+    const fs = await import('fs/promises')
+    const readMock = vi.mocked(fs.readFile)
+    readMock.mockClear()
+    const records = await manager.getChangedFileRecords(checkpoint.id, '/workspace')
+    expect(records).toEqual([])
+    expect(readMock).not.toHaveBeenCalled()
+  })
+
+  it('rereads only stat-changed files', async () => {
+    primeStat()
+    const { CheckpointManager } = await import('../src/main/agent/checkpoint/checkpoint-manager')
+    manager = new CheckpointManager()
+    await manager.initialize('/workspace')
+    const checkpoint = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'fast', cwd: '/workspace',
+    })
+    mockFiles[join('/workspace', 'src/index.ts')] = 'changed content here'
+    mockStatOverrides['/workspace/src/index.ts'] = {
+      mtimeMs: 2000,
+      size: Buffer.byteLength(mockFiles[join('/workspace', 'src/index.ts')]),
+    }
+    const records = await manager.getChangedFileRecords(checkpoint.id, '/workspace')
+    expect(records.map((r) => r.path)).toEqual(['src/index.ts'])
   })
 })
