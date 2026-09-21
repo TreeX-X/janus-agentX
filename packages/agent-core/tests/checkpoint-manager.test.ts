@@ -15,6 +15,8 @@ vi.mock('crypto', () => {
   }
 })
 
+const mockTrackedFiles = ['src/index.ts', 'README.md']
+
 vi.mock('../src/main/agent/checkpoint/git-adapter', () => {
   return {
     GitAdapter: vi.fn().mockImplementation(() => ({
@@ -22,7 +24,7 @@ vi.mock('../src/main/agent/checkpoint/git-adapter', () => {
       stashPush: vi.fn().mockResolvedValue('stash@{0}'),
       stashPop: vi.fn().mockResolvedValue(undefined),
       stashDrop: vi.fn().mockResolvedValue(undefined),
-      listTrackedFiles: vi.fn().mockResolvedValue(['src/index.ts', 'README.md']),
+      listTrackedFiles: vi.fn().mockImplementation(async () => [...mockTrackedFiles]),
       hashObject: vi.fn().mockResolvedValue('abc123'),
       diff: vi.fn().mockResolvedValue(''),
     })),
@@ -78,7 +80,12 @@ vi.mock('fs/promises', () => {
       if (p.startsWith('/workspace') || mockFiles[String(path)]) return
       throw new Error('ENOENT')
     }),
-    stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+    stat: vi.fn().mockImplementation(async (path: string) => {
+      if (String(path).replace(/\\/g, '/').endsWith('assets/big.bin')) {
+        return { isDirectory: () => false, mtimeMs: 1, size: 3 * 1024 * 1024 }
+      }
+      return { isDirectory: () => true }
+    }),
     rm: vi.fn().mockResolvedValue(undefined),
   }
 })
@@ -94,6 +101,15 @@ describe('CheckpointManager', () => {
     storedBlobs.clear()
     storeCounter = 0
     uuidCounter = 0
+
+    // captureWorkspaceHashIndex is the only path using real hashing;
+    // the crypto mock leaves createHash empty, so back a deterministic one.
+    const nodeCrypto = await import('crypto')
+    vi.mocked(nodeCrypto.createHash).mockImplementation((() => ({
+      update: (content: Buffer) => ({
+        digest: () => `testhash-${content.byteLength}-${content.subarray(0, 32).toString('utf8')}`,
+      }),
+    })) as never)
 
     // Populate mockFiles with tracked file content (paths as the source code would resolve them)
     for (const root of ['/workspace', '/workspace-a', '/workspace-b']) {
@@ -337,5 +353,111 @@ describe('CheckpointManager', () => {
   ] as const)('getDiff() returns empty string for %s', async (_label, run) => {
     const diff = await run()
     expect(diff).toBe('')
+  })
+
+  it('createCheckpoint() persists session binding fields', async () => {
+    const checkpoint = await manager.createCheckpoint({
+      terminalId: 'term-1',
+      engine: 'claude',
+      prompt: 'session bound',
+      cwd: '/workspace',
+      sessionId: 'sess-1',
+      turnId: 'turn-1',
+      kind: 'done',
+      parentId: 'uuid-0',
+    })
+    expect(checkpoint.sessionId).toBe('sess-1')
+    expect(checkpoint.turnId).toBe('turn-1')
+    expect(checkpoint.kind).toBe('done')
+    expect(checkpoint.parentId).toBe('uuid-0')
+    const listed = await manager.listCheckpoints({ sessionId: 'sess-1' })
+    expect(listed.map(cp => cp.id)).toEqual([checkpoint.id])
+  })
+
+  it('restoreCheckpoint() with session scope preserves other sessions', async () => {
+    const a1 = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'a1', cwd: '/workspace', sessionId: 'sess-a',
+    })
+    await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'a2', cwd: '/workspace', sessionId: 'sess-a',
+    })
+    const b1 = await manager.createCheckpoint({
+      terminalId: 'term-2', engine: 'codex', prompt: 'b1', cwd: '/workspace', sessionId: 'sess-b',
+    })
+    await manager.restoreCheckpoint(a1.id, '/workspace', { sessionId: 'sess-a' })
+    const remaining = await manager.listCheckpoints()
+    // The restore target itself stays; the same-session later checkpoint is
+    // pruned while the other session is untouched.
+    expect(remaining.map(cp => cp.id).sort()).toEqual([a1.id, b1.id].sort())
+  })
+
+  it('restoreCheckpoint() without scope prunes the same terminal only', async () => {
+    const a1 = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'a1', cwd: '/workspace',
+    })
+    await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'a2', cwd: '/workspace',
+    })
+    const b1 = await manager.createCheckpoint({
+      terminalId: 'term-2', engine: 'codex', prompt: 'b1', cwd: '/workspace',
+    })
+    await manager.restoreCheckpoint(a1.id, '/workspace')
+    const remaining = await manager.listCheckpoints()
+    expect(remaining.map(cp => cp.id).sort()).toEqual([a1.id, b1.id].sort())
+  })
+
+  it('oversized files record without blobs and survive restore untouched', async () => {
+    mockTrackedFiles.push('assets/big.bin')
+    mockFiles[join('/workspace', 'assets/big.bin')] = 'x'.repeat(3 * 1024 * 1024)
+    try {
+      const checkpoint = await manager.createCheckpoint({
+        terminalId: 'term-1', engine: 'claude', prompt: 'big', cwd: '/workspace',
+      })
+      expect(checkpoint.filesSnapshot['assets/big.bin']?.hash).toBe('')
+      // No 3MB blob entered the store.
+      for (const content of storedBlobs.values()) {
+        expect(content.byteLength).toBeLessThan(2 * 1024 * 1024)
+      }
+      expect(await manager.getDiff(checkpoint.id, 'assets/big.bin', '/workspace')).toBe('')
+
+      mockFiles[join('/workspace', 'assets/big.bin')] = 'y'.repeat(3 * 1024 * 1024 + 1)
+      await manager.restoreCheckpoint(checkpoint.id, '/workspace')
+      // Oversized content is left alone, never deleted, never rewritten.
+      expect(mockFiles[join('/workspace', 'assets/big.bin')]).toBe('y'.repeat(3 * 1024 * 1024 + 1))
+
+      const records = await manager.getChangedFileRecords(checkpoint.id, '/workspace')
+      const big = records.find(r => r.path === 'assets/big.bin')
+      expect(big?.status).toBe('oversized')
+      expect(big?.additions).toBeNull()
+    } finally {
+      mockTrackedFiles.length = 0
+      mockTrackedFiles.push('src/index.ts', 'README.md')
+      delete mockFiles[join('/workspace', 'assets/big.bin')]
+    }
+  })
+
+  it('binary files yield empty diffs and binary records', async () => {
+    const checkpoint = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'bin', cwd: '/workspace',
+    })
+    mockFiles[join('/workspace', 'src/index.ts')] = 'AB\x00CD'
+    expect(await manager.getDiff(checkpoint.id, 'src/index.ts', '/workspace')).toBe('')
+    const records = await manager.getChangedFileRecords(checkpoint.id, '/workspace')
+    const rec = records.find(r => r.path === 'src/index.ts')
+    expect(rec?.status).toBe('binary')
+    expect(rec?.additions).toBeNull()
+  })
+
+  it('getChangedFileRecords() reports modified files with line counts', async () => {
+    const checkpoint = await manager.createCheckpoint({
+      terminalId: 'term-1', engine: 'claude', prompt: 'rec', cwd: '/workspace',
+    })
+    mockFiles[join('/workspace', 'src/index.ts')] = 'line1\nline2\nline3\n'
+    const records = await manager.getChangedFileRecords(checkpoint.id, '/workspace')
+    const rec = records.find(r => r.path === 'src/index.ts')
+    expect(rec?.status).toBe('modified')
+    // getDiff renders (current, snapshot): 1 added snapshot line, 4 removed current lines.
+    expect(rec?.additions).toBe(1)
+    expect(rec?.deletions).toBe(4)
   })
 })

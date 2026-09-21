@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'crypto'
 import { readFile, writeFile, mkdir, readdir, unlink, stat, rm } from 'fs/promises'
 import { join, relative, dirname, resolve } from 'path'
-import type { ConversationCheckpoint, ConflictInfo, CheckpointCreateOptions, SnapshotFileEntry, CheckpointEngine } from './types'
+import type { ConversationCheckpoint, ConflictInfo, CheckpointCreateOptions, SnapshotFileEntry, CheckpointEngine, ChangedFileRecord, ChangedFileStatus, RestoreScope } from './types'
+import { OVERSIZED_BLOB_BYTES } from './types'
 import { BlobStore } from './blob-store'
 import { GitAdapter } from './git-adapter'
 import { generateUnifiedDiff } from './diff-engine'
@@ -32,6 +33,27 @@ interface WorkspaceCheckpointState {
   checkpoints: Map<string, ConversationCheckpoint>
   blobStore: BlobStore
   hashCache: Map<string, HashCacheEntry>
+}
+
+/** NUL byte in the probed head marks binary content; null/empty is text. */
+function isBinaryContent(content: Buffer | null, probeBytes = 8192): boolean {
+  if (!content || content.byteLength === 0) return false
+  const end = Math.min(content.byteLength, probeBytes)
+  for (let i = 0; i < end; i++) {
+    if (content[i] === 0) return true
+  }
+  return false
+}
+
+/** Count +/- lines in a unified diff, skipping ---/+++ headers. */
+function countDiffLines(diff: string): { additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions++
+    else if (line.startsWith('-') && !line.startsWith('---')) deletions++
+  }
+  return { additions, deletions }
 }
 
 export class CheckpointManager {
@@ -116,6 +138,11 @@ export class CheckpointManager {
       filesSnapshot,
       status: 'ready',
       schemaVersion: 2,
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      ...(options.turnId ? { turnId: options.turnId } : {}),
+      ...(options.kind ? { kind: options.kind } : {}),
+      ...(options.worktreeId ? { worktreeId: options.worktreeId } : {}),
+      ...(options.parentId ? { parentId: options.parentId } : {}),
     }
 
     state.checkpoints.set(id, checkpoint)
@@ -153,12 +180,21 @@ export class CheckpointManager {
     }
   }
 
-  async restoreCheckpoint(checkpointId: string, cwd: string): Promise<{ conflicts: ConflictInfo[] }> {
+  async restoreCheckpoint(checkpointId: string, cwd: string, scope?: RestoreScope): Promise<{ conflicts: ConflictInfo[] }> {
     const state = await this.getWorkspaceState(cwd)
     const checkpoint = state.checkpoints.get(checkpointId)
     if (!checkpoint) throw new Error(`Checkpoint not found: ${checkpointId}`)
 
-    const targetPaths = new Set(Object.keys(checkpoint.filesSnapshot))
+    // Entries without a content hash were recorded oversized: the current
+    // file stays untouched and is excluded from the delete sweep below.
+    const skippedPaths = new Set(
+      Object.entries(checkpoint.filesSnapshot)
+        .filter(([, entry]) => !entry.hash)
+        .map(([path]) => path),
+    )
+    const targetPaths = new Set(
+      Object.keys(checkpoint.filesSnapshot).filter(path => !skippedPaths.has(path)),
+    )
     const currentPaths = new Set(await this.listSnapshotFilePaths(cwd))
 
     for (const path of targetPaths) {
@@ -178,22 +214,23 @@ export class CheckpointManager {
     }
 
     for (const path of currentPaths) {
-      if (targetPaths.has(path)) continue
+      if (targetPaths.has(path) || skippedPaths.has(path)) continue
       const targetPath = this.resolveWorkspacePath(cwd, path)
       if (!targetPath) continue
       await rm(targetPath, { force: true })
     }
 
-    await this.deleteCheckpointsAfter(state, checkpoint)
+    await this.deleteCheckpointsAfter(state, checkpoint, scope)
 
     return { conflicts: [] }
   }
 
-  async listCheckpoints(filter?: { terminalId?: string; engine?: CheckpointEngine; cwd?: string }): Promise<ConversationCheckpoint[]> {
+  async listCheckpoints(filter?: { terminalId?: string; engine?: CheckpointEngine; cwd?: string; sessionId?: string }): Promise<ConversationCheckpoint[]> {
     const state = await this.getWorkspaceState(filter?.cwd)
     let results = Array.from(state.checkpoints.values())
     if (filter?.terminalId) results = results.filter(cp => cp.terminalId === filter.terminalId)
     if (filter?.engine) results = results.filter(cp => cp.engine === filter.engine)
+    if (filter?.sessionId) results = results.filter(cp => cp.sessionId === filter.sessionId)
     return results.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 
@@ -214,10 +251,17 @@ export class CheckpointManager {
     return Math.max(0, ...Array.from(state.checkpoints.values()).map(cp => cp.conversationIndex)) + 1
   }
 
-  private async deleteCheckpointsAfter(state: WorkspaceCheckpointState, target: ConversationCheckpoint): Promise<void> {
-    const stale = Array.from(state.checkpoints.values()).filter(
-      cp => cp.conversationIndex > target.conversationIndex,
-    )
+  private async deleteCheckpointsAfter(state: WorkspaceCheckpointState, target: ConversationCheckpoint, scope?: RestoreScope): Promise<void> {
+    // Session scope wins, then terminal scope; without either the legacy
+    // workspace-global prune applies for backward compatibility.
+    const sessionId = scope?.sessionId ?? target.sessionId
+    const terminalId = scope?.terminalId ?? target.terminalId
+    const stale = Array.from(state.checkpoints.values()).filter((cp) => {
+      if (cp.conversationIndex <= target.conversationIndex) return false
+      if (sessionId) return cp.sessionId === sessionId
+      if (terminalId) return cp.terminalId === terminalId && !cp.sessionId
+      return true
+    })
     for (const cp of stale) {
       await this.deleteCheckpoint(cp.id, state.workspacePath)
     }
@@ -274,11 +318,14 @@ export class CheckpointManager {
     if (!checkpoint) return ''
 
     const snapshot = checkpoint.filesSnapshot[filePath]
+    // Oversized entries carry no blob: there is no content to diff.
+    if (snapshot && !snapshot.hash) return ''
     const targetContent = snapshot ? await state.blobStore.retrieve(snapshot.hash) : null
     if (snapshot && !targetContent) return ''
 
     const currentContent = await this.safeReadWorkspaceFile(cwd ?? state.workspacePath, filePath)
     if (!snapshot && !currentContent) return ''
+    if (isBinaryContent(targetContent) || isBinaryContent(currentContent)) return ''
 
     return generateUnifiedDiff(
       filePath,
@@ -299,6 +346,59 @@ export class CheckpointManager {
       if (diff) parts.push(diff)
     }
     return parts.join('\n')
+  }
+
+  async getChangedFileRecords(checkpointId: string, cwd: string): Promise<ChangedFileRecord[]> {
+    const state = await this.getWorkspaceState(cwd)
+    const checkpoint = state.checkpoints.get(checkpointId)
+    if (!checkpoint) return []
+
+    const currentFiles = await this.captureWorkspaceHashIndex(cwd)
+    const records: ChangedFileRecord[] = []
+    const paths = new Set([
+      ...Object.keys(checkpoint.filesSnapshot),
+      ...Object.keys(currentFiles),
+    ])
+    for (const path of Array.from(paths).sort()) {
+      const snapshot = checkpoint.filesSnapshot[path]
+      const current = currentFiles[path]
+      if (!snapshot && current) {
+        records.push({ path, status: 'added', additions: null, deletions: null, size: current.size })
+        continue
+      }
+      if (snapshot && !current) {
+        records.push({ path, status: 'deleted', additions: null, deletions: null, size: snapshot.size })
+        continue
+      }
+      if (!snapshot || !current) continue
+      if (!snapshot.hash) {
+        // Oversized entry: content unverifiable, compare size only.
+        if (snapshot.size !== current.size) {
+          records.push({ path, status: 'oversized', additions: null, deletions: null, size: current.size })
+        }
+        continue
+      }
+      if (snapshot.hash === current.hash && snapshot.size === current.size) continue
+      const status: ChangedFileStatus = await this.isBinaryPath(cwd, path, snapshot.hash, state)
+        ? 'binary'
+        : 'modified'
+      if (status === 'binary') {
+        records.push({ path, status, additions: null, deletions: null, size: current.size })
+        continue
+      }
+      const diff = await this.getDiff(checkpointId, path, cwd)
+      const { additions, deletions } = countDiffLines(diff)
+      records.push({ path, status, additions, deletions, size: current.size })
+    }
+    return records
+  }
+
+  private async isBinaryPath(cwd: string, path: string, hash: string, state: WorkspaceCheckpointState): Promise<boolean> {
+    const [targetContent, currentContent] = await Promise.all([
+      state.blobStore.retrieve(hash),
+      this.safeReadWorkspaceFile(cwd, path),
+    ])
+    return isBinaryContent(targetContent) || isBinaryContent(currentContent)
   }
 
   async getChangedFileCount(checkpointId: string, cwd?: string): Promise<number> {
@@ -353,6 +453,9 @@ export class CheckpointManager {
         const snapshot = checkpoint.filesSnapshot[path]
         const current = currentFiles[path]
         if (!snapshot || !current) return true
+        // Content-less (oversized) entries compare size only: the blob was
+        // never stored, so hash equality cannot be established.
+        if (!snapshot.hash) return snapshot.size !== current.size
         return snapshot.hash !== current.hash || snapshot.size !== current.size
       })
       .sort()
@@ -472,7 +575,13 @@ export class CheckpointManager {
       }
 
       // Slow path: cache miss, stat changed/unavailable, or blob evicted.
-      // Read content, (re)store the blob, and backfill the cache.
+      // Oversized files are recorded without content: full reads plus blob
+      // storage would spike memory every turn, and restore leaves them alone.
+      if (stats && stats.size >= OVERSIZED_BLOB_BYTES) {
+        files[relPath] = { path: relPath, hash: '', size: stats.size }
+        state.hashCache.delete(relPath)
+        return
+      }
       const content = await readFile(absolutePath)
       const hash = await state.blobStore.store(content)
       files[relPath] = {
@@ -569,8 +678,8 @@ export class CheckpointManager {
     for (const [path, value] of Object.entries(rawFiles)) {
       if (!value || typeof value !== 'object') continue
       const entry = value as Partial<SnapshotFileEntry> & { beforeHash?: string }
-      const hash = entry.hash ?? entry.beforeHash
-      if (!hash) continue
+      // Empty-string hash marks an oversized entry recorded without content.
+      const hash = entry.hash ?? entry.beforeHash ?? ''
       normalizedFiles[path] = {
         path,
         hash,
@@ -589,6 +698,11 @@ export class CheckpointManager {
       filesSnapshot: normalizedFiles,
       status: 'ready',
       schemaVersion: 2,
+      ...(typeof raw.sessionId === 'string' && raw.sessionId ? { sessionId: raw.sessionId } : {}),
+      ...(typeof raw.turnId === 'string' && raw.turnId ? { turnId: raw.turnId } : {}),
+      ...(raw.kind === 'done' || raw.kind === 'failed' || raw.kind === 'interrupted' ? { kind: raw.kind } : {}),
+      ...(typeof raw.worktreeId === 'string' && raw.worktreeId ? { worktreeId: raw.worktreeId } : {}),
+      ...(typeof raw.parentId === 'string' && raw.parentId ? { parentId: raw.parentId } : {}),
     }
   }
 }
