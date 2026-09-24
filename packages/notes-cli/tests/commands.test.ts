@@ -1,6 +1,6 @@
 import { SUPPORTED_HARNESS_PROFILE } from '@janus-agent/harness-node';
 /** CLI command surface over tmp repos: create/list/show/check/apply. */
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -53,14 +53,62 @@ describe('commands', () => {
   });
   it('filters search results before applying the limit', async () => {
     const root = makeRepo();
-    for (let i = 0; i < 21; i += 1) {
-      await cmdCreate(root, { kind: 'requirement', title: `Match requirement ${i}`, sections: REQ_SECTIONS, lifecycle: 'proposed' });
+    const seed = await cmdCreate(root, { kind: 'requirement', title: 'Match requirement 0', sections: REQ_SECTIONS, lifecycle: 'proposed' });
+    const template = (await cmdShow(root, seed.data!.id)).data!.text;
+    for (let i = 1; i < 21; i += 1) {
+      const id = '11111111-1111-4111-8111-' + String(i).padStart(12, '0');
+      writeFileSync(join(root, '.agents/notes/requirement-' + i + '.md'), template.replace(seed.data!.id, id).replace('Match requirement 0', 'Match requirement ' + i));
     }
     await cmdCreate(root, { kind: 'idea', title: 'Match idea', sections: { Background: 'P.', Idea: 'E.', 'Open questions': 'S.' }, lifecycle: 'draft' });
     const result = await cmdSearch(root, 'Match', { kind: 'idea', limit: 1 });
     expect(result.ok).toBe(true);
     expect(result.data?.notes).toHaveLength(1);
     expect(result.data?.notes[0].kind).toBe('idea');
+    expect(result.data).toMatchObject({ limit: 1, truncated: false, coverage: { status: 'complete' } });
+    expect((await cmdSearch(root, 'Match', { limit: 1 })).data?.truncated).toBe(true);
+  });
+  it('keeps broken prose references informational and visible through shared reads', async () => {
+    const root = makeRepo();
+    const first = await cmdCreate(root, { kind: 'requirement', title: 'Linked', sections: { ...REQ_SECTIONS, Scope: '[Missing](missing.md)' }, lifecycle: 'proposed' });
+    expect(first.ok).toBe(true);
+    expect((await cmdCreate(root, { kind: 'requirement', title: 'Next', sections: REQ_SECTIONS, lifecycle: 'proposed' })).ok).toBe(true);
+    const shown = await cmdShow(root, first.data!.uri!);
+    expect(shown.data).toMatchObject({ sourceHash: shown.data?.sha256, indexedSourceHash: shown.data?.sha256, matchesSnapshot: true });
+    const checked = await cmdCheck(root);
+    expect(checked.ok).toBe(true);
+    expect(checked.data?.readDiagnostics.some((d) => d.message.includes('missing.md'))).toBe(true);
+    writeFileSync(join(root, '.agents/notes/legacy.md'), '# Agent Note: History');
+    const listed = await cmdList(root);
+    expect(listed.data).toMatchObject({ coverage: { checkoutRoot: root, status: 'complete' }, excluded: [{ classification: 'legacy' }] });
+  });
+  it('never resolves an external URI or a duplicate identity to a local first match', async () => {
+    const root = makeRepo();
+    const created = await cmdCreate(root, { kind: 'requirement', title: 'T', sections: REQ_SECTIONS, lifecycle: 'proposed' });
+    const shown = await cmdShow(root, created.data!.id);
+    const external = 'note://aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/' + created.data!.id;
+    expect(await cmdShow(root, external)).toMatchObject({ ok: false, errors: [{ code: 'NOT_READY' }] });
+    writeFileSync(join(root, '.agents/notes/duplicate.md'), shown.data!.text);
+    expect((await cmdShow(root, created.data!.id)).ok).toBe(false);
+    expect((await cmdShow(root, created.data!.uri!)).ok).toBe(false);
+    expect((await cmdShow(root, 'duplicate.md')).ok).toBe(false);
+    const listed = await cmdList(root);
+    expect(listed.data?.notes).toEqual([]);
+    expect(listed.data?.excluded).toHaveLength(2);
+  });
+  it('requires a specific path when basenames collide', async () => {
+    const root = makeRepo();
+    for (const name of ['a', 'b']) {
+      expect((await cmdCreate(root, { kind: 'requirement', title: name, sections: REQ_SECTIONS, lifecycle: 'proposed', relativePath: '.agents/notes/' + name + '/same.md' })).ok).toBe(true);
+    }
+    expect(await cmdShow(root, 'same.md')).toMatchObject({ ok: false, errors: [{ code: 'CONFLICT' }] });
+    expect((await cmdShow(root, '.agents/notes/a/same.md')).ok).toBe(true);
+  });
+  it('does not infer a missing Note from a failed scan', async () => {
+    const root = makeRepo();
+    rmdirSync(join(root, '.agents/notes'));
+    writeFileSync(join(root, '.agents/notes'), 'not a directory');
+    expect(await cmdShow(root, 'unknown')).toMatchObject({ ok: false, errors: [{ code: 'NOT_READY' }] });
+    expect((await cmdList(root)).data?.coverage.status).toBe('incomplete');
   });
   it('applies a replace once, then reports the stale retry as conflict', async () => {
     const root = makeRepo();

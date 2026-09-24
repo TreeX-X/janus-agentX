@@ -41,5 +41,14 @@ describe('resolver', () => {
     const missing = await resolveCheckout({ repoId: REPO, candidates: [{ checkoutId: 'x', path: join(tmpdir(), 'nope-xyz') }] });
     expect(missing.ok).toBe(false);
     await expect(checkoutMatchesRepo(checkout('other-repo'), REPO)).resolves.toBe(false);
+    expect((await resolveCheckout({ repoId: REPO, candidates: [{ checkoutId: 'wrong', path: checkout('other-repo') }] })).ok).toBe(false);
+  });
+  it('rejects multiple selections and never substitutes for an unavailable selection', async () => {
+    const a = checkout(REPO);
+    const b = checkout(REPO);
+    const bindings = [{ repoId: REPO, checkoutId: 'a', path: a, selected: true }, { repoId: REPO, checkoutId: 'b', path: b, selected: true }];
+    const candidates = bindings.map(({ checkoutId, path }) => ({ checkoutId, path }));
+    expect((await resolveCheckout({ repoId: REPO, candidates, map: { version: 1, bindings } })).ok).toBe(false);
+    expect((await resolveCheckout({ repoId: REPO, candidates: [candidates[0]], map: { version: 1, bindings: [bindings[1]] } })).ok).toBe(false);
   });
 });

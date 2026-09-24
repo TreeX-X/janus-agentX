@@ -6,6 +6,7 @@
  */
 export * from './schema.js';
 export * from './parse.js';
+export * from './markdown.js';
 export * from './serialize.js';
 export * from './relations.js';
 export * from './hash.js';

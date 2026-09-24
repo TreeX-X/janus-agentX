@@ -3,6 +3,7 @@
  * Pure against an explicit root: no process.cwd, no console, no exit.
  * Every result carries `{ok, data?, errors[]}`; `exitFor` maps to the
  * fixed CLI codes 0/2/3/4/5/6. `cli.ts` only parses argv and prints.
+ * Note: shared read scope and snapshots — .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
  */
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -10,7 +11,6 @@ import { resolve } from 'node:path';
 import {
   checkAcyclic,
   parseNote,
-  unresolvedTargets,
   validateNote,
   type Diagnostic,
   type ParsedNote,
@@ -20,10 +20,13 @@ import {
   buildNoteIndex,
   noteUri,
   queryNoteIndex,
+  readIndexedNote,
   readTaskResult,
+  resolveNoteReference,
   searchNoteIndex,
   sha256HexBytes,
   type ApplyOpts,
+  type NoteCoverage,
   type TaskResult,
 } from '@janus-agent/harness-node';
 
@@ -59,11 +62,9 @@ export interface NoteSummary {
   excerpt: string;
   outgoing: number;
   incoming: number;
-}
-
-function excerpt(text: string, max = 240): string {
-  const compact = text.replace(/\s+/g, ' ').trim();
-  return compact.length <= max ? compact : `${compact.slice(0, max - 1).trimEnd()}…`;
+  sourceHash: string;
+  mentions: number;
+  mentionedBy: number;
 }
 
 function summarize(index: Awaited<ReturnType<typeof buildNoteIndex>>, entry: import('@janus-agent/harness-node').IndexEntry): NoteSummary {
@@ -76,50 +77,92 @@ function summarize(index: Awaited<ReturnType<typeof buildNoteIndex>>, entry: imp
     kind: note.meta.kind,
     lifecycle: note.meta.lifecycle,
     relPath: entry.relPath,
-    excerpt: excerpt(note.body),
+    excerpt: entry.view?.excerpt ?? '',
     outgoing: uri ? (index.outgoing.get(uri)?.length ?? 0) : 0,
     incoming: uri ? (index.backlinks.get(uri)?.length ?? 0) : 0,
+    sourceHash: entry.sourceHash!,
+    mentions: uri ? index.mentions.filter((mention) => mention.sourceUri === uri).length : 0,
+    mentionedBy: uri ? (index.mentionBacklinks.get(uri)?.length ?? 0) : 0,
+  };
+}
+
+export interface NoteListResult {
+  notes: NoteSummary[];
+  coverage: NoteCoverage;
+  excluded: CheckRow[];
+  readDiagnostics: Diagnostic[];
+  limit: number | null;
+  truncated: boolean;
+}
+
+function readContext(index: Awaited<ReturnType<typeof buildNoteIndex>>) {
+  return {
+    coverage: index.coverage,
+    excluded: index.entries.filter((entry) => entry.classification !== 'valid').map(checkRow),
+    readDiagnostics: [...index.diagnostics, ...index.readDiagnostics],
   };
 }
 
 export async function cmdList(
   root: string,
   filters: { kind?: string; lifecycle?: string; tag?: string; relationType?: import('@janus-agent/harness-core').RelationType; codePath?: string; q?: string } = {},
-): Promise<CliResult<{ notes: NoteSummary[] }>> {
+): Promise<CliResult<NoteListResult>> {
   const index = await buildNoteIndex(root);
   const notes = queryNoteIndex(index, filters).map((entry) => summarize(index, entry));
   notes.sort((a, b) => a.relPath.localeCompare(b.relPath));
-  return { ok: true, data: { notes }, errors: [] };
+  return { ok: true, data: { notes, ...readContext(index), limit: null, truncated: false }, errors: [] };
 }
 
 export async function cmdSearch(
   root: string,
   query: string,
   options: { kind?: string; lifecycle?: string; tag?: string; limit?: number } = {},
-): Promise<CliResult<{ notes: NoteSummary[] }>> {
+): Promise<CliResult<NoteListResult>> {
   const index = await buildNoteIndex(root);
   // Apply metadata filters inside the search pass so the limit is counted
   // only against eligible notes.
-  const notes = searchNoteIndex(index, query, options.limit ?? 20, options)
-    .map((hit) => summarize(index, hit.entry));
-  return { ok: true, data: { notes }, errors: [] };
+  const limit = options.limit ?? 20;
+  const hits = searchNoteIndex(index, query, limit + 1, options);
+  const notes = hits.slice(0, limit).map((hit) => summarize(index, hit.entry));
+  return { ok: true, data: { notes, ...readContext(index), limit, truncated: hits.length > limit }, errors: [] };
 }
 
-export async function cmdShow(root: string, ref: string): Promise<CliResult<{ text: string; sha256: string; summary: NoteSummary }>> {
+export async function cmdShow(root: string, ref: string): Promise<CliResult<{ text: string; sha256: string; sourceHash: string; indexedSourceHash: string | null; matchesSnapshot: boolean; summary: NoteSummary; coverage: NoteCoverage }>> {
   const index = await buildNoteIndex(root);
-  const id = ref.includes('://') ? ref.split('/').pop() ?? ref : ref;
-  let entry = index.byId.get(id);
-  entry ??= index.entries.find((e) => e.relPath === ref || e.relPath.endsWith(`/${ref}`));
-  if (!entry || !entry.note) {
+  let entry;
+  if (ref.includes('://') || ref.startsWith('note:')) {
+    const resolution = resolveNoteReference(index, ref);
+    if (resolution.status !== 'resolved') return { ok: false, errors: resolution.diagnostics };
+    entry = index.byUri.get(ref);
+  } else {
+    if (index.conflicts.has(ref)) return { ok: false, errors: [{ code: 'CONFLICT', message: `ambiguous Note identity: ${ref}` }] };
+    entry = index.byId.get(ref) ?? index.byPath.get(ref);
+    if (!entry) {
+      const matches = index.entries.filter((e) => e.relPath.endsWith(`/${ref}`));
+      if (matches.length > 1) return { ok: false, errors: [{ code: 'CONFLICT', message: `ambiguous Note path: ${ref}` }] };
+      entry = matches[0];
+    }
+  }
+  if (!entry) {
+    if (index.coverage.status === 'incomplete' || !index.repoId) {
+      return { ok: false, errors: [{ code: 'NOT_READY', message: `note unavailable in incomplete or unbound scan: ${ref}` }] };
+    }
     return { ok: false, errors: [{ code: 'NOT_FOUND', message: `unknown note: ${ref}` }] };
   }
-  const text = await readFile(resolve(root, entry.relPath), 'utf8');
+  if (entry.diagnostics.length) return { ok: false, errors: entry.diagnostics };
+  if (!entry.note) return { ok: false, errors: [{ code: 'SCHEMA_INVALID', message: 'unmanaged Markdown has no Note identity; read its source file' }] };
+  const source = await readIndexedNote(index, entry.relPath);
+  if (!source.ok) return { ok: false, errors: source.diagnostics };
   return {
     ok: true,
     data: {
-      text,
-      sha256: entry.sha256,
+      text: source.text,
+      sha256: source.sha256,
+      sourceHash: source.sourceHash,
+      indexedSourceHash: source.indexedSourceHash,
+      matchesSnapshot: source.matchesSnapshot,
       summary: summarize(index, entry),
+      coverage: index.coverage,
     },
     errors: [],
   };
@@ -203,19 +246,27 @@ export interface CheckRow {
   id: string | null;
   diagnostics: Diagnostic[];
   foreign?: boolean;
+  classification: import('@janus-agent/harness-node').IndexEntry['classification'];
+  sourceHash: string | null;
 }
 
-export async function cmdCheck(root: string): Promise<CliResult<{ files: number; rows: CheckRow[]; repoDiagnostics: Diagnostic[] }>> {
+function checkRow(entry: import('@janus-agent/harness-node').IndexEntry): CheckRow {
+  return { relPath: entry.relPath, id: entry.note?.meta.id ?? null, diagnostics: entry.diagnostics, classification: entry.classification, sourceHash: entry.sourceHash, ...(entry.foreign ? { foreign: true } : {}) };
+}
+
+export async function cmdCheck(root: string): Promise<CliResult<{ files: number; rows: CheckRow[]; repoDiagnostics: Diagnostic[]; coverage: NoteCoverage; readDiagnostics: Diagnostic[] }>> {
   const index = await buildNoteIndex(root);
-  const rows: CheckRow[] = index.entries.map((e) => ({ relPath: e.relPath, id: e.note?.meta.id ?? null, diagnostics: e.diagnostics, ...(e.foreign ? { foreign: true } : {}) }));
+  const rows = index.entries.map(checkRow);
   const repoDiagnostics: Diagnostic[] = [...index.diagnostics];
   if (index.repoId) {
     const nodes = index.entries
       .filter((e) => e.note && e.diagnostics.length === 0)
       .map((e) => ({ uri: noteUri(index.repoId as string, (e.note as ParsedNote).meta.id), note: e.note as ParsedNote }));
     repoDiagnostics.push(...checkAcyclic(nodes));
-    for (const u of unresolvedTargets(nodes)) {
-      repoDiagnostics.push({ code: 'UNRESOLVED_REFERENCE', message: `unresolved: ${u.target}`, path: u.from });
+    for (const edge of index.relations) {
+      if (edge.resolution.status === 'missing' || edge.resolution.status === 'invalid' || edge.resolution.status === 'ambiguous') {
+        repoDiagnostics.push(...edge.resolution.diagnostics.map((problem) => ({ ...problem, path: edge.sourceUri })));
+      }
     }
   } else {
     repoDiagnostics.push({ code: 'NOT_READY', message: 'unbound repo (no harness.json): graph checks deferred' });
@@ -223,7 +274,7 @@ export async function cmdCheck(root: string): Promise<CliResult<{ files: number;
   const rowErrors = rows.flatMap((r) => r.diagnostics);
   const repoErrors = repoDiagnostics.filter((d) => d.code !== 'NOT_READY');
   const bad = rowErrors.length > 0 || repoErrors.length > 0;
-  return { ok: !bad, data: { files: index.entries.length, rows, repoDiagnostics }, errors: [...rowErrors, ...repoErrors] };
+  return { ok: !bad, data: { files: index.entries.length, rows, repoDiagnostics, coverage: index.coverage, readDiagnostics: index.readDiagnostics }, errors: [...rowErrors, ...repoErrors] };
 }
 
 export async function cmdApply(

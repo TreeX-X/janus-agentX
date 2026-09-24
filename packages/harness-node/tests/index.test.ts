@@ -56,10 +56,10 @@ describe('derived note index', () => {
     const aUri = `note://${REPO}/${A}`;
     const bUri = `note://${REPO}/${B}`;
     expect(index.byUri.get(aUri)?.note?.title).toBe('Alpha search behavior');
-    expect(index.outgoing.get(aUri)).toEqual([
-      { sourceUri: aUri, targetUri: bUri, type: 'related-to' },
+    expect(index.outgoing.get(aUri)).toMatchObject([
+      { sourceUri: aUri, targetUri: bUri, type: 'related-to', declarations: ['relations[0]'], resolution: { status: 'resolved' } },
     ]);
-    expect(index.relations).toEqual([
+    expect(index.relations).toMatchObject([
       { sourceUri: aUri, targetUri: bUri, type: 'related-to' },
     ]);
     expect(index.backlinks.get(bUri)).toEqual([{ sourceUri: aUri, type: 'related-to' }]);

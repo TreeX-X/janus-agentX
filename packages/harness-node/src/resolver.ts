@@ -3,6 +3,7 @@
  * Shared notes never carry machine paths. Binding a repoId to a local
  * checkout is convenience data under `.local/`; missing bindings block
  * writes but never block reading assets already received.
+ * Note: selected checkout read scope — .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
  */
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -70,14 +71,18 @@ export async function resolveCheckout(args: ResolveArgs): Promise<
   for (const c of live) {
     if (await checkoutMatchesRepo(c.path, args.repoId)) matching.push(c);
   }
-  const pool = matching.length > 0 ? matching : live;
+  const pool = matching;
   if (pool.length === 0) {
     return { ok: false, diagnostics: [diag('NOT_FOUND', `no checkout for repo ${args.repoId}`)] };
   }
-  const selected = args.map?.bindings.find((b) => b.repoId === args.repoId && b.selected);
-  if (selected) {
-    const hit = pool.find((c) => resolve(c.path) === resolve(selected.path));
+  const selected = args.map?.bindings.filter((b) => b.repoId === args.repoId && b.selected) ?? [];
+  if (selected.length > 1) {
+    return { ok: false, diagnostics: [diag('APPROVAL_REQUIRED', `multiple selected checkouts for repo ${args.repoId}; choose one`)] };
+  }
+  if (selected.length === 1) {
+    const hit = pool.find((c) => c.checkoutId === selected[0].checkoutId && resolve(c.path) === resolve(selected[0].path));
     if (hit) return { ok: true, ...hit };
+    return { ok: false, diagnostics: [diag('NOT_READY', `selected checkout unavailable for repo ${args.repoId}`)] };
   }
   if (pool.length === 1) return { ok: true, ...pool[0] };
   return {

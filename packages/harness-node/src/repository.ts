@@ -7,9 +7,10 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
-import { parseNote, validateNote, type Diagnostic, type ParsedNote, type RelationType } from '@janus-agent/harness-core';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { checkAcyclic, parseNote, readMarkdownView, validateNote, type Diagnostic, type MarkdownView, type ParsedNote, type RelationType } from '@janus-agent/harness-core';
 import { claimsHarnessSchema, readHarnessIdentity } from './profile.js';
+import { deriveMentions, resolveNoteReference, type IndexedMention, type NoteResolution } from './references.js';
 
 export const NOTES_DIR = join('.agents', 'notes');
 export const LOCAL_DIR = join('.agents', '.local');
@@ -28,7 +29,7 @@ export function sha256HexBytes(bytes: Uint8Array): string {
 
 export function isWithin(root: string, p: string): boolean {
   const rel = relative(resolve(root), resolve(p));
-  return rel !== '' && !rel.startsWith('..') && !resolve(p).startsWith(resolve(root) + '..');
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 export function toPosixRel(root: string, abs: string): string {
@@ -41,40 +42,55 @@ export interface ScannedFile {
 }
 
 /** Recursive `.md` scan. Escaping symlinks are skipped with a diagnostic, never followed. */
-export async function listNoteFiles(root: string): Promise<{ files: ScannedFile[]; diagnostics: Diagnostic[] }> {
+export async function listNoteFiles(root: string): Promise<{ files: ScannedFile[]; diagnostics: Diagnostic[]; complete: boolean }> {
   const files: ScannedFile[] = [];
   const diagnostics: Diagnostic[] = [];
   const base = resolve(root, NOTES_DIR);
-  const walk = async (dir: string): Promise<void> => {
-    let entries;
+  let realRoot: string;
+  try { realRoot = await realpath(root); } catch {
+    return { files, diagnostics: [diag('IO_ERROR', 'checkout unreadable', resolve(root))], complete: false };
+  }
+  // No Notes directory is an empty corpus; an unreadable/dangling one is not.
+  try { await lstat(base); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { files, diagnostics, complete: true };
+    return { files, diagnostics: [diag('IO_ERROR', 'notes directory unreadable', base)], complete: false };
+  }
+  const walk = async (dir: string, ancestors: Set<string>): Promise<void> => {
     try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const full = join(dir, e.name);
-      if (e.isSymbolicLink()) {
-        try {
-          const target = await realpath(full);
-          if (!isWithin(resolve(root), target)) {
-            diagnostics.push(diag('SCHEMA_INVALID', `symlink escapes root: ${toPosixRel(root, full)}`, full));
-            continue;
-          }
-          const st = await lstat(target);
-          if (st.isDirectory()) await walk(full);
-          else if (full.endsWith('.md')) files.push({ absPath: full, relPath: toPosixRel(root, full) });
-        } catch {
-          diagnostics.push(diag('NOT_FOUND', `dangling symlink: ${toPosixRel(root, full)}`, full));
-        }
-        continue;
+      const actual = await realpath(dir);
+      if (!isWithin(realRoot, actual) || ancestors.has(actual)) {
+        diagnostics.push(diag('SCHEMA_INVALID', `directory escapes checkout or cycles: ${toPosixRel(root, dir)}`, dir));
+        return;
       }
-      if (e.isDirectory()) await walk(full);
-      else if (e.isFile() && e.name.endsWith('.md')) files.push({ absPath: full, relPath: toPosixRel(root, full) });
+      const branch = new Set(ancestors).add(actual);
+      const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => compareText(a.name, b.name));
+      for (const e of entries) {
+        const full = join(dir, e.name);
+        if (e.isSymbolicLink()) {
+          try {
+            const target = await realpath(full);
+            if (!isWithin(realRoot, target)) {
+              diagnostics.push(diag('SCHEMA_INVALID', `symlink escapes root: ${toPosixRel(root, full)}`, full));
+              continue;
+            }
+            const st = await lstat(target);
+            if (st.isDirectory()) await walk(full, branch);
+            else if (st.isFile() && full.toLowerCase().endsWith('.md')) files.push({ absPath: full, relPath: toPosixRel(root, full) });
+          } catch {
+            diagnostics.push(diag('IO_ERROR', `symlink unreadable: ${toPosixRel(root, full)}`, full));
+          }
+          continue;
+        }
+        if (e.isDirectory()) await walk(full, branch);
+        else if (e.isFile() && e.name.toLowerCase().endsWith('.md')) files.push({ absPath: full, relPath: toPosixRel(root, full) });
+      }
+    } catch {
+      diagnostics.push(diag('IO_ERROR', `directory unreadable: ${toPosixRel(root, dir)}`, dir));
     }
   };
-  await walk(base);
-  return { files, diagnostics };
+  await walk(base, new Set());
+  files.sort((a, b) => compareText(a.relPath, b.relPath));
+  return { files, diagnostics, complete: diagnostics.length === 0 };
 }
 
 export interface ReadNote {
@@ -99,7 +115,11 @@ export async function writeFileAtomic(absPath: string, text: string): Promise<vo
 export interface IndexEntry {
   relPath: string;
   sha256: string;
+  /** Raw bytes from the same read as note/view. Null only when unreadable. */
+  sourceHash: string | null;
+  classification: 'valid' | 'legacy' | 'foreign' | 'malformed' | 'conflicting-identity' | 'unreadable';
   note?: ParsedNote;
+  view?: MarkdownView;
   diagnostics: Diagnostic[];
   foreign?: boolean;
 }
@@ -108,6 +128,8 @@ export interface IndexedRelation {
   sourceUri: string;
   targetUri: string;
   type: RelationType;
+  declarations: string[];
+  resolution: NoteResolution;
   criteria?: string[];
   scope?: 'full' | 'partial';
   reason?: string;
@@ -126,12 +148,29 @@ export interface NoteIndex {
   entries: IndexEntry[];
   byId: Map<string, IndexEntry>;
   byUri: Map<string, IndexEntry>;
+  byPath: Map<string, IndexEntry>;
+  /** Every member is retained; no winner is published in byId/byUri. */
+  conflicts: Map<string, IndexEntry[]>;
+  coverage: NoteCoverage;
   /** Outgoing edges keyed by source URI; includes the parent edge. */
   outgoing: Map<string, IndexedRelation[]>;
   /** Incoming edges keyed by target URI; rebuilt from Note frontmatter. */
   backlinks: Map<string, Backlink[]>;
   /** All declared edges, including targets outside this repository. */
   relations: IndexedRelation[];
+  mentions: IndexedMention[];
+  /** Declared mentions from this checkout; inspect resolution before navigation. */
+  mentionBacklinks: Map<string, IndexedMention[]>;
+  /** Navigation/locator diagnostics never gate managed mutations. */
+  readDiagnostics: Diagnostic[];
+  diagnostics: Diagnostic[];
+}
+
+export interface NoteCoverage {
+  checkoutRoot: string;
+  status: 'complete' | 'incomplete';
+  /** Deterministic manifest hash, not a sourceHash or an atomic filesystem snapshot. */
+  snapshotHash: string;
   diagnostics: Diagnostic[];
 }
 
@@ -223,7 +262,7 @@ export function searchNoteIndex(index: NoteIndex, query: string, limit = 20, fil
 /** Full-repo index. Invalid files diagnose in place; originals are never altered here. */
 export async function buildNoteIndex(root: string): Promise<NoteIndex> {
   const diagnostics: Diagnostic[] = [];
-  const { files, diagnostics: scanDiags } = await listNoteFiles(root);
+  const { files, diagnostics: scanDiags, complete } = await listNoteFiles(root);
   diagnostics.push(...scanDiags);
   const identity = await readHarnessIdentity(root);
   const repoId = identity.repoId;
@@ -234,49 +273,83 @@ export async function buildNoteIndex(root: string): Promise<NoteIndex> {
     try {
       read = await readNoteFile(f.absPath);
     } catch {
-      const entry: IndexEntry = { relPath: f.relPath, sha256: '', diagnostics: [diag('IO_ERROR', `unreadable: ${f.relPath}`, f.relPath)] };
+      const entry: IndexEntry = { relPath: f.relPath, sha256: '', sourceHash: null, classification: 'unreadable', diagnostics: [diag('IO_ERROR', `unreadable: ${f.relPath}`, f.relPath)] };
       entries.push(entry);
+      diagnostics.push(...entry.diagnostics);
       continue;
     }
     if (!claimsHarnessSchema(read.text)) {
-      entries.push({ relPath: f.relPath, sha256: read.sha256, diagnostics: [], foreign: true });
+      const view = readMarkdownView(read.text);
+      const classification = view.headings.find((heading) => heading.depth === 1)?.text.startsWith('Agent Note:') ? 'legacy' : 'foreign';
+      entries.push({ relPath: f.relPath, sha256: read.sha256, sourceHash: read.sha256, classification, view, diagnostics: [], foreign: true });
       continue;
     }
     try {
       const note = parseNote(read.text);
-      entries.push({ relPath: f.relPath, sha256: read.sha256, note, diagnostics: validateNote(note) });
+      const problems = validateNote(note);
+      entries.push({ relPath: f.relPath, sha256: read.sha256, sourceHash: read.sha256, classification: problems.length ? 'malformed' : 'valid', note, view: readMarkdownView(note.body), diagnostics: problems });
     } catch (e) {
       const code = (e as { code?: Diagnostic['code'] }).code ?? 'SCHEMA_INVALID';
-      entries.push({ relPath: f.relPath, sha256: read.sha256, diagnostics: [diag(code, (e as Error).message, f.relPath)] });
+      entries.push({ relPath: f.relPath, sha256: read.sha256, sourceHash: read.sha256, classification: 'malformed', diagnostics: [diag(code, (e as Error).message, f.relPath)] });
     }
   }
   const byId = new Map<string, IndexEntry>();
   const byUri = new Map<string, IndexEntry>();
+  const byPath = new Map(entries.map((entry) => [entry.relPath, entry]));
+  const conflicts = new Map<string, IndexEntry[]>();
+  const idGroups = new Map<string, IndexEntry[]>();
+  const pathGroups = new Map<string, IndexEntry[]>();
+  for (const entry of entries) {
+    const pathKey = entry.relPath.toLowerCase();
+    pathGroups.set(pathKey, [...(pathGroups.get(pathKey) ?? []), entry]);
+    if (entry.note) {
+      const id = entry.note.meta.id;
+      idGroups.set(id, [...(idGroups.get(id) ?? []), entry]);
+    }
+  }
+  const markConflict = (group: IndexEntry[], message: string): void => {
+    for (const entry of group) {
+      const problem = diag('SCHEMA_INVALID', message, entry.relPath);
+      entry.classification = 'conflicting-identity';
+      entry.diagnostics.push(problem);
+      diagnostics.push(problem);
+    }
+  };
+  for (const group of pathGroups.values()) {
+    if (group.length > 1) markConflict(group, `case-colliding paths: ${group.map((e) => e.relPath).join(', ')}`);
+  }
+  for (const [id, group] of idGroups) {
+    if (group.length > 1) markConflict(group, `duplicate note id ${id}: ${group.map((e) => e.relPath).join(', ')}`);
+    if (group.some((entry) => entry.classification === 'conflicting-identity')) {
+      conflicts.set(id, group);
+      continue;
+    }
+    const entry = group[0];
+    byId.set(id, entry); // Unique invalid records remain available to write validation.
+    if (repoId && entry.diagnostics.length === 0) byUri.set(noteUri(repoId, id), entry);
+  }
   const outgoing = new Map<string, IndexedRelation[]>();
   const backlinks = new Map<string, Backlink[]>();
   const relations: IndexedRelation[] = [];
-  const lowerPaths = new Map<string, string>();
-  for (const e of entries) {
-    const lower = e.relPath.toLowerCase();
-    const clash = lowerPaths.get(lower);
-    if (clash !== undefined && clash !== e.relPath) {
-      diagnostics.push(diag('SCHEMA_INVALID', `case-colliding paths: ${clash} vs ${e.relPath}`, e.relPath));
-    } else lowerPaths.set(lower, e.relPath);
-    if (!e.note) continue;
-    const prev = byId.get(e.note.meta.id);
-    if (prev) {
-      diagnostics.push(diag('SCHEMA_INVALID', `duplicate note id ${e.note.meta.id}: ${prev.relPath} vs ${e.relPath}`, e.relPath));
-    }
-    else byId.set(e.note.meta.id, e);
-    if (!repoId || prev || e.diagnostics.length > 0) continue;
-    const sourceUri = noteUri(repoId, e.note.meta.id);
-    byUri.set(sourceUri, e);
-
-    const addRelation = (relation: { type: RelationType; target: string; criteria?: string[]; scope?: 'full' | 'partial'; reason?: string }): void => {
+  const coverageDiagnostics = [...scanDiags, ...entries.filter((entry) => entry.classification === 'unreadable').flatMap((entry) => entry.diagnostics)];
+  const coverage: NoteCoverage = {
+    checkoutRoot: resolve(root),
+    status: complete && coverageDiagnostics.length === 0 ? 'complete' : 'incomplete',
+    snapshotHash: sha256HexBytes(Buffer.from(JSON.stringify([resolve(root), repoId, identity.diagnostics, entries.map((entry) => [entry.relPath, entry.sourceHash, entry.classification]), coverageDiagnostics]))),
+    diagnostics: coverageDiagnostics,
+  };
+  const index: NoteIndex = { repoId, entries, byId, byUri, byPath, conflicts, coverage, outgoing, backlinks, relations, mentions: [], mentionBacklinks: new Map(), readDiagnostics: [], diagnostics };
+  for (const [sourceUri, e] of byUri) {
+    const addRelation = (relation: { type: RelationType; target: string; criteria?: string[]; scope?: 'full' | 'partial'; reason?: string }, declaration: string): void => {
+      const existing = (outgoing.get(sourceUri) ?? []).find((edge) => edge.type === relation.type && edge.targetUri === relation.target &&
+        JSON.stringify(edge.criteria) === JSON.stringify(relation.criteria) && edge.scope === relation.scope && edge.reason === relation.reason);
+      if (existing) { existing.declarations.push(declaration); return; }
       const edge: IndexedRelation = {
         sourceUri,
         targetUri: relation.target,
         type: relation.type,
+        declarations: [declaration],
+        resolution: resolveNoteReference(index, relation.target),
         ...(relation.criteria ? { criteria: [...relation.criteria] } : {}),
         ...(relation.scope ? { scope: relation.scope } : {}),
         ...(relation.reason ? { reason: relation.reason } : {}),
@@ -296,13 +369,44 @@ export async function buildNoteIndex(root: string): Promise<NoteIndex> {
       backlinks.set(edge.targetUri, incoming);
     };
 
-    if (e.note.meta.parent) addRelation({ type: 'parent', target: e.note.meta.parent });
-    for (const relation of e.note.meta.relations ?? []) addRelation(relation);
+    const meta = e.note!.meta;
+    if (meta.parent) addRelation({ type: 'parent', target: meta.parent }, 'parent');
+    for (const [position, relation] of (meta.relations ?? []).entries()) addRelation(relation, `relations[${position}]`);
   }
   for (const incoming of backlinks.values()) incoming.sort((a, b) => compareText(a.sourceUri, b.sourceUri) || compareText(a.type, b.type));
   for (const edges of outgoing.values()) edges.sort((a, b) => compareText(a.targetUri, b.targetUri) || compareText(a.type, b.type));
   relations.sort((a, b) => compareText(a.sourceUri, b.sourceUri) || compareText(a.targetUri, b.targetUri) || compareText(a.type, b.type));
-  return { repoId, entries, byId, byUri, outgoing, backlinks, relations, diagnostics };
+  index.mentions = deriveMentions(index);
+  for (const mention of index.mentions) {
+    if (!mention.targetUri || mention.resolution.status === 'invalid' || mention.resolution.status === 'ambiguous') continue;
+    const incoming = index.mentionBacklinks.get(mention.targetUri) ?? [];
+    incoming.push(mention);
+    index.mentionBacklinks.set(mention.targetUri, incoming);
+  }
+  index.readDiagnostics = [
+    ...checkAcyclic([...byUri].map(([uri, entry]) => ({ uri, note: entry.note! }))),
+    ...relations.flatMap((edge) => edge.resolution.diagnostics.map((problem) => ({ ...problem, path: edge.sourceUri }))),
+    ...index.mentions.flatMap((mention) => mention.resolution.diagnostics.map((problem) => ({ ...problem, path: mention.sourceUri }))),
+  ];
+  return index;
+}
+
+/** Re-read only an indexed path in its selected checkout. Fresh bytes own the hash. */
+export async function readIndexedNote(index: NoteIndex, relPath: string): Promise<
+  | { ok: true; text: string; sha256: string; sourceHash: string; indexedSourceHash: string | null; matchesSnapshot: boolean }
+  | { ok: false; diagnostics: Diagnostic[] }
+> {
+  const entry = index.byPath.get(relPath);
+  if (!entry) return { ok: false, diagnostics: [diag('NOT_FOUND', 'path is outside the indexed corpus', relPath)] };
+  try {
+    const root = await realpath(index.coverage.checkoutRoot);
+    const path = await realpath(resolve(index.coverage.checkoutRoot, relPath));
+    if (!isWithin(root, path)) return { ok: false, diagnostics: [diag('PERMISSION_DENIED', 'source escapes selected checkout', relPath)] };
+    const read = await readNoteFile(path);
+    return { ok: true, text: read.text, sha256: read.sha256, sourceHash: read.sha256, indexedSourceHash: entry.sourceHash, matchesSnapshot: read.sha256 === entry.sourceHash };
+  } catch {
+    return { ok: false, diagnostics: [diag('IO_ERROR', 'indexed source is no longer readable; rebuild before inferring deletion', relPath)] };
+  }
 }
 
 export function noteUri(repoId: string, noteId: string): string {
