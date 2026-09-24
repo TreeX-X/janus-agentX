@@ -6,7 +6,7 @@
  */
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { cmdApply, cmdCheck, cmdCreate, cmdList, cmdResult, cmdShow, exitFor, type CliResult, type CreateInput } from './commands.js';
+import { cmdApply, cmdCheck, cmdCreate, cmdList, cmdResult, cmdSearch, cmdShow, exitFor, type CliResult, type CreateInput } from './commands.js';
 
 export interface RunOut {
   exit: number;
@@ -17,7 +17,8 @@ export interface RunOut {
 function usage(): string {
   return [
     'wfx-notes [--root <dir>] [--json] <command> [args]',
-    '  list [--kind K] [--lifecycle L] [--tag T] [--q TEXT]',
+    '  list [--kind K] [--lifecycle L] [--tag T] [--relation TYPE] [--code PATH] [--q TEXT]',
+    '  search <TEXT> [--kind K] [--lifecycle L] [--tag T] [--limit N]',
     '  show <id|uri|path>',
     '  result <id|uri|path> [--closeout]',
     '  create --kind K --title T --body-file F [--lifecycle L] [--class C] [--tags a,b]',
@@ -62,6 +63,8 @@ export async function run(rawArgv: string[], cwd: string): Promise<RunOut> {
             kind: takeFlag(a, '--kind'),
             lifecycle: takeFlag(a, '--lifecycle'),
             tag: takeFlag(a, '--tag'),
+            relationType: takeFlag(a, '--relation') as import('@janus-agent/harness-core').RelationType | undefined,
+            codePath: takeFlag(a, '--code'),
             q: takeFlag(a, '--q'),
           }),
         );
@@ -69,6 +72,22 @@ export async function run(rawArgv: string[], cwd: string): Promise<RunOut> {
       case 'show': {
         if (!rest[0]) return { exit: 2, stdout: json ? JSON.stringify({ ok: false, data: null, errors: [{ code: 'SCHEMA_INVALID', message: 'show needs a ref' }] }) + '\n' : usage() + '\n', stderr: '' };
         return emit(await cmdShow(root, rest[0]));
+      }
+      case 'search': {
+        const a = [...rest];
+        const query = a.shift();
+        if (!query) return emit({ ok: false, errors: [{ code: 'SCHEMA_INVALID', message: 'search needs text' }] });
+        const limitRaw = takeFlag(a, '--limit');
+        const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+        if (limitRaw !== undefined && (!Number.isInteger(limit) || (limit as number) < 1)) {
+          return emit({ ok: false, errors: [{ code: 'SCHEMA_INVALID', message: 'search limit must be a positive integer' }] });
+        }
+        return emit(await cmdSearch(root, query, {
+          kind: takeFlag(a, '--kind'),
+          lifecycle: takeFlag(a, '--lifecycle'),
+          tag: takeFlag(a, '--tag'),
+          limit,
+        }));
       }
       case 'result': {
         if (!rest[0] || rest[0].startsWith('--')) return emit({ ok: false, errors: [{ code: 'SCHEMA_INVALID', message: 'result needs a task ref' }] });

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { cmdApply, cmdCheck, cmdCreate, cmdList, cmdShow, exitFor } from '../src/index.js';
+import { cmdApply, cmdCheck, cmdCreate, cmdList, cmdSearch, cmdShow, exitFor } from '../src/index.js';
 
 const REPO = '8fa19f17-c717-43a8-93a7-810a5e0cbc91';
 
@@ -40,12 +40,27 @@ describe('commands', () => {
     const listed = await cmdList(root, {});
     expect(listed.data?.notes).toHaveLength(1);
     expect(listed.data?.notes[0].uri).toContain(REPO);
+    expect(listed.data?.notes[0].excerpt).toContain('P.');
+    expect(listed.data?.notes[0]).toMatchObject({ incoming: 0, outgoing: 0 });
+    expect((await cmdList(root, { q: 'Expected behavior' })).data?.notes).toHaveLength(1);
+    expect((await cmdSearch(root, 'One.')).data?.notes).toHaveLength(1);
     const shown = await cmdShow(root, created.data?.id ?? '');
     expect(shown.ok).toBe(true);
     expect(shown.data?.sha256).toHaveLength(64);
     const checked = await cmdCheck(root);
     expect(checked.ok).toBe(true);
     expect(exitFor(checked.errors)).toBe(0);
+  });
+  it('filters search results before applying the limit', async () => {
+    const root = makeRepo();
+    for (let i = 0; i < 21; i += 1) {
+      await cmdCreate(root, { kind: 'requirement', title: `Match requirement ${i}`, sections: REQ_SECTIONS, lifecycle: 'proposed' });
+    }
+    await cmdCreate(root, { kind: 'idea', title: 'Match idea', sections: { Background: 'P.', Idea: 'E.', 'Open questions': 'S.' }, lifecycle: 'draft' });
+    const result = await cmdSearch(root, 'Match', { kind: 'idea', limit: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.data?.notes).toHaveLength(1);
+    expect(result.data?.notes[0].kind).toBe('idea');
   });
   it('applies a replace once, then reports the stale retry as conflict', async () => {
     const root = makeRepo();

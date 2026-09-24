@@ -19,7 +19,9 @@ import {
   applyChangeSet,
   buildNoteIndex,
   noteUri,
+  queryNoteIndex,
   readTaskResult,
+  searchNoteIndex,
   sha256HexBytes,
   type ApplyOpts,
   type TaskResult,
@@ -54,34 +56,52 @@ export interface NoteSummary {
   kind: string;
   lifecycle: string;
   relPath: string;
+  excerpt: string;
+  outgoing: number;
+  incoming: number;
+}
+
+function excerpt(text: string, max = 240): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length <= max ? compact : `${compact.slice(0, max - 1).trimEnd()}…`;
+}
+
+function summarize(index: Awaited<ReturnType<typeof buildNoteIndex>>, entry: import('@janus-agent/harness-node').IndexEntry): NoteSummary {
+  const note = entry.note!;
+  const uri = index.repoId ? noteUri(index.repoId, note.meta.id) : null;
+  return {
+    id: note.meta.id,
+    uri,
+    title: note.title,
+    kind: note.meta.kind,
+    lifecycle: note.meta.lifecycle,
+    relPath: entry.relPath,
+    excerpt: excerpt(note.body),
+    outgoing: uri ? (index.outgoing.get(uri)?.length ?? 0) : 0,
+    incoming: uri ? (index.backlinks.get(uri)?.length ?? 0) : 0,
+  };
 }
 
 export async function cmdList(
   root: string,
-  filters: { kind?: string; lifecycle?: string; tag?: string; q?: string } = {},
+  filters: { kind?: string; lifecycle?: string; tag?: string; relationType?: import('@janus-agent/harness-core').RelationType; codePath?: string; q?: string } = {},
 ): Promise<CliResult<{ notes: NoteSummary[] }>> {
   const index = await buildNoteIndex(root);
-  const notes: NoteSummary[] = [];
-  for (const e of index.entries) {
-    if (!e.note) continue;
-    const m = e.note.meta;
-    if (filters.kind && m.kind !== filters.kind) continue;
-    if (filters.lifecycle && m.lifecycle !== filters.lifecycle) continue;
-    if (filters.tag && !(m.tags ?? []).includes(filters.tag)) continue;
-    if (filters.q) {
-      const q = filters.q.toLowerCase();
-      if (!e.note.title.toLowerCase().includes(q) && !m.id.toLowerCase().includes(q)) continue;
-    }
-    notes.push({
-      id: m.id,
-      uri: index.repoId ? noteUri(index.repoId, m.id) : null,
-      title: e.note.title,
-      kind: m.kind,
-      lifecycle: m.lifecycle,
-      relPath: e.relPath,
-    });
-  }
+  const notes = queryNoteIndex(index, filters).map((entry) => summarize(index, entry));
   notes.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  return { ok: true, data: { notes }, errors: [] };
+}
+
+export async function cmdSearch(
+  root: string,
+  query: string,
+  options: { kind?: string; lifecycle?: string; tag?: string; limit?: number } = {},
+): Promise<CliResult<{ notes: NoteSummary[] }>> {
+  const index = await buildNoteIndex(root);
+  // Apply metadata filters inside the search pass so the limit is counted
+  // only against eligible notes.
+  const notes = searchNoteIndex(index, query, options.limit ?? 20, options)
+    .map((hit) => summarize(index, hit.entry));
   return { ok: true, data: { notes }, errors: [] };
 }
 
@@ -99,14 +119,7 @@ export async function cmdShow(root: string, ref: string): Promise<CliResult<{ te
     data: {
       text,
       sha256: entry.sha256,
-      summary: {
-        id: entry.note.meta.id,
-        uri: index.repoId ? noteUri(index.repoId, entry.note.meta.id) : null,
-        title: entry.note.title,
-        kind: entry.note.meta.kind,
-        lifecycle: entry.note.meta.lifecycle,
-        relPath: entry.relPath,
-      },
+      summary: summarize(index, entry),
     },
     errors: [],
   };
