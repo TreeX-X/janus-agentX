@@ -310,12 +310,23 @@ export async function runJanusAgentLoop(
       toolResults.push(...await Promise.all(parallelCalls.map(execute)))
       let steeredMidTurn = drainSteering()
       if (!steeredMidTurn) {
-        for (const call of sequentialCalls) {
+        for (let index = 0; index < sequentialCalls.length; index += 1) {
           if (drainSteering()) {
             steeredMidTurn = true
+            // Pairing invariant: every emitted call ships exactly one result.
+            // Preempted calls are never executed, but skipping their results
+            // breaks strict call/response pairing downstream (Gemini rejects
+            // the next request with a 400), so each gets a superseded marker.
+            // Note: preemption root cause for JanusX blueprint/island 400s — see JanusX .agents/notes/2026-09-25-blueprint-dialog-separation--2ec6c79b.md
+            for (const skipped of sequentialCalls.slice(index)) {
+              const result = { content: 'Tool call skipped: superseded by a steered follow-up message.', isError: true }
+              emit({ type: 'tool_execution_end', call: skipped, result, isError: true })
+              terminateFlags.push(false)
+              toolResults.push(toolMessage(skipped, result))
+            }
             break
           }
-          toolResults.push(await execute(call))
+          toolResults.push(await execute(sequentialCalls[index]))
         }
       }
       messages.push(...toolResults, ...pendingInject)

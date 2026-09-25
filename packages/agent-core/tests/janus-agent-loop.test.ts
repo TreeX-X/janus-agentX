@@ -142,7 +142,7 @@ describe('JanusAgentLoop', () => {
     expect(consumed).toEqual([{ type: 'steering_consumed', keys: ['s1'] }])
   })
 
-  it('R6-full: applies steering between sequential tools and skips unexecuted calls', async () => {
+  it('R6-full: applies steering between sequential tools and marks preempted calls skipped', async () => {
     const port = new AgentSteeringPort()
     const executed: string[] = []
     const events: JanusAgentEvent[] = []
@@ -169,12 +169,16 @@ describe('JanusAgentLoop', () => {
       },
       onEvent: (event) => events.push(event),
     })
-    // a 已完成结果保留，b 永不执行，steering 紧跟 a 结果之后�?
+    // a 已完成结果保留，b 永不执行但配一个 superseded 占位结果，
+    // 保持 call/response 一一配对；steering 紧跟 a 结果之后。
     expect(executed).toEqual(['a'])
     const contents = messages.map((message) => message.content)
     expect(contents).toContain('a-result')
     expect(contents).toContain('steer after a')
     expect(contents.indexOf('steer after a')).toBeGreaterThan(contents.indexOf('a-result'))
+    const skipped = messages.filter((message) => message.toolCallId === 'b')
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].content).toMatch(/superseded/i)
     expect(events.some((event) => event.type === 'steering_consumed')).toBe(true)
     expect(messages.at(-1)).toEqual({ role: 'assistant', content: 'done' })
   })
