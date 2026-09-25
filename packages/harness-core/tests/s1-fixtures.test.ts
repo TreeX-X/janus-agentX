@@ -35,6 +35,7 @@ describe.runIf(PRESENT)('S1 fixture reuse', () => {
   for (const v of [
     'valid-idea',
     'valid-initiative',
+    'valid-initiative-interfaces',
     'valid-requirement',
     'valid-decision',
     'valid-decision-implemented',

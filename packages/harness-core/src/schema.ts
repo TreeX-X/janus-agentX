@@ -86,6 +86,7 @@ export const KNOWN_TOP_KEYS = [
   'relations',
   'repositories',
   'codeRefs',
+  'interfaces',
   'work',
   'execution',
   'disposition',
@@ -105,6 +106,13 @@ export interface CodeRef {
   path: string;
   symbol?: string;
   role: 'entry' | 'implementation' | 'test';
+}
+
+/** S1.2 module ports. Provider is explicit; consumers never infer it by name. */
+export interface NoteInterface {
+  name: string;
+  direction: 'provides' | 'needs';
+  provider?: string;
 }
 
 export interface WorkScope {
@@ -163,6 +171,7 @@ export interface HarnessNoteMeta {
   relations?: Relation[];
   repositories?: { primary?: string; related?: string[] };
   codeRefs?: CodeRef[];
+  interfaces?: NoteInterface[];
   work?: WorkContract;
   execution?: TaskExecution;
   disposition?: { reason: string };

@@ -6,8 +6,8 @@ import type { Diagnostic } from '@janus-agent/harness-core';
 /** Pinned to the LF-normalized WorkFlowX standard manifest, never to a checkout path. */
 export const SUPPORTED_HARNESS_PROFILE = Object.freeze({
   id: 'workflowx',
-  version: '1.0.0-s1.1',
-  digest: 'b8440b011556dd61c7f14914497d667b1fa3af5f5e53c4bc84fb7e177d1e0aa9',
+  version: '1.0.0-s1.2',
+  digest: '1b9500b1ea5101231650f04f2e5e2c480001ccf9512ec173b8e5d737bf2d6923',
 });
 
 export async function readHarnessIdentity(root: string): Promise<{ repoId: string | null; diagnostics: Diagnostic[] }> {

@@ -12,20 +12,21 @@ const STD = join(GIT, 'WorkFlowX', 'standards', 'harness-note', '1', 'fixtures')
 const PRESENT = existsSync(join(STD, 'valid-task.md'));
 
 describe.runIf(PRESENT)('S1 fixtures via CLI', () => {
-  it('checks the six valid fixtures clean', async () => {
+  it('checks every valid standard fixture clean', async () => {
     const root = mkdtempSync(join(tmpdir(), 's1cli-'));
     mkdirSync(join(root, '.agents', 'notes'), { recursive: true });
     writeFileSync(
       join(root, '.agents', 'harness.json'),
       JSON.stringify({ schemaVersion: 1, repoId: '8fa19f17-c717-43a8-93a7-810a5e0cbc91', name: 't', profile: SUPPORTED_HARNESS_PROFILE }),
     );
-    for (const f of readdirSync(STD).filter((x) => x.startsWith('valid-') && x.endsWith('.md'))) {
+    const fixtures = readdirSync(STD).filter((x) => x.startsWith('valid-') && x.endsWith('.md'));
+    for (const f of fixtures) {
       writeFileSync(join(root, '.agents', 'notes', f), readFileSync(join(STD, f)));
     }
     const checked = await cmdCheck(root);
     expect(checked.errors).toEqual([]);
     expect(checked.ok).toBe(true);
     const listed = await cmdList(root, {});
-    expect(listed.data?.notes).toHaveLength(6);
+    expect(listed.data?.notes).toHaveLength(fixtures.length);
   });
 });

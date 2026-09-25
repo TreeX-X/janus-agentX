@@ -1,6 +1,6 @@
 {
   "name": "@janus-agent/harness-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Shared harness data logic for WorkflowX notes: parse, schema, graph, hash, lifecycle, task state, receipt, changeset. No fs, no Electron, no agent loop, no LLM.",
   "main": "./dist/index.js",

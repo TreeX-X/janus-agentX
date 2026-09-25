@@ -4,6 +4,7 @@
  * anchors/aliases are rejected, never silently kept). Body structure via
  * mdast+GFM (fenced code never counts as headings or checklist items).
  * No filesystem access. Raw bytes stay with the caller (S3 owns files).
+ * R1: note://972afef3-2fc7-49de-a3ee-7e041225d28c/81fc137e-9c56-4d3a-88e4-10f175852c97
  */
 import { parseDocument, visit, isMap, isScalar, isAlias } from 'yaml';
 import type { Document, ParsedNode } from 'yaml';
@@ -427,6 +428,35 @@ export function validateNote(note: ParsedNote): Diagnostic[] {
     }
   }
   const rels = m.relations ?? [];
+  if (m.interfaces !== undefined) {
+    if (m.kind !== 'initiative') out.push(diag('SCHEMA_INVALID', 'interfaces only for initiative', 'interfaces'));
+    if (!Array.isArray(m.interfaces)) out.push(diag('SCHEMA_INVALID', 'interfaces must be array', 'interfaces'));
+    else {
+      const seen = new Set<string>();
+      for (const [i, declaration] of m.interfaces.entries()) {
+        const path = `interfaces[${i}]`;
+        if (!isRecord(declaration)) {
+          out.push(diag('SCHEMA_INVALID', 'interface must be object', path));
+          continue;
+        }
+        if (typeof declaration.name !== 'string' || !/^[A-Z][A-Za-z0-9_]*$/.test(declaration.name)) {
+          out.push(diag('SCHEMA_INVALID', 'bad interface name', `${path}.name`));
+        }
+        if (declaration.direction !== 'provides' && declaration.direction !== 'needs') {
+          out.push(diag('SCHEMA_INVALID', 'bad interface direction', `${path}.direction`));
+        }
+        for (const key of Object.keys(declaration)) {
+          if (!['name', 'direction', 'provider'].includes(key)) out.push(diag('SCHEMA_INVALID', 'unknown interface key', `${path}.${key}`));
+        }
+        if (declaration.provider !== undefined && (typeof declaration.provider !== 'string' || !NOTE_URI_RE.test(declaration.provider))) {
+          out.push(diag('SCHEMA_INVALID', 'bad interface provider', `${path}.provider`));
+        }
+        const key = `${declaration.direction}:${declaration.name}`;
+        if (seen.has(key)) out.push(diag('SCHEMA_INVALID', 'duplicate interface declaration', path));
+        seen.add(key);
+      }
+    }
+  }
   if (!Array.isArray(rels)) out.push(diag('SCHEMA_INVALID', 'relations must be array', 'relations'));
   else {
     const seen = new Set<string>();
