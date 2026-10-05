@@ -13,11 +13,29 @@ Janus 对话式 Agent 引擎：对话 + 工作区工具调用循环（`runJanusA
 开箱即用的独立 `janus` 命令行：在终端里常驻交互（TUI），或以 headless 方式跑单轮 Agent，
 读写工作区文件、执行命令、操作 git，全程可审批、可审计。
 
-> 范围说明：**仅 janus-agent**。外部 claude / codex / opencode CLI 的子进程桥接不在此仓库
->（在 JanusX 壳里，位于 `src/main/janus-runner/`）。`project.*` 工具实现同样留在壳里，
->只共享类型与 host 端口；`command.run` 与 `git.*` 在 `@janus-agent/node-hosts` 中有
->规范的纯 Node 实现（同一工具名契约，经共享 runtime 审批），供 janus CLI 直接使用。
->知识服务、roundtable 与 blueprint 维护实现也在壳里，这里只保留共享类型与 host 端口。
+agentX 维护通用工程能力，包括工作区工具、命令、Git、MCP、Note 与 WorkflowX。
+JanusX 复用这些包，并保留蓝图关注、高亮、圆桌及应用进程界面的扩展。
+外部 claude / codex / opencode CLI 的桌面进程桥接位于 JanusX 的 `src/main/janus-runner/`。
+
+## WorkflowX 与 MCP
+
+工程会话默认执行 xdo。输入 `/xdo`、`/xdel`、`/xflow` 切换当前会话模式，命令后可直接附带需求。
+xdel 使用已接受的任务 Note 进行独立实现和自审；xflow 增加独立评审，最多自动返修一次。
+任务的验证回执与 Git 落地分开核实。xdo 提示缺少的收尾回执，不把普通命令成功当作验收通过。
+
+MCP 配置放在用户目录 `~/.janus/mcp.json`，CLI 与 Janus 使用同一个连接实现，重启宿主后读取：
+
+```json
+{
+  "mcpServers": {
+    "local-service": { "command": "node", "args": ["/absolute/path/server.mjs"] },
+    "remote-service": { "url": "https://example.com/mcp", "disabled": true }
+  }
+}
+```
+
+stdio 可配置 `env`、`cwd`，HTTP 可配置 `headers`。工具调用遵循当前审批策略，`mcp.status` 返回连接状态。
+`note.init` 提供最小 Note 工作区的预览与应用；完整 WorkflowX 配置安装由接入流程负责。
 
 ## 特性
 

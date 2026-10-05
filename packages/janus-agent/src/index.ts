@@ -2,6 +2,8 @@
  * @file Public barrel for @janus-agent/janus-agent
  */
 export { runChatTurn } from './orchestrator/chat-turn.js'
+export { WORKFLOWX_DEFAULT_MODE, WORKFLOWX_MODES, parseWorkflowXCommand, resolveWorkflowXMode, workflowXPrompt } from './workflowx.js'
+export type { WorkflowXMode } from './workflowx.js'
 export type { ChatTurnRequest, ChatTurnResult } from './orchestrator/chat-turn.js'
 export type {
   AgentSessionDescriptor,

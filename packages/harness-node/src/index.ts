@@ -16,3 +16,18 @@ export * from './journal.js';
 export * from './transaction.js';
 export * from './watcher.js';
 export * from './git-evidence.js';
+
+export * from './note-types.js';
+
+export * from './note-provider.js';
+
+export * from './note-index-patch.js';
+
+export * from './share-import.js';
+
+export * from './note-service.js';
+
+export * from './undo.js';
+
+export * from './note-editor.js';
+export * from './init.js';

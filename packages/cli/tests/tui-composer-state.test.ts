@@ -44,7 +44,7 @@ describe('filterCompletions', () => {
     expect(filterCompletions('/mo', 3).map((item) => item.name)).toEqual(['model'])
     expect(filterCompletions('/MODEL', 6).map((item) => item.name)).toEqual(['model'])
     expect(filterCompletions('/e', 2).map((item) => item.name)).toEqual(['effort', 'exit'])
-    expect(filterCompletions('/x', 2)).toEqual([])
+    expect(filterCompletions('/x', 2).map(item => item.name)).toEqual(['xdo', 'xdel', 'xflow'])
   })
 
   it('covers the latest commands (effort/connect/status)', () => {
@@ -84,7 +84,7 @@ describe('shouldConfirmCompletion', () => {
     expect(shouldConfirmCompletion('/model', filterCompletions('/model', 6))).toBe(false)
     expect(shouldConfirmCompletion('/MODEL', filterCompletions('/MODEL', 6))).toBe(false)
     expect(shouldConfirmCompletion('/', filterCompletions('/', 1))).toBe(false)
-    expect(shouldConfirmCompletion('/x', filterCompletions('/x', 2))).toBe(false)
+    expect(shouldConfirmCompletion('/x', filterCompletions('/x', 2))).toBe(true)
   })
 })
 

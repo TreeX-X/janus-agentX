@@ -28,7 +28,8 @@ import type { JanusAgentMessage } from '@janus-agent/agent-core'
 import { createChatModel } from './model.js'
 import { FALLBACK_MODEL_LIMITS, resolveModelLimits } from './model-limits.js'
 import { saveAuthFile } from './auth.js'
-import { JobManager, registerNodeHostTools } from '@janus-agent/node-hosts'
+import { JobManager, registerNodeHostTools, connectConfiguredMcp, type McpToolManager } from '@janus-agent/node-hosts'
+import { parseWorkflowXCommand } from '@janus-agent/janus-agent'
 import type { ApprovalModeOption } from './args.js'
 import { postJanusxHook } from './janusx-hook.js'
 import { DEFAULT_EFFORT, normalizeEffort, type EffortLevel } from './effort.js'
@@ -137,6 +138,7 @@ interface ApprovalRequestShape {
 }
 
 export class CliSession {
+  private mcp?: McpToolManager
   private readonly runtime: Runtime
   private readonly hosts: JobManager
   private readonly sessionId: string
@@ -145,6 +147,7 @@ export class CliSession {
   private readonly taskRegistries = new Map<string, ConversationRegistry>()
   private verificationSessionId: string | null = null
   private taskSessionId: string | null = null
+  private workflowSessionIds = new Set<string>()
   private hookConversationId: string | null = null
   private readonly workspaceRoot: string
   private readonly catalog: ProviderCatalog
@@ -319,6 +322,7 @@ export class CliSession {
     const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS
     const streamTextFn: ChatTurnPorts['streamTextFn'] = config.streamTextFn
       ?? streamChatModel
+    const workflowSessionIds = new Set<string>()
     const ports: ChatTurnPorts = {
       model: {
         // Placeholder until a model arrives: sendTurn refuses turns while
@@ -327,6 +331,12 @@ export class CliSession {
         getMaxTurns: () => maxTurns,
       },
       sessions: {
+        forkSession: async (parentId, caller) => {
+          const child = await runtime.forkSession(parentId, caller)
+          workflowSessionIds.add(child.id)
+          return { sessionId: child.id, ...child.workspace, status: child.status }
+        },
+        closeSession: async id => { try { await runtime.cancelSession(id) } finally { workflowSessionIds.delete(id) } },
         getSession: (id) => {
           const current = runtime.getSession(id)
           if (!current || current.status !== 'running') return null
@@ -383,6 +393,8 @@ export class CliSession {
       effortId,
     })
     session.rebuildTransport()
+    session.mcp = await connectConfiguredMcp(runtime.registry)
+    session.workflowSessionIds = workflowSessionIds
     return session
   }
 
@@ -518,7 +530,7 @@ export class CliSession {
       const typed = event as { type?: string; request?: Partial<ApprovalRequestShape> }
       if (typed.type !== 'approval-requested') return
       const request = typed.request
-      if (!request || (request.sessionId !== this.sessionId && request.sessionId !== this.verificationSessionId && request.sessionId !== this.taskSessionId) || typeof request.id !== 'string') return
+      if (!request || typeof request.sessionId !== 'string' || (request.sessionId !== this.sessionId && request.sessionId !== this.verificationSessionId && request.sessionId !== this.taskSessionId && !this.workflowSessionIds.has(request.sessionId)) || typeof request.id !== 'string') return
       const snapshot: ApprovalRequestShape = {
         id: request.id,
         sessionId: request.sessionId,
@@ -934,6 +946,7 @@ export class CliSession {
     this.runtime.setApprovalMode(this.sessionId, mode)
     if (this.verificationSessionId) this.runtime.setApprovalMode(this.verificationSessionId, mode)
     if (this.taskSessionId) this.runtime.setApprovalMode(this.taskSessionId, mode)
+    for (const id of this.workflowSessionIds) this.runtime.setApprovalMode(id, mode)
   }
 
   /**
@@ -976,10 +989,12 @@ export class CliSession {
     task?: TaskTurnContext,
   ): Promise<ChatTurnResult> {
     const modelId = this.modelId
-    if (!modelId) {
+    const command = parseWorkflowXCommand(prompt)
+    const modeOnly = !!command && !command.prompt
+    if (!modelId && !modeOnly) {
       throw new Error(`${task ? 'CAPABILITY_UNAVAILABLE: ' : ''}${MISSING_MODEL_MESSAGE}`)
     }
-    if (!this.hasApiKey() && !this.hasCustomTransport) {
+    if (!this.hasApiKey() && !this.hasCustomTransport && !modeOnly) {
       throw new Error(`${task ? 'CAPABILITY_UNAVAILABLE: ' : ''}${MISSING_API_KEY_MESSAGE}`)
     }
     const requestId = randomUUID()
@@ -1178,7 +1193,10 @@ export class CliSession {
       cwd: this.workspaceRoot,
       env: this.env,
     })
+    for (const id of [...this.workflowSessionIds]) await this.runtime.cancelSession(id).catch(() => undefined)
+    this.workflowSessionIds.clear()
     await this.hosts.dispose()
+    await this.mcp?.close()
     await this.runtime.cancelSession(this.sessionId).catch(() => undefined)
   }
 }

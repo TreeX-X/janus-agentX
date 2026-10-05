@@ -79,3 +79,5 @@ export type {
   ChatWorkspaceResource,
 } from './shared/ipc/llm'
 export type { KnowledgeContextResult, KnowledgeRecallTrace } from './shared/knowledge'
+export { ManagedChatSession, type NoteEvidence } from './main/llm/managed-chat-session'
+export type { ChatContextCheckpoint, ChatContextStatus } from './shared/chat-context'

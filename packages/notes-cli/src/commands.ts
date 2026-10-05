@@ -12,6 +12,7 @@ import {
   checkAcyclic,
   parseNote,
   validateNote,
+  createNoteInput,
   type Diagnostic,
   type ParsedNote,
 } from '@janus-agent/harness-core';
@@ -183,22 +184,7 @@ export async function cmdCreate(root: string, input: CreateInput): Promise<CliRe
   if (!bound.repoId) {
     return { ok: false, errors: [{ code: 'NOT_READY', message: 'init .agents/harness.json with a repoId first' }] };
   }
-  const created = new Date().toISOString().slice(0, 10);
-  const id = randomUUID().toLowerCase();
-  const body = [`# ${input.title}`, '']
-    .concat(...Object.entries(input.sections).flatMap(([name, text]) => [`## ${name}`, '', text, '']))
-    .join('\n');
-  const meta = {
-    schema: 'harness-note/1',
-    id,
-    kind: input.kind,
-    lifecycle: input.lifecycle ?? 'draft',
-    created,
-    ...(input.class ? { class: input.class } : {}),
-    ...(input.tags ? { tags: input.tags } : {}),
-  };
-  const fmLines = Object.entries(meta).map(([k, v]) => `${k}: ${formatYamlValue(v)}`);
-  const afterMarkdown = `---\n${fmLines.join('\n')}\n---\n\n${body}`;
+  const { id, markdown: afterMarkdown } = createNoteInput(input.kind, input.title, null, input);
   let note: ParsedNote;
   try {
     note = parseNote(afterMarkdown);
@@ -233,12 +219,6 @@ export async function cmdCreate(root: string, input: CreateInput): Promise<CliRe
   const relPath = report.results[0]?.relPath ?? '';
   const index = await buildNoteIndex(root);
   return { ok: true, data: { relPath, id, uri: index.repoId ? noteUri(index.repoId, id) : null }, errors: [] };
-}
-
-function formatYamlValue(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map((x) => (typeof x === 'string' && /[:#\s]/.test(x) ? JSON.stringify(x) : String(x))).join(', ')}]`;
-  if (typeof v === 'string' && /[:#\n]/.test(v)) return JSON.stringify(v);
-  return String(v);
 }
 
 export interface CheckRow {

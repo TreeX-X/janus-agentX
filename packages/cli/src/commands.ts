@@ -6,6 +6,8 @@
  * unknown commands stay an error so typos never reach the model.
  */
 
+import { parseWorkflowXCommand, WORKFLOWX_MODES } from '@janus-agent/janus-agent/workflowx'
+
 export type BuiltinCommandName =
   | 'help'
   | 'model'
@@ -34,6 +36,7 @@ export interface ParsedInput {
 }
 
 const KNOWN_COMMANDS: ReadonlySet<string> = new Set([
+  ...WORKFLOWX_MODES,
   'help',
   'model',
   'effort',
@@ -59,6 +62,7 @@ function splitArgs(text: string): string[] {
 export function parseInputLine(line: string): ParsedInput {
   const trimmed = line.trim()
   if (!trimmed) return { kind: 'empty' }
+  if (parseWorkflowXCommand(trimmed)) return { kind: 'input', text: trimmed }
   if (!trimmed.startsWith('/')) return { kind: 'input', text: trimmed }
   const [name, ...args] = splitArgs(trimmed.slice(1))
   if (!name) return { kind: 'empty' }
@@ -76,6 +80,9 @@ export const KNOWN_COMMAND_NAMES: readonly string[] = [...KNOWN_COMMANDS]
 export function commandHelpText(): string {
   return [
     'Commands:',
+    '  /xdo [request]        Direct WorkflowX execution (default).',
+    '  /xdel [request]       Task-based delegated implementation and self-review.',
+    '  /xflow [request]      Discovery, implementation and independent evaluation.',
     '  /help                 Show this help.',
     '  /model [id]           Pick model (bare opens picker) or switch directly.',
     '  /effort [level|num]   Pick reasoning effort (bare opens picker) or switch directly.',

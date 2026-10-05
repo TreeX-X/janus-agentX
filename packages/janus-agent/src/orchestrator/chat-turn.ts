@@ -18,6 +18,7 @@
  * - observation capture skipped when aborted
  */
 import type { ZodType } from 'zod/v3'
+import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import {
   AgentSteeringPort,
@@ -69,10 +70,16 @@ import {
 import { createTodoLoopTool, createTodoVercelTool, TODOWRITE_TOOL_NAME } from './todo-tool.js'
 import { ASKUSER_TOOL_NAME, createAskLoopTool, createAskVercelTool } from './ask-tool.js'
 import type { ChatTurnPorts } from '../ports.js'
+import { parseWorkflowXCommand, resolveWorkflowXMode, workflowXPrompt, type WorkflowXMode } from '../workflowx.js'
+import { executeWorkflowXTask } from '../workflowx-executor.js'
+import { WorkflowXCloseout } from '../workflowx-closeout.js'
+import { readTaskResult } from '@janus-agent/harness-node'
 
 export interface ChatTurnRequest {
   requestId: string
   messages: ChatMessage[]
+  /** Host resolves this from full user history before compaction. Never model supplied. */
+  workflowMode?: WorkflowXMode
   providerId: string
   modelId?: string
   sourceTag?: string
@@ -194,6 +201,14 @@ export async function runChatTurn(
   let turnStarts = 0
   let lastTurnToolResults = 0
 
+  const workflowMode = request.workflowMode ?? resolveWorkflowXMode(request.messages)
+  const workflowCommand = parseWorkflowXCommand(latestUserQuery(request.messages))
+  if (workflowCommand && !workflowCommand.prompt && sourceTag !== 'harness') {
+    const text = `WorkflowX: ${workflowCommand.mode}`
+    onEvent({ type: 'text_delta', requestId, delta: text })
+    onEvent({ type: 'stream_end', requestId, cancelled: false })
+    return { requestId, text, toolTraces: [], cancelled: false, todos: request.chatSession?.getTodos() ?? [], compacted: false }
+  }
   const endpoint = await ports.model.resolve(providerId, request.modelId)
   if (!endpoint.modelId) throw new Error('No model ID configured')
 
@@ -224,6 +239,9 @@ export async function runChatTurn(
   const prefixMessages: ChatMessage[] = request.systemPromptPrefix?.trim()
     ? [{ role: 'system', content: request.systemPromptPrefix.trim() }]
     : []
+  if (trustedResources.size > 0 && sourceTag !== 'harness') {
+    prefixMessages.push({ role: 'system', content: workflowXPrompt(workflowMode) })
+  }
   const allowlistedTools = request.toolAllowlist
     ? new Set(request.toolAllowlist.map(normalizeOfferedToolName))
     : null
@@ -315,6 +333,7 @@ export async function runChatTurn(
 
   const userRequestedMutation = hasExplicitWorkspaceMutationIntent(latestUserQuery(promptMessages))
   let recoveryIssued = false
+  const closeout = sourceTag !== 'harness' && workflowMode === 'xdo' ? new WorkflowXCloseout() : undefined
   // Open todos get one reminder per progress state, then return control.
   // One-shot failure-repair nudge: fires once per turn when the loop ends a
   // round without tool calls while fixable tool errors are still unaddressed.
@@ -372,6 +391,26 @@ export async function runChatTurn(
   const { execute: _askExecute, ...askModelTool } = askVercelTool
   const askLoopTool = createAskLoopTool(askHooks)
   const workspaceModelTools = workspaceTools ? createVercelModelTools(workspaceTools) : {}
+  const workflowParameters = z.object({ taskUri: z.string().min(1), workspaceId: z.string().optional(), action: z.enum(['execute', 'status']).optional() }).strict()
+  const workflowEnabled = trustedResources.size > 0 && workflowMode !== 'xdo' && sourceTag !== 'harness' && isToolAllowed('workflow_execute')
+  const workflowTool = {
+    name: 'workflow_execute', description: 'Execute an accepted task Note using the current WorkflowX mode, fixed scope, real checks and review receipts. Requires taskUri. No permission expansion.',
+    parameters: workflowParameters, executionMode: 'sequential' as const, runLast: false,
+    execute: async (call: { arguments: unknown }, toolSignal: AbortSignal) => {
+      try {
+        const args = workflowParameters.parse(call.arguments)
+        const resource = args.workspaceId ? trustedResources.get(args.workspaceId) : soleResource?.[1]
+        const parent = resource ? ports.sessions.getSession(resource.sessionId) : null
+        if (!parent) throw new Error('Select one attached workspace for WorkflowX execution')
+        if (args.action === 'status') {
+          const result = await readTaskResult(parent.workspaceRoot, args.taskUri, { closeout: true })
+          return { content: JSON.stringify(result), isError: result.errors.length > 0 }
+        }
+        const result = await executeWorkflowXTask({ taskUri: args.taskUri, mode: workflowMode, parent, request, ports, signal: toolSignal })
+        return { content: JSON.stringify(result), details: { workflow: result }, isError: !result.completed }
+      } catch (error) { return { content: error instanceof Error ? error.message : String(error), isError: true } }
+    },
+  }
   // Stable tool order: sorted workspace tools first, local tools last. The same
   // prefix every round keeps provider prompt-caching effective.
   const sortedWorkspaceModelTools = Object.fromEntries(
@@ -380,6 +419,7 @@ export async function runChatTurn(
   )
   const modelTools = {
     ...sortedWorkspaceModelTools,
+    ...(workflowEnabled ? { workflow_execute: { description: workflowTool.description, parameters: workflowParameters } } : {}),
     ...(isToolAllowed(TODOWRITE_TOOL_NAME) ? { [TODOWRITE_TOOL_NAME]: todoModelTool } : {}),
     ...(isToolAllowed(ASKUSER_TOOL_NAME) ? { [ASKUSER_TOOL_NAME]: askModelTool } : {}),
   }
@@ -391,6 +431,7 @@ export async function runChatTurn(
   // settle first so the user answers against final state.
   const loopTools = [
     ...runtimeLoopTools,
+    ...(workflowEnabled ? [workflowTool] : []),
     ...(isToolAllowed(TODOWRITE_TOOL_NAME) ? [todoLoopTool] : []),
     ...(isToolAllowed(ASKUSER_TOOL_NAME) ? [askLoopTool] : []),
   ]
@@ -435,6 +476,12 @@ export async function runChatTurn(
     beforeToolCall: async ({ call }) => {
       const gate = await request.toolGate?.(call)
       if (gate) return gate
+      if (sourceTag !== 'harness' && workflowMode !== 'xdo') {
+        const name = normalizeOfferedToolName(call.name)
+        if (['workspaceedit', 'workspacecreate', 'workspacedelete', 'commandrun', 'gitpull', 'gitpush', 'projectapplyconfig', 'projectstartprocess', 'projectstopprocess'].includes(name) || name.startsWith('mcp') && name !== 'mcpstatus') {
+          return { block: true, reason: `${workflowMode}: prepare an accepted task Note and use workflow_execute for implementation and verification.` }
+        }
+      }
       const failures = failedCalls.get(callKey(call))
       if (failures !== undefined) {
         failedCalls.set(callKey(call), failures + 1)
@@ -447,6 +494,10 @@ export async function runChatTurn(
     },
     afterToolCall: async ({ call, result }) => {
       const runtimeResult = result.details as ToolResult | undefined
+      if (call.name === 'workflow_execute') {
+        executedToolTraces.push({ toolName: call.name, workspaceId: workspaceId ?? soleResource?.[0] ?? '',
+          status: result.isError ? 'failed' : 'completed', summary: result.content })
+      }
       // A successful mutation can repair the precondition of an identical
       // command/read (e.g. edit code, then rerun the same failing test).
       if (runtimeResult?.status === 'completed'
@@ -454,6 +505,7 @@ export async function runChatTurn(
       if (result.isError && runtimeResult?.reasonCode !== 'TARGET_CHANGED') failedCalls.set(callKey(call), 1)
       else if (!result.isError) failedCalls.delete(callKey(call))
       if (runtimeResult?.toolName) {
+        closeout?.record(runtimeResult, call.arguments)
         chatSession.recordToolResult(runtimeResult)
         executedToolTraces.push(toolTraceEntryFromResult(runtimeResult, requestId))
         return result
@@ -476,7 +528,7 @@ export async function runChatTurn(
       // todo nudge, no extra model round after the user asked to stop.
       if (signal?.aborted) return []
       const followUps: ChatMessage[] = []
-      const mutationAttempted = executedToolTraces.some((entry) => WORKSPACE_MUTATION_TOOLS.has(entry.toolName))
+      const mutationAttempted = executedToolTraces.some((entry) => WORKSPACE_MUTATION_TOOLS.has(entry.toolName) || entry.toolName === 'workflow_execute')
       const needsRecovery = !!workspaceTools
         && canMutateOffered
         && !recoveryIssued
@@ -605,6 +657,13 @@ export async function runChatTurn(
     const feedback = emptyResponseFeedback(executedToolTraces, userRequestedMutation)
     onEvent({ type: 'text_delta', requestId, delta: feedback })
     streamedText = feedback
+  }
+
+  const closeoutGaps = closeout?.gaps() ?? []
+  if (closeoutGaps.length) {
+    const notice = `\nWorkflowX：尚无${closeoutGaps.join('、')}的执行回执。`
+    streamedText += notice
+    onEvent({ type: 'text_delta', requestId, delta: notice })
   }
 
   const observationTargets = trustedResources.size > 0

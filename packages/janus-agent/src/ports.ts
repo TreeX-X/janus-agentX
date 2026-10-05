@@ -34,6 +34,9 @@ export interface AgentSessionDescriptor {
 
 export interface SessionResolverPort {
   getSession(agentSessionId: string): AgentSessionDescriptor | null
+  /** Fresh child execution identity, with the parent's approval policy and workspace boundary. */
+  forkSession?(parentSessionId: string, callerId: string): Promise<AgentSessionDescriptor>
+  closeSession?(sessionId: string): Promise<void>
 }
 
 export interface ToolExecutorPort {

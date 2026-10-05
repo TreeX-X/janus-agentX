@@ -28,13 +28,25 @@ describe('ToolRegistry', () => {
 
   it('rejects unsupported schemas and required keys without properties', () => {
     const registry = new ToolRegistry()
-    expect(() => registry.register({ ...echoTool(), inputSchema: { type: 'object', properties: { value: { type: 'integer' } } } } as unknown as Parameters<ToolRegistry['register']>[0])).toThrow('Invalid tool definition')
+    expect(() => registry.register({ ...echoTool(), inputSchema: { type: 'object', properties: { value: { type: 'date' } } } } as unknown as Parameters<ToolRegistry['register']>[0])).toThrow('Invalid tool definition')
     expect(() => registry.register({ ...echoTool(), inputSchema: { type: 'object', properties: {}, required: ['missing'] } })).toThrow('Invalid tool definition')
     expect(() => registry.register({ ...echoTool(), inputSchema: { type: 'object', properties: {}, required: ['toString'] } })).toThrow('Invalid tool definition')
   })
 })
 
 describe('WorkspaceAgentRuntime', () => {
+  it('forks isolated sessions without widening parent ownership or compile policy', async () => {
+    const runtime = new WorkspaceAgentRuntime(async () => process.cwd())
+    const parent = await runtime.createSession({ workspaceId: 'w', workspaceRoot: process.cwd(), approvalMode: 'per-action', safeCompileAutoAllow: false, timeoutMs: 5000 }, 'host')
+    await expect(runtime.forkSession(parent.id, 'other')).rejects.toThrow('PERMISSION_DENIED')
+    const child = await runtime.forkSession(parent.id, 'host')
+    expect(child.id).not.toBe(parent.id)
+    expect(child).toMatchObject({ workspace: parent.workspace, approvalMode: 'per-action', safeCompileAutoAllow: false, timeoutMs: 5000 })
+    await runtime.cancelSession(child.id)
+    expect(runtime.getSession(parent.id)?.status).toBe('running')
+    await runtime.cancelSession(parent.id)
+    await expect(runtime.forkSession(parent.id, 'host')).rejects.toThrow('unavailable')
+  })
   it('binds a canonical workspace and emits a deterministic successful lifecycle', async () => {
     const runtime = new WorkspaceAgentRuntime(async () => process.cwd()); runtime.registry.register(echoTool())
     const events: string[] = []; runtime.onEvent((event) => events.push(event.type))

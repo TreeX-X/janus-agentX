@@ -37,6 +37,9 @@ export interface CompletionItem {
 
 /** Mirrors the known `/` commands in `commands.ts` (kept in sync by test). Order follows `commandHelpText()`. */
 export const COMMAND_COMPLETIONS: readonly CompletionItem[] = [
+  { name: 'xdo', hint: 'WorkflowX direct execution (default).' },
+  { name: 'xdel', hint: 'WorkflowX delegated implementation and self-review.' },
+  { name: 'xflow', hint: 'WorkflowX discovery, implementation and evaluation.' },
   { name: 'help', hint: 'Show this help.' },
   { name: 'model', hint: 'Pick model or switch directly.' },
   { name: 'effort', hint: 'Show or switch reasoning effort.' },

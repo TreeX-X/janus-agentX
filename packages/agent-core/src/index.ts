@@ -117,3 +117,6 @@ export type {
   ToolInputSchema,
   ToolResult,
 } from './shared/ipc/agent-runtime'
+
+export { toolSchemaToZod } from './main/agent/runtime/tool-schema'
+export type { ToolJsonSchema } from './main/agent/runtime/tool-schema'

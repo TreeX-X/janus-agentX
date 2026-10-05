@@ -91,13 +91,13 @@ export interface WorkspaceContext {
   workspaceRoot: string
 }
 
-export type ToolInputPropertyType = 'string' | 'number' | 'boolean' | 'array' | 'object'
+export type ToolInputPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null'
 
 export interface ToolInputSchema {
   type: 'object'
-  properties?: Record<string, { type: ToolInputPropertyType; description?: string; enum?: unknown[] }>
+  properties?: Record<string, import('../../main/agent/runtime/tool-schema').ToolJsonSchema>
   required?: string[]
-  additionalProperties?: boolean
+  additionalProperties?: boolean | import('../../main/agent/runtime/tool-schema').ToolJsonSchema
 }
 
 export interface ToolDefinition {

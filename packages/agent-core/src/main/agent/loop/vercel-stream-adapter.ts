@@ -62,7 +62,7 @@ function parseToolResult(content: string): unknown {
 }
 
 export function toVercelMessages(messages: JanusAgentMessage[]): unknown[] {
-  return messages.map((message) => {
+  const mapped = messages.map((message) => {
     if (message.role === 'tool') {
       return {
         role: 'tool',
@@ -87,6 +87,13 @@ export function toVercelMessages(messages: JanusAgentMessage[]): unknown[] {
     }
     return { role: message.role, content: message.content }
   })
+  const grouped: typeof mapped = []
+  for (const message of mapped) {
+    const previous = grouped.at(-1)
+    if (message.role === 'tool' && previous?.role === 'tool' && Array.isArray(previous.content) && Array.isArray(message.content)) (previous.content as unknown[]).push(...message.content)
+    else grouped.push(message)
+  }
+  return grouped
 }
 
 export function createVercelModelTools(tools: Record<string, VercelTool>): Record<string, Omit<VercelTool, 'execute'>> {

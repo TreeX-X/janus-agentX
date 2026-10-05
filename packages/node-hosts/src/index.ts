@@ -41,8 +41,13 @@ import { registerProjectJobTools } from './project-jobs.js'
 
 /** Register command + git + project (detect + background jobs) tools on one registry. */
 export function registerNodeHostTools(registry: ToolRegistry, jobs: JobManager): void {
+  registerNoteTools(registry)
   registerCommandTools(registry, jobs)
   registerGitTools(registry)
   registerProjectDetectTools(registry)
   registerProjectJobTools(registry, jobs)
 }
+
+export { registerNoteTools, NOTE_TOOL_DEFINITIONS } from './note-tools.js'
+export { McpToolManager, connectConfiguredMcp, defaultMcpConfigPath, type McpConfiguration } from './mcp.js'
+import { registerNoteTools } from './note-tools.js'

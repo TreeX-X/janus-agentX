@@ -20,6 +20,19 @@ export class WorkspaceAgentRuntime {
   private readonly listeners = new Set<Listener>()
   constructor(private resolveWorkspaceRoot?: ResolveWorkspaceRoot, private readonly auditStore: PolicyAuditStore = new MemoryPolicyAuditStore()) {}
   setWorkspaceResolver(resolveWorkspaceRoot: ResolveWorkspaceRoot): void { this.resolveWorkspaceRoot = resolveWorkspaceRoot }
+  // Note: isolated WorkflowX execution preserves host authority — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+  async forkSession(parentId: string, ownerId = 'internal'): Promise<AgentSession> {
+    const parent = this.sessions.get(parentId)
+    if (!parent || parent.status !== 'running') throw new Error('Parent session is unavailable')
+    if (parent.ownerId !== 'internal' && parent.ownerId !== ownerId) throw new Error('PERMISSION_DENIED: parent session belongs to another caller')
+    const child = await this.createSession({ ...parent.workspace, approvalMode: parent.approvalMode,
+      safeCompileAutoAllow: parent.safeCompileAutoAllow, timeoutMs: parent.timeoutMs }, ownerId)
+    if (parent.status !== 'running') {
+      await this.cancelSession(child.id)
+      throw new Error('Parent session ended while creating child')
+    }
+    return child
+  }
   onEvent(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private emit(event: AgentRuntimeEvent): void { for (const listener of this.listeners) listener(event) }
 

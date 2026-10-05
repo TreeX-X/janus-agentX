@@ -3,6 +3,7 @@ import type { ExecuteToolInput, ToolResult } from '../../../shared/ipc/agent-run
 import type { ToolManifest } from '../runtime/tool-manifest'
 import { redactPolicyValue } from '../runtime/policy-gate'
 import { toolResultToModelValue } from '../runtime/tool-result'
+import { toolSchemaToZod } from '../runtime/tool-schema'
 
 export interface WorkspaceChatRuntime {
   executeFunctionCall(input: ExecuteToolInput, callerId?: string): Promise<ToolResult>
@@ -314,7 +315,23 @@ export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
       execute: (input: { workspaceId?: string; cwd: string; program: string; args: string[]; timeoutMs: number; background: boolean; env: Record<string, string> }) => execute('command.run', input),
     },
   }
-  return withManifestDescriptions(tools, options.toolManifests)
+  // Host extensions use the same manifest, routing and policy path as built-ins.
+  const extended: Record<string, { description: string; parameters: z.ZodTypeAny; execute: (input: any) => Promise<any> }> = { ...tools }
+  const names = new Set<string>()
+  for (const manifest of options.toolManifests ?? []) {
+    if (names.has(manifest.providerName)) throw new Error(`Provider tool name collision: ${manifest.providerName}`)
+    names.add(manifest.providerName)
+    if (Object.hasOwn(extended, manifest.providerName)) continue
+    extended[manifest.providerName] = {
+      description: manifest.description,
+      parameters: toolSchemaToZod({ ...manifest.inputSchema,
+        properties: { ...manifest.inputSchema.properties, workspaceId: { type: 'string', minLength: 1 } },
+        required: manifest.inputSchema.required?.filter(key => key !== 'workspaceId'),
+      }),
+      execute: input => execute(manifest.canonicalName, input),
+    }
+  }
+  return withManifestDescriptions(extended, options.toolManifests)
 }
 
 function createEditPreview(path: string, value: unknown) {
@@ -456,6 +473,10 @@ function createCommandPreview(input: Record<string, unknown>) {
 export function createToolPreview(toolName: string, input: Record<string, unknown>) {
   const path = String(input.path ?? '')
   switch (toolName) {
+    case 'workspace.read': case 'workspace.list': case 'workspace.search':
+    case 'git.status': case 'git.log': case 'git.diff':
+    case 'project.detect': case 'project.generate-config': case 'project.get-config':
+    case 'project.list-processes': case 'project.process-output': return undefined
     case 'workspace.edit': return input.unifiedDiff !== undefined
       ? createUnifiedDiffPreview(path, input.unifiedDiff)
       : input.lineEdits !== undefined
@@ -472,6 +493,9 @@ export function createToolPreview(toolName: string, input: Record<string, unknow
     case 'git.pull': return createGitPreview('Pull remote changes', path)
     case 'git.push': return createGitPreview('Push local commits', path)
     case 'command.run': return createCommandPreview(input)
-    default: return undefined
+    default: {
+      const detail = JSON.stringify(redactPolicyValue(input), null, 2)
+      return { summary: toolName, paths: [path], detail: detail.slice(0, 4000), truncated: detail.length > 4000 }
+    }
   }
 }

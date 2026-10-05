@@ -5,7 +5,14 @@
   "description": "Janus agent execution core - dialogue loop, stream, runtime policy, checkpoint, environment. No Electron dependency, no subprocess runner.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": { "contracts": ["dist/shared/ipc/agent-runtime.d.ts"] }
+  },
   "exports": {
+    "./contracts": {
+      "types": "./dist/shared/ipc/agent-runtime.d.ts",
+      "import": "./dist/shared/ipc/agent-runtime.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

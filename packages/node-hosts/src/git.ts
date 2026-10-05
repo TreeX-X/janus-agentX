@@ -128,7 +128,7 @@ function validateGitPaths(value: unknown, repositoryPath: string, toolName: stri
 
 interface StatusChange { path: string; index: string; worktree: string }
 
-function parseStatus(output: string): { branch: string; changes: StatusChange[] } {
+function parseStatus(output: string): { branch: string; changes: StatusChange[]; clean: boolean } {
   let branch = ''
   const changes: StatusChange[] = []
   for (const line of output.split('\n')) {
@@ -138,7 +138,7 @@ function parseStatus(output: string): { branch: string; changes: StatusChange[] 
       changes.push({ path: line.slice(3), index: line[0] === ' ' ? '' : line[0], worktree: line[1] === ' ' ? '' : line[1] })
     }
   }
-  return { branch, changes }
+  return { branch, changes, clean: changes.length === 0 }
 }
 
 export const gitStatusTool: RegisteredTool = {
@@ -160,6 +160,7 @@ export const gitStatusTool: RegisteredTool = {
       path: target.path,
       status: {
         branch: parsed.branch,
+        clean: parsed.changes.length === 0,
         changes: parsed.changes.slice(0, MAX_STATUS_CHANGES),
         truncated: parsed.changes.length > MAX_STATUS_CHANGES,
       },
@@ -195,7 +196,7 @@ export const gitLogTool: RegisteredTool = {
     )
     const commits = output.split('\n').filter(Boolean).map((line) => {
       const [hash = '', author = '', date = '', subject = ''] = line.split('\x1f')
-      return { hash, author, date, subject }
+      return { hash, author, date, subject, message: subject }
     })
     return { workspaceId: target.workspaceId, path: target.path, commits }
   },
@@ -236,6 +237,7 @@ export const gitDiffTool: RegisteredTool = {
       file,
       staged,
       diff: truncated ? Buffer.from(output, 'utf-8').subarray(0, limit).toString('utf-8') : output,
+      content: truncated ? Buffer.from(output, 'utf-8').subarray(0, limit).toString('utf-8') : output,
       bytes,
       truncated,
     }
@@ -268,7 +270,7 @@ function cliGitPathsTool(name: 'git.stage' | 'git.unstage'): RegisteredTool {
         workspaceId: target.workspaceId,
         path: target.path,
         paths,
-        status: { branch: parsed.branch, changes: parsed.changes.slice(0, MAX_STATUS_CHANGES), truncated: parsed.changes.length > MAX_STATUS_CHANGES },
+        status: { branch: parsed.branch, clean: parsed.clean, changes: parsed.changes.slice(0, MAX_STATUS_CHANGES), truncated: parsed.changes.length > MAX_STATUS_CHANGES },
       }
     },
   }
@@ -302,7 +304,7 @@ export const gitCommitTool: RegisteredTool = {
     return {
       workspaceId: target.workspaceId,
       path: target.path,
-      status: { branch: parsed.branch, changes: parsed.changes.slice(0, MAX_STATUS_CHANGES), truncated: parsed.changes.length > MAX_STATUS_CHANGES },
+      status: { branch: parsed.branch, clean: parsed.clean, changes: parsed.changes.slice(0, MAX_STATUS_CHANGES), truncated: parsed.changes.length > MAX_STATUS_CHANGES },
     }
   },
 }
@@ -326,7 +328,7 @@ function cliGitRemoteTool(name: 'git.pull' | 'git.push'): RegisteredTool {
       return {
         workspaceId: target.workspaceId,
         path: target.path,
-        status: { branch: parsed.branch, changes: parsed.changes.slice(0, MAX_STATUS_CHANGES), truncated: parsed.changes.length > MAX_STATUS_CHANGES },
+        status: { branch: parsed.branch, clean: parsed.clean, changes: parsed.changes.slice(0, MAX_STATUS_CHANGES), truncated: parsed.changes.length > MAX_STATUS_CHANGES },
       }
     },
   }

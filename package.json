@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace=@janus-agent/agent-core --workspace=@janus-agent/harness-core --workspace=@janus-agent/chat-core --workspace=@janus-agent/harness-node --workspace=@janus-agent/node-hosts --workspace=@janus-agent/janus-agent --workspace=@janus-agent/notes-cli --workspace=@janus-agent/cli",
     "test": "npm run test --workspaces --if-present",
     "update:model-limits": "node scripts/update-model-limits.mjs",
     "pack:cli": "npm run build && node scripts/pack-cli.mjs"

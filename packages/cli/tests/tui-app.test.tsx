@@ -784,7 +784,7 @@ describe('App', () => {
     )
     try {
       await typeLine(stdin, 'create new.txt')
-      await waitForFrame(() => (lastFrame() ?? '').includes('✔ workspace_create'))
+      await waitForFrame(() => (lastFrame() ?? '').includes('new.txt · (+1 -0) · checkpoint'))
       const frame = lastFrame() ?? ''
       // Outcome caption plus new-file content preview, inline under the card.
       expect(frame).toContain('new.txt · (+1 -0) · checkpoint')

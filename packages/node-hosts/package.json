@@ -23,6 +23,9 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@janus-agent/agent-core": "file:../agent-core"
+    "@janus-agent/agent-core": "file:../agent-core",
+    "@janus-agent/harness-node": "file:../harness-node",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "^3.25.76"
   }
 }
