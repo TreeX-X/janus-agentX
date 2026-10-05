@@ -45,6 +45,8 @@ MCP 从用户目录 `~/.janus/mcp.json` 的 `mcpServers` 读取配置，支持 s
 
 [Janus 的复用边界](note://972afef3-2fc7-49de-a3ee-7e041225d28c/bd7fd0c6-48d1-4d1c-8c6b-b675d7e489bd)记录蓝图扩展和宿主接线。
 
+[WorkflowX 导入检测](./2026-10-05-workflowx-detection--844d119b.md)由 node-hosts 提供，合并全局与工作区的 Claude/Codex 配置证据，宿主负责检测时机和展示。
+
 ## Alternatives considered
 
 - 两个宿主分别实现：能够独立调整体验，但底层缺陷修复与参数校验需要重复维护。宿主差异通过端口处理。

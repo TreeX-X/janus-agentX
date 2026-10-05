@@ -23,6 +23,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "smol-toml": "^1.9.0",
     "@janus-agent/agent-core": "file:../agent-core",
     "@janus-agent/harness-node": "file:../harness-node",
     "@modelcontextprotocol/sdk": "1.29.0",

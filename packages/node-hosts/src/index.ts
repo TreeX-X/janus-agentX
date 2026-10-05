@@ -51,3 +51,6 @@ export function registerNodeHostTools(registry: ToolRegistry, jobs: JobManager):
 export { registerNoteTools, NOTE_TOOL_DEFINITIONS } from './note-tools.js'
 export { McpToolManager, connectConfiguredMcp, defaultMcpConfigPath, type McpConfiguration } from './mcp.js'
 import { registerNoteTools } from './note-tools.js'
+
+export { detectWorkflowX } from './workflowx-detection.js'
+export type { WorkflowXDetection, WorkflowXDetectionOptions, WorkflowXSource, WorkflowXStatus } from './workflowx-detection.js'
