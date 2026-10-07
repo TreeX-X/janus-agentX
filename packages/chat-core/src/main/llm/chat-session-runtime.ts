@@ -488,8 +488,8 @@ interface ContextLayout {
   window: number
 }
 
-// Note: preserve current evidence and prune before summarizing — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
-// Note: graded prune (opencode parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Note: preserve current evidence and prune before summarizing — see .agents/notes/agent/history/agent-context-search-efficiency.md
+// Note: graded prune (opencode parity) — see .agents/notes/agent/history/opencode-token-parity.md
 // Search/list/overview outputs are cheap to re-run (one rg passthrough), so
 // only their newest 2 turns stay verbatim; reads/edits/command evidence keep
 // the full pruneKeep tail because re-reads cost a turn each.
@@ -574,7 +574,7 @@ function layoutContext(
     if (keep && readOnly) readsKept += 1
     return keep ? unit : unit.map(pruneToolMessage)
   })
-  // Note: tool-loop chatter cap (opencode cost parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: tool-loop chatter cap (opencode cost parity) — see .agents/notes/agent/history/opencode-token-parity.md
   // Assistant prose around tool calls ("I'll read X now") replays every turn
   // but restates what the calls+results already show. Only the newest two
   // such messages keep their text; older ones keep toolCalls (pairing
@@ -638,7 +638,7 @@ export interface ChatContextBuildOptions {
   /** Safety reserve below the window; clamped to 0..10% so callers tune early only. */
   bufferTokens?: number
   /**
-   * Note: prune tail budget — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+   * Note: prune tail budget — see .agents/notes/agent/history/context-efficiency.md
    * Newest tool outputs stay verbatim within this token tail; older kept units
    * keep the assistant tool_call but have their tool_output replaced by a digest
    * placeholder. Tunable; defaults far above system+tools so short sessions never prune.
@@ -655,7 +655,7 @@ export interface CompactionOptions extends ChatContextBuildOptions {
   focus?: string
 }
 
-// Note: single-summary LLM compaction absorbs evicted turns — see ../../../../../.agents/notes/implemented/feature/2026-09-12-llm-compaction-loop.md
+// Note: single-summary LLM compaction absorbs evicted turns — see ../../../../../.agents/notes/agent/history/llm-compaction-loop.md
 
 /** Builds a model context view without mutating the persisted conversation history. */
 export class ChatSessionRuntime {

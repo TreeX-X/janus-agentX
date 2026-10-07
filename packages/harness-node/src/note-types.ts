@@ -1,4 +1,4 @@
-// Note: shared engineering capabilities and host extensions — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared engineering capabilities and host extensions — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import type { Diagnostic, HarnessNoteMeta, MarkdownView } from '@janus-agent/harness-core'
 import type { IndexedRelation, IndexEntry, NoteCoverage } from './repository.js'
 import type { IndexedMention } from './references.js'
@@ -10,6 +10,10 @@ export interface NoteDoc {
   lifecycle: string
   tags: string[]
   parent: string | null
+  updated?: string
+  module?: string
+  moduleState?: string
+  role?: string
   created?: string
   title: string
   sections: Array<{ name: string; text: string }>

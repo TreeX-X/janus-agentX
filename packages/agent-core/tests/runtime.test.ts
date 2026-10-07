@@ -146,7 +146,7 @@ describe('WorkspaceAgentRuntime', () => {
     expect(execute).toHaveBeenCalledTimes(1)
   })
 
-  // Note: permission-tier plan mode — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  // Note: permission-tier plan mode — see .agents/notes/agent/history/write-anchor-chain.md
   it('denies mutations in plan mode without executing, keeps reads working, and explains the tier', async () => {
     const execute = vi.fn(async () => 'side effect')
     const runtime = new WorkspaceAgentRuntime(async () => process.cwd())

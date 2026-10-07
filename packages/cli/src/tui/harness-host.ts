@@ -1,4 +1,4 @@
-// Note: Ink harness host lives here — see .agents/notes/implemented/architecture/2026-09-19-ink-harness-host.md
+// Note: Ink harness host lives here — see .agents/notes/harness/storage/history/ink-harness-host.md
 /**
  * @file Ink harness host (T1).
  * @description Binds the task-bound harness controller to the Ink loop.

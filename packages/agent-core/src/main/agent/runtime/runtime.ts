@@ -20,7 +20,7 @@ export class WorkspaceAgentRuntime {
   private readonly listeners = new Set<Listener>()
   constructor(private resolveWorkspaceRoot?: ResolveWorkspaceRoot, private readonly auditStore: PolicyAuditStore = new MemoryPolicyAuditStore()) {}
   setWorkspaceResolver(resolveWorkspaceRoot: ResolveWorkspaceRoot): void { this.resolveWorkspaceRoot = resolveWorkspaceRoot }
-  // Note: isolated WorkflowX execution preserves host authority — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+  // Note: isolated WorkflowX execution preserves host authority — see .agents/notes/harness/storage/history/workflowx-runtime.md
   async forkSession(parentId: string, ownerId = 'internal'): Promise<AgentSession> {
     const parent = this.sessions.get(parentId)
     if (!parent || parent.status !== 'running') throw new Error('Parent session is unavailable')

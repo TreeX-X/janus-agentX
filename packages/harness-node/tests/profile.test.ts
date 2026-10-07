@@ -6,8 +6,8 @@ import { applyChangeSet, buildNoteIndex, claimsHarnessSchema, commitAssetFiles, 
 import { makeRepo, REPO, REQ_ID, requirementNote, writeNote } from './helpers.js';
 
 describe('shared profile and namespace', () => {
-  it.runIf(existsSync(new URL('../../../../WorkFlowX/standards/harness-note/1/manifest.json', import.meta.url)))('pins the actual standard manifest rather than trusting a consumer digest', () => {
-    const text = readFileSync(new URL('../../../../WorkFlowX/standards/harness-note/1/manifest.json', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  it.runIf(existsSync(new URL('../../../standards/harness-note/2/manifest.json', import.meta.url)))('pins the actual standard manifest rather than trusting a consumer digest', () => {
+    const text = readFileSync(new URL('../../../standards/harness-note/2/manifest.json', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
     expect(JSON.parse(text).version).toBe(SUPPORTED_HARNESS_PROFILE.version);
     expect(createHash('sha256').update(text).digest('hex')).toBe(SUPPORTED_HARNESS_PROFILE.digest);
   });
@@ -16,7 +16,7 @@ describe('shared profile and namespace', () => {
     const root = makeRepo();
     writeNote(root, 'legacy.md', '# Agent Note: Historic\n\nStatus: implemented\n');
     writeNote(root, 'valid.md', requirementNote());
-    writeNote(root, 'future.md', requirementNote().replace('harness-note/1', 'harness-note/2'));
+    writeNote(root, 'future.md', requirementNote().replace('harness-note/1', 'harness-note/99'));
     writeNote(root, 'partial.md', '---\nschema: harness-note/1\nid: broken');
     const index = await buildNoteIndex(root);
     expect(index.entries.find((e) => e.foreign)).toMatchObject({ relPath: '.agents/notes/legacy.md', diagnostics: [] });
@@ -28,7 +28,7 @@ describe('shared profile and namespace', () => {
 
   it.each([
     undefined,
-    { ...SUPPORTED_HARNESS_PROFILE, version: '2.0.0' },
+    { ...SUPPORTED_HARNESS_PROFILE, version: '99.0.0' },
     { ...SUPPORTED_HARNESS_PROFILE, digest: '0'.repeat(64) },
   ])('keeps files readable and refuses every managed writer for an unsupported pin: %j', async (profile) => {
     const root = makeRepo();

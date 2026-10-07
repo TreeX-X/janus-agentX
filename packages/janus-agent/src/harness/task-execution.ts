@@ -1,7 +1,7 @@
-// Note: task turns and verification share one host lifecycle - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
+// Note: task turns and verification share one host lifecycle - see .agents/notes/harness/execution/history/harness-task-execution.md
 import { randomUUID } from 'node:crypto';
 import { codeKey, codeManifestHash, INDEPENDENT_REVIEW_TOOLS, isIndependentReviewPath, taskExecutionPolicy, validateReceiptShape, type Receipt, type ReceiptCheck, type VerificationStep } from '@janus-agent/harness-core';
-import { collectLiveSnapshot, collectTaskSnapshot, TaskScope } from '@janus-agent/harness-node';
+import { checkpointTaskHandoff, collectLiveSnapshot, collectTaskSnapshot, TaskScope } from '@janus-agent/harness-node';
 import { finishRun, maybeAutoRepair, pauseRun, recordReceipt, verifyRun } from './dispatcher.js';
 import { loadReceipt, loadRun, readLease, type HarnessRun } from './run-store.js';
 import type { ChatTurnRequest } from '../orchestrator/chat-turn.js';
@@ -33,8 +33,11 @@ export interface TaskTurnContext extends Pick<ChatTurnRequest, 'sourceTag' | 'sy
 /** No shell, process, delegation, or ledger mutations in model-directed turns. */
 export async function prepareTaskTurn(root: string, runId: string, token: string, readOnly = false, independent = false): Promise<TaskTurnContext> {
   const states = readOnly ? ['verifying'] : ['running'];
-  const { run, snapshot, scope } = await context(root, runId, token, states);
-  const policy = taskExecutionPolicy(run.mode, run.lease!.owner, runId);
+  const initial = await context(root, runId, token, states);
+  const v2 = initial.snapshot.schema === 'harness-note/2';
+  if(v2) await checkpointTaskHandoff(root, initial.run.taskUri, initial.run.baseline.taskContractHash, readOnly ? (independent ? 'Independent review' : 'Self-review') : 'Implement or repair within the accepted scope');
+  const { run, snapshot, scope } = v2 ? await context(root, runId, token, states) : initial;
+  const policy = taskExecutionPolicy(run.mode, run.lease!.owner, runId, snapshot.work.review);
   const repair = independent ? undefined : run.repairs.find((row) => row.attempt === run.attempt);
   const failureReceipt = repair ? await loadReceipt(root, runId, repair.failureReceiptId) : undefined;
   const tools = independent ? INDEPENDENT_REVIEW_TOOLS : [...READ_TOOLS, ...(readOnly ? [] : [...WRITE_TOOLS, 'todo_write', 'ask_user'])];
@@ -78,7 +81,7 @@ export interface TaskVerificationPorts {
 /** Host executes declared checks; reviewers provide structured, version-bound evidence. */
 export async function verifyTaskExecution(root: string, runId: string, token: string, ports: TaskVerificationPorts, signal?: AbortSignal): Promise<{ receipt: Receipt; completed: boolean; errors: string[] }> {
   const { run, snapshot, scope } = await context(root, runId, token, ['running', 'verifying']);
-  const policy = taskExecutionPolicy(run.mode, run.lease!.owner, runId);
+  const policy = taskExecutionPolicy(run.mode, run.lease!.owner, runId, snapshot.work.review);
   if (!ports.review) throw new Error('CAPABILITY_UNAVAILABLE: task reviewer is unavailable');
   if (policy.independent && !ports.independentReview) throw new Error('CAPABILITY_UNAVAILABLE: xflow requires an independent reviewer');
   if (snapshot.work.verification.some((step) => step.kind !== 'command' || step.repoId !== snapshot.repoId) || !ports.command) throw new Error('CAPABILITY_UNAVAILABLE: verification needs a command runner for this checkout; manual checks need external evidence');
@@ -143,15 +146,15 @@ export async function verifyTaskExecution(root: string, runId: string, token: st
   }
 }
 
-// Note: delegated execution owns the full bounded lifecycle — see .agents/notes/implemented/architecture/2026-09-19-delegated-task-hosts.md
+// Note: delegated execution owns the full bounded lifecycle — see .agents/notes/harness/execution/history/delegated-task-hosts.md
 export async function executeTaskExecution(root: string, runId: string, token: string,
   ports: TaskVerificationPorts & { implement(turn: TaskTurnContext, signal?: AbortSignal): Promise<{ cancelled: boolean; toolTraces?: Array<{ status: string; summary?: string }> }> }, signal?: AbortSignal,
 ): Promise<Awaited<ReturnType<typeof verifyTaskExecution>>> {
   try {
     for (;;) {
       signal?.throwIfAborted();
-      const { run } = await context(root, runId, token, ['running', 'verifying']);
-      if (!ports.review || (run.mode === 'xflow' && !ports.independentReview)) throw new Error('CAPABILITY_UNAVAILABLE: required task reviewer is unavailable');
+      const { run, snapshot } = await context(root, runId, token, ['running', 'verifying']);
+      if (!ports.review || ((run.mode === 'xflow' || snapshot.work.review === 'independent') && !ports.independentReview)) throw new Error('CAPABILITY_UNAVAILABLE: required task reviewer is unavailable');
       if (run.state === 'running') {
         const result = await ports.implement(await prepareTaskTurn(root, runId, token), signal);
         if (result.cancelled) { await pauseRun(root, runId, token); throw new Error('NOT_READY: implementation cancelled; run paused'); }

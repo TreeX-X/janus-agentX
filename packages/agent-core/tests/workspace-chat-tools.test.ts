@@ -85,7 +85,7 @@ describe('workspace chat tools', () => {
     }, 'renderer:7')
   })
 
-  // Note: single-workspace omission — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: single-workspace omission — see .agents/notes/agent/history/opencode-token-parity.md
   it('fills an omitted workspaceId from the sole attached workspace', async () => {
     const executeFunctionCall = vi.fn().mockResolvedValue(result())
     const tools = createWorkspaceChatTools({

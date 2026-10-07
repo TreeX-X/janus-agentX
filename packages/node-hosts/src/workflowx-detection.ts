@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 
-// Note: detect imported configuration without certifying runtime behavior — see .agents/notes/2026-10-05-workflowx-detection--844d119b.md
+// Note: detect imported configuration without certifying runtime behavior — see .agents/notes/harness/storage/history/workflowx-detection.md
 export type WorkflowXStatus = 'detected' | 'missing' | 'uncertain'
 export interface WorkflowXSource {
   format: 'claude' | 'codex'

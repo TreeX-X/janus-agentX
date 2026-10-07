@@ -1,4 +1,4 @@
-// Note: shared engineering capabilities and host extensions — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared engineering capabilities and host extensions — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { randomUUID } from 'node:crypto'
 import { watch as watchDirectory, type FSWatcher } from 'node:fs'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
@@ -208,6 +208,11 @@ export class NoteService {
       return this.indexes.get(root) as { rev: number; index: NoteIndex }
     }
     const probe = await probeChangedPaths(root, hit.index)
+    const identity = await readHarnessIdentity(root)
+    if (identity.profileKey !== hit.index.profileKey || identity.repoId !== hit.index.repoId || identity.diagnostics.length) {
+      await this.rescan(root)
+      return this.indexes.get(root) as {rev:number;index:NoteIndex}
+    }
     if (probe.complete && probe.changed.length === 0 && probe.removed.length === 0 && probe.scanDiagnostics.length === 0) {
       return hit
     }
@@ -334,7 +339,7 @@ export class NoteService {
       }>
     },
     reason: string,
-    opts?: { requestDigest?: string },
+    opts?: { requestDigest?: string; allowDelete?: boolean },
   ): Promise<{ txId: string; applied: Array<{ operationId: string; relPath?: string }> }> {
     const cs = {
       ...changeSet,
@@ -347,7 +352,7 @@ export class NoteService {
       })),
     }
     const digest = opts?.requestDigest ?? sha256HexBytes(Buffer.from(JSON.stringify(cs.operations), 'utf8'))
-    return this.runChangeSet(root, cs, digest)
+    return this.runChangeSet(root, cs, digest, opts)
   }
 
   private async runChangeSet(
@@ -405,7 +410,7 @@ export class NoteService {
     // The identity file lives outside the notes corpus; a repoId change needs
     // a rebuild, never a patch.
     const identity = await readHarnessIdentity(root).catch(() => null)
-    if (!identity || identity.repoId !== cached.index.repoId) {
+    if (!identity || identity.repoId !== cached.index.repoId || external) {
       return { rev: (await this.rescan(root)).rev, events: [], external }
     }
     const total = probe.changed.length + probe.removed.length

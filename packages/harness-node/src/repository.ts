@@ -1,9 +1,10 @@
+import {validateModuleStructure} from './module-structure.js';
 /**
  * File-level note repository (contract C1/C5, storage half).
  * Scan, read, and atomic write under `<root>/.agents/notes`.
  * Parsing and validation stay in harness-core; this module owns bytes,
  * identity collisions, and symlink confinement. No process-wide state.
- * Note: derived graph queries stay in this scan boundary — see .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
+ * Note: derived graph queries stay in this scan boundary — see .agents/notes/harness/storage/history/note-index-v1.md
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
@@ -144,6 +145,7 @@ export interface Backlink {
 }
 
 export interface NoteIndex {
+  profileKey?: string;
   repoId: string | null;
   entries: IndexEntry[];
   byId: Map<string, IndexEntry>;
@@ -293,6 +295,7 @@ export async function buildNoteIndex(root: string): Promise<NoteIndex> {
       entries.push({ relPath: f.relPath, sha256: read.sha256, sourceHash: read.sha256, classification: 'malformed', diagnostics: [diag(code, (e as Error).message, f.relPath)] });
     }
   }
+  diagnostics.push(...validateModuleStructure(entries, repoId));
   const byId = new Map<string, IndexEntry>();
   const byUri = new Map<string, IndexEntry>();
   const byPath = new Map(entries.map((entry) => [entry.relPath, entry]));
@@ -338,7 +341,7 @@ export async function buildNoteIndex(root: string): Promise<NoteIndex> {
     snapshotHash: sha256HexBytes(Buffer.from(JSON.stringify([resolve(root), repoId, identity.diagnostics, entries.map((entry) => [entry.relPath, entry.sourceHash, entry.classification]), coverageDiagnostics]))),
     diagnostics: coverageDiagnostics,
   };
-  const index: NoteIndex = { repoId, entries, byId, byUri, byPath, conflicts, coverage, outgoing, backlinks, relations, mentions: [], mentionBacklinks: new Map(), readDiagnostics: [], diagnostics };
+  const index: NoteIndex = { repoId, profileKey: identity.profileKey, entries, byId, byUri, byPath, conflicts, coverage, outgoing, backlinks, relations, mentions: [], mentionBacklinks: new Map(), readDiagnostics: [], diagnostics };
   for (const [sourceUri, e] of byUri) {
     const addRelation = (relation: { type: RelationType; target: string; criteria?: string[]; scope?: 'full' | 'partial'; reason?: string }, declaration: string): void => {
       const existing = (outgoing.get(sourceUri) ?? []).find((edge) => edge.type === relation.type && edge.targetUri === relation.target &&

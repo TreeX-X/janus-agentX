@@ -1,4 +1,4 @@
-// Note: both hosts use the same WorkflowX task executor — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: both hosts use the same WorkflowX task executor — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { randomUUID } from 'node:crypto'
 import { collectTaskBaseline, readTaskResult } from '@janus-agent/harness-node'
 import type { HarnessMode } from '@janus-agent/harness-core'

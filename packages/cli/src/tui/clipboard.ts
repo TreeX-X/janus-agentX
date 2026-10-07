@@ -40,7 +40,7 @@ export interface ComposerClipboard {
   peek: () => string
 }
 
-// Note: embedded terminal paste reads the OS clipboard - see .agents/notes/implemented/feature/2026-09-11-composer-select-copy-paste.md
+// Note: embedded terminal paste reads the OS clipboard - see .agents/notes/cli/history/composer-select-copy-paste.md
 export function writeWindowsClipboard(text: string): boolean {
   try {
     const command = "$ErrorActionPreference = 'Stop'; $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); Set-Clipboard -Value $text"

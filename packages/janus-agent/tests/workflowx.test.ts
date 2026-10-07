@@ -40,7 +40,7 @@ describe('built-in WorkflowX modes', () => {
     const audit = new WorkflowXCloseout()
     const record = (toolName: string, output = {}, input = {}) => audit.record({ toolName, status: 'completed', output } as ToolResult, input)
     record('workspace.edit', {}, { path: 'src/a.ts' })
-    expect(audit.gaps()).toHaveLength(3)
+    expect(audit.gaps()).toHaveLength(2)
     record('note.write', { status: 'applied' }); record('command.run', { ok: true, exitCode: 0 }); record('git.commit')
     expect(audit.gaps()).toEqual([])
     record('workspace.edit', {}, { path: 'src/b.ts' })

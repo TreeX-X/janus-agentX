@@ -125,7 +125,7 @@ export interface ComposerMouseControl {
   release: (x: number, y: number) => boolean
 }
 
-// Note: keyboard selection + clipboard copy/cut/paste live in this composer — see .agents/notes/implemented/feature/2026-09-11-composer-select-copy-paste.md
+// Note: keyboard selection + clipboard copy/cut/paste live in this composer — see .agents/notes/cli/history/composer-select-copy-paste.md
 export function Composer({ value, onChange, onSubmit, disabled, busy, history = [], historyIndex = null, historyDraft = '', onHistoryRecall, onInterrupt, onSelectionAction, frameRectRef, terminalOffsetRef, mouseControlRef }: ComposerProps): React.JSX.Element {
   const [cursor, setCursor] = useState(0)
   const [anchor, setAnchor] = useState<number | null>(null)
@@ -545,7 +545,7 @@ export function Composer({ value, onChange, onSubmit, disabled, busy, history = 
     return { displayed: truncateToWidth(expanded, textW), sliceStart: 0, leading: false, trailing: displayWidth(expanded) > textW, cursor: 0 }
   }
 
-  // Note: start inside the frame, clamp drag endpoints to content - see .agents/notes/implemented/feature/2026-09-11-composer-drag-select-constrained.md
+  // Note: start inside the frame, clamp drag endpoints to content - see .agents/notes/cli/history/composer-drag-select-constrained.md
   const offsetAtTerminalCell = (termX: number, termY: number, extend = false): number | null => {
     const off = terminalOffsetRef?.current
     const rect = frameRectRef?.current

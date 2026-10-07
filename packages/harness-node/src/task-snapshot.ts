@@ -1,4 +1,4 @@
-// Note: execution evidence uses shared file snapshots - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
+// Note: execution evidence uses shared file snapshots - see .agents/notes/harness/execution/history/harness-task-execution.md
 import { criterionHash, taskContractHash, type Diagnostic, type WorkContract } from '@janus-agent/harness-core';
 import { collectTaskBaseline } from './baseline.js';
 import { buildNoteIndex } from './repository.js';
@@ -27,7 +27,7 @@ async function collectSnapshot(root: string, taskRef: string) {
     notes.push({ uri, title: entry.note.title, sections: entry.note.sections });
     criterionHashes.push([uri, entry.note.acs.map((ac) => [ac.id, criterionHash(`- [ ] ${ac.id}: ${ac.text}`)])]);
   }
-  return { ok: true as const, repoId: index.repoId!, baseline: base.baseline, work, notes, criterionHashes };
+  return { ok: true as const, schema: task.meta.schema, repoId: index.repoId!, baseline: base.baseline, work, notes, criterionHashes };
 }
 
 export async function collectLiveSnapshot(root: string, taskRef: string, implementor: string, codeHashes: Array<[string, string | null]>) {
@@ -40,6 +40,7 @@ export async function collectLiveSnapshot(root: string, taskRef: string, impleme
     codeHashes,
     acceptanceRefs: snapshot.work.acceptanceRefs,
     verification: snapshot.work.verification,
+    requiredReview: snapshot.work.review,
     implementor,
   } };
 }

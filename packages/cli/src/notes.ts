@@ -1,4 +1,4 @@
-// Note: janus notes reuses the notes-cli command functions — see .agents/notes/implemented/architecture/2026-09-17-cli-notes-harness-s8.md
+// Note: janus notes reuses the notes-cli command functions — see .agents/notes/harness/storage/history/cli-notes-harness-s8.md
 /**
  * @file `janus notes` argv group (S8 slice 8b-1).
  * @description Same operations as `wfx-notes` over the same command
@@ -155,6 +155,7 @@ export async function runNotes(rawArgv: string[], cwd: string): Promise<NotesRun
         const tags = takeFlag(a, '--tags');
         return emit(await cmdCreate(root, {
           kind: kind as CreateInput['kind'],
+          module: takeFlag(a, '--module'), parent: takeFlag(a, '--parent'), relativePath: takeFlag(a, '--path'), moduleState: takeFlag(a, '--module-state') as CreateInput['moduleState'],
           title,
           sections,
           lifecycle: takeFlag(a, '--lifecycle'),

@@ -3,7 +3,7 @@
  * Shared notes never carry machine paths. Binding a repoId to a local
  * checkout is convenience data under `.local/`; missing bindings block
  * writes but never block reading assets already received.
- * Note: selected checkout read scope — .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
+ * Note: selected checkout read scope — .agents/notes/harness/storage/history/note-index-v1.md
  */
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';

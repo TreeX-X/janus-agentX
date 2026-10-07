@@ -111,7 +111,7 @@ describe('harness dispatch kernel', () => {
       const runId = await dispatched(dir);
       const path = join(dir, '.agents/notes/task.md');
       const before = readFileSync(path, 'utf8');
-      writeFileSync(join(dir, '.agents/harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'Test', profile: { ...SUPPORTED_HARNESS_PROFILE, version: '2.0.0' } }));
+      writeFileSync(join(dir, '.agents/harness.json'), JSON.stringify({ schemaVersion: 1, repoId: REPO, name: 'Test', profile: { ...SUPPORTED_HARNESS_PROFILE, version: '99.0.0' } }));
       const result = await startRun(dir, runId, 'owner-1', AUTH);
       expect(result.ok).toBe(false);
       expect(result.errors[0].code).toBe('UNSUPPORTED_SCHEMA');

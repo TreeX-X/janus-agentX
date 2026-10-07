@@ -1,4 +1,4 @@
-// Note: TUI harness mode lives here — see .agents/notes/implemented/architecture/2026-09-17-cli-harness-mode-s8.md
+// Note: TUI harness mode lives here — see .agents/notes/harness/storage/history/cli-harness-mode-s8.md
 /**
  * @file Task-bound plain CLI execution and lifecycle controls.
  * @description Leaving the mode keeps the lease. Re-entry rechecks the
@@ -226,7 +226,7 @@ export class HarnessController {
     return { stdout: [`run paused (was ${out.run?.pausedFrom ?? 'active'}).`], stderr: [] };
   }
 
-  // Note: task turns never complete from model prose - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
+  // Note: task turns never complete from model prose - see .agents/notes/harness/execution/history/harness-task-execution.md
   async executeTurn<T extends { cancelled: boolean }>(send: (context: TaskTurnContext) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const bound = this.requireBinding();
     if (!bound.ok) throw new Error([...bound.stdout, ...bound.stderr].join('\n'));

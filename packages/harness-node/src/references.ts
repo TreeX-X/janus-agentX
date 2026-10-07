@@ -1,5 +1,5 @@
 /** Read-side reference resolution in one explicitly selected checkout.
- * Note: .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
+ * Note: .agents/notes/harness/storage/history/note-index-v1.md
  */
 import { posix } from 'node:path';
 import { NOTE_URI_RE, UUID_RE, type Diagnostic, type MarkdownLink } from '@janus-agent/harness-core';

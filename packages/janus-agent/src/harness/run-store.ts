@@ -1,4 +1,4 @@
-// Note: execution run records live here — see .agents/notes/implemented/architecture/2026-09-17-harness-dispatch-s8.md
+// Note: execution run records live here — see .agents/notes/harness/execution/history/harness-dispatch-s8.md
 /**
  * @file Harness run store (S8 slice 8a).
  * @description Local-only run records under `.agents/.local/runs/<runId>/`:
@@ -155,7 +155,7 @@ async function taskEntry(root: string, taskUri: string) {
   return entry as typeof entry & { note: NonNullable<typeof entry.note> };
 }
 
-// Note: Note, receipt and local cache commit together - see .agents/notes/implemented/architecture/2026-09-18-harness-portable-results.md
+// Note: Note, receipt and local cache commit together - see .agents/notes/harness/storage/history/harness-portable-results.md
 export async function saveRun(root: string, run: HarnessRun, receipt?: Receipt, inject?: CrashInject): Promise<void> {
   await withAssetLock(root, async () => {
     const localPath = `.agents/.local/runs/${run.runId}/run.json`;

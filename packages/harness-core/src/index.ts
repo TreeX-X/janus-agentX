@@ -1,4 +1,5 @@
-// Note: shared harness data logic lives here — see .agents/notes/implemented/architecture/2026-09-16-harness-core-s2.md
+// Note: maintained module adoption - see .agents/notes/harness/workflowx-v2-adoption.md
+// Note: shared harness data logic lives here — see .agents/notes/harness/core/history/harness-core-s2.md
 /**
  * @janus-agent/harness-core — framework-free harness data logic.
  * No fs, no Electron, no agent loop, no LLM. File IO and execution

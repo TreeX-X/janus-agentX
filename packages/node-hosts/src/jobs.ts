@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import type { FileHandle } from 'node:fs/promises'
 import { commandExecutionMode, WINDOWS_SHELL_META } from './windows-shell.js'
 
-// Note: background spawn shares the Windows shell shim with sync command.run — see .agents/notes/implemented/bug-fix/2026-09-13-background-jobs-windows-shell-shim.md
+// Note: background spawn shares the Windows shell shim with sync command.run — see .agents/notes/agent/history/background-jobs-windows-shell-shim.md
 
 const LOG_DIR = '.janusX/logs'
 /** P4-tail mirror: keep the last N exited snapshots queryable. */
@@ -280,7 +280,7 @@ export class JobManager {
 
   private kill(record: JobRecord, force: boolean): void {
     if (record.exited) return
-    // Note: win32 kills the whole process tree so packaging children cannot leak — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+    // Note: win32 kills the whole process tree so packaging children cannot leak — see .agents/notes/agent/history/tool-failure-recovery-5f1662f2.md
     tryTreeKill(record.pid)
     try {
       record.child.kill((force || process.platform === 'win32') ? 'SIGKILL' : undefined)

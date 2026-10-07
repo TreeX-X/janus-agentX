@@ -142,7 +142,7 @@ export function createJanusRuntimeToolsForResources(
   resources: Map<string, JanusRuntimeWorkspaceResource>,
   options: { callerId?: string; preview?: JanusRuntimeToolPreview } = {},
 ): JanusRuntimeAgentTool[] {
-  // Note: single-workspace omission (output-token parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: single-workspace omission (output-token parity) — see .agents/notes/agent/history/opencode-token-parity.md
   // Mirrors createWorkspaceChatTools: schemas let the model omit workspaceId,
   // so this execution path must resolve the omission identically — explicit
   // ids resolve exactly (unknown ids fail closed), only a missing id falls

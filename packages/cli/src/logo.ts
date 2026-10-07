@@ -52,7 +52,7 @@ export const TUI_CHROME = {
   /** Selected-row highlight (replaces the old orange block). */
   selectBg: '#1f232c',
   /** Text selection must remain visible on embedded terminal backgrounds. */
-  // Note: JanusX uses a near-black canvas - see .agents/notes/implemented/feature/2026-09-11-composer-mouse-select-mode.md
+  // Note: JanusX uses a near-black canvas - see .agents/notes/cli/history/composer-mouse-select-mode.md
   selectionBg: '#46505f',
   /** Soft functional colors. */
   cyan: '#38bdf8',

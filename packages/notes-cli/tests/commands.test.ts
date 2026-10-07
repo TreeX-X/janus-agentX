@@ -30,7 +30,7 @@ describe('commands', () => {
     const root = makeRepo();
     writeFileSync(join(root, '.agents/notes/working.md'), '# Agent Note: History\n\nStatus: implemented\n');
     expect(await cmdCheck(root)).toMatchObject({ ok: true, errors: [], data: { rows: [{ foreign: true, diagnostics: [] }] } });
-    writeFileSync(join(root, '.agents/notes/future.md'), '---\nschema: harness-note/2\n---\n# Future\n');
+    writeFileSync(join(root, '.agents/notes/future.md'), '---\nschema: harness-note/99\n---\n# Future\n');
     expect((await cmdCheck(root)).errors.some((e) => e.code === 'UNSUPPORTED_SCHEMA')).toBe(true);
   });
   it('creates, lists, shows, and checks a requirement', async () => {

@@ -1,4 +1,4 @@
-// Note: external process launch lives here — see .agents/notes/implemented/architecture/2026-09-19-external-runner-launch.md
+// Note: external process launch lives here — see .agents/notes/agent/history/external-runner-launch.md
 /**
  * @file External runner launch (T2).
  * @description Spawns an external terminal process for a run prepared with

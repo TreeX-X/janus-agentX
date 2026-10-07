@@ -110,7 +110,7 @@ describe('ChatSessionRuntime', () => {
     expect(recent).toBeDefined()
   })
 
-  // Note: graded prune — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: graded prune — see .agents/notes/agent/history/opencode-token-parity.md
   it('prunes old search outputs even within budget but keeps old reads verbatim', () => {
     const runtime = new ChatSessionRuntime()
     const searchUnit = (id: string, query: string) => ([
@@ -143,7 +143,7 @@ describe('ChatSessionRuntime', () => {
     expect(oldRead?.content).toContain('hello')
   })
 
-  // Note: graded read prune — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: graded read prune — see .agents/notes/agent/history/opencode-token-parity.md
   it('keeps the newest three reads verbatim and digests older ones within budget', () => {
     const runtime = new ChatSessionRuntime()
     const readUnit = (id: string, marker: string) => ([
@@ -194,7 +194,7 @@ describe('ChatSessionRuntime', () => {
     expect(context.find((m) => m.role === 'tool' && m.toolCallId === 'call-m1-read')?.content).toContain('1: x')
   })
 
-  // Note: tool-loop chatter cap — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: tool-loop chatter cap — see .agents/notes/agent/history/opencode-token-parity.md
   it('drops old assistant chatter around tool calls but keeps the calls and pure answers', () => {
     const runtime = new ChatSessionRuntime()
     const chatterUnit = (id: string, text: string) => ([

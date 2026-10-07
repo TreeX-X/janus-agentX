@@ -17,7 +17,7 @@ import type { TestConnectionFn } from '../connect.js'
 import { App } from './App.js'
 import { CARET_BLOCK, CARET_DEFAULT, restoreNativeCaret, setCaretShape } from './terminal-size.js'
 
-// Note: incrementalRendering swaps full-frame erase+rewrite for per-line diff, stopping caret drift between output bottom and composer while typing mid-stream — see .agents/notes/implemented/bug-fix/2026-09-14-tui-incremental-render-cursor.md
+// Note: incrementalRendering swaps full-frame erase+rewrite for per-line diff, stopping caret drift between output bottom and composer while typing mid-stream — see .agents/notes/cli/history/tui-incremental-render-cursor.md
 
 export interface FullscreenIO {
   env?: NodeJS.ProcessEnv

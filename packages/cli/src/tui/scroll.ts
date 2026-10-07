@@ -63,7 +63,7 @@ export function isMouseCaptureDisabled(env: NodeJS.ProcessEnv = process.env): bo
  * `JANUS_MOUSE=0` or `JANUS_NO_MOUSE=1` returns selection to the terminal;
  * the latter wins even when `JANUS_MOUSE=1` is also set.
  */
-// Note: native terminal selection cannot enforce input bounds - see .agents/notes/implemented/feature/2026-09-11-composer-native-select-default.md
+// Note: native terminal selection cannot enforce input bounds - see .agents/notes/cli/history/composer-native-select-default.md
 export function shouldCaptureMouse(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env['JANUS_NO_MOUSE'] === '1') return false
   return env['JANUS_MOUSE'] !== '0'

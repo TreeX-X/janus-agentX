@@ -1,0 +1,374 @@
+{
+    "revision":  "6feb575bab1b067e6e4d8abc54d1f1d11a7bee23",
+    "workflowxRevision":  "642eb42",
+    "sources":  [
+                    {
+                        "source":  ".agents/notes/2026-09-24-note-index-v1--4f6c2a91.md",
+                        "target":  ".agents/notes/harness/storage/history/note-index-v1.md",
+                        "id":  "4f6c2a91-8b35-4d7e-a062-19ce4f5b7a83",
+                        "sourceHash":  "d884144850a99f6d181b91fd13935c80ade4f8503bfed501da9b258671914131"
+                    },
+                    {
+                        "source":  ".agents/notes/2026-10-05-workflowx-detection--844d119b.md",
+                        "target":  ".agents/notes/harness/storage/history/workflowx-detection.md",
+                        "id":  "844d119b-8dd7-423c-9981-fba6b7726ec6",
+                        "sourceHash":  "b1b635ae5c264feddb38d6dfe1326a7cd425c49a6fb80d8429a5c801ff66f468"
+                    },
+                    {
+                        "source":  ".agents/notes/2026-10-05-workflowx-runtime--ac75da81.md",
+                        "target":  ".agents/notes/harness/storage/history/workflowx-runtime.md",
+                        "id":  "ac75da81-9c0e-4ad2-964b-4919d924fe0e",
+                        "sourceHash":  "c474d39a39d8bb77131502a5fcae03cf9dbd23dfd60a19663c9a7e5556241fe7"
+                    },
+                    {
+                        "source":  ".agents/notes/archived/architecture/2026-09-17-search-first-token-optimization.md",
+                        "target":  ".agents/notes/agent/history/search-first-token-optimization.md",
+                        "id":  "f63872ee-6100-4965-9bea-89bbcce36b29",
+                        "sourceHash":  "22bcbf65d068ccbc8da32eb4e254e3fc03eaaf05bf3b4b8204c9cc6a0d3dc0d2"
+                    },
+                    {
+                        "source":  ".agents/notes/archived/architecture/2026-09-17-turn-ritual-history-replay.md",
+                        "target":  ".agents/notes/agent/history/turn-ritual-history-replay.md",
+                        "id":  "c1eedb97-95cc-44a3-8fc0-6bc79a66c462",
+                        "sourceHash":  "99c00a8723e1a7d345477258fda363fdfd5f74f0cbfe4bc0be3c5d95285b0642"
+                    },
+                    {
+                        "source":  ".agents/notes/archived/feature/2026-09-13-tool-failure-recovery.md",
+                        "target":  ".agents/notes/agent/history/tool-failure-recovery.md",
+                        "id":  "bdec7442-67fd-4841-a158-b311d76bc71a",
+                        "sourceHash":  "6a71fff497e696fad5a8d6211140687174dd07641691810948674ea3083545e2"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-06-janus-agent-long-task-streaming.md",
+                        "target":  ".agents/notes/agent/history/janus-agent-long-task-streaming.md",
+                        "id":  "e8d8d8d6-9f44-47bf-89da-447cfc2e2f9e",
+                        "sourceHash":  "c435a5346d6b0ac3d194b2ea95a2e135745e408a288915b98a02d86253847d9d"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-16-harness-core-s2.md",
+                        "target":  ".agents/notes/harness/core/history/harness-core-s2.md",
+                        "id":  "c9e101a9-90d9-4a96-bf7a-f5db64f2344a",
+                        "sourceHash":  "87b579ec5de74222ac299d865c4578c8ebc6edadf2e42df893b921326366ed70"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-16-harness-node-cli-s3.md",
+                        "target":  ".agents/notes/harness/storage/history/harness-node-cli-s3.md",
+                        "id":  "cd1384bb-0135-47e8-b087-be59d7c2526a",
+                        "sourceHash":  "691c3ce86e12a4464756cae9797e59c2b7d863c0794f4e392ba3a58174efb90c"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-chat-turn-maintenance-hosting.md",
+                        "target":  ".agents/notes/agent/history/chat-turn-maintenance-hosting.md",
+                        "id":  "8ed75baa-4671-48ef-bc3d-ac907558d49c",
+                        "sourceHash":  "ff219d58c6653f5638fd76ba2c5e2304142e25338faafab2d737510090536654"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-cli-harness-mode-s8.md",
+                        "target":  ".agents/notes/harness/storage/history/cli-harness-mode-s8.md",
+                        "id":  "b13c1455-ae14-4920-8dc5-c80bdda2230f",
+                        "sourceHash":  "da7bb507e1e4c0aa1e7cf572d2628afff6a21abaf09a2647070f74d61293b7e0"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-cli-notes-harness-s8.md",
+                        "target":  ".agents/notes/harness/storage/history/cli-notes-harness-s8.md",
+                        "id":  "f3521e93-85e4-4a53-b1bc-5281f2c9fb1e",
+                        "sourceHash":  "2b73e637c64538e7d424e0cd236ccdd30d91090940aac8fb5645ba5091469124"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-harness-baseline-s8.md",
+                        "target":  ".agents/notes/harness/execution/history/harness-baseline-s8.md",
+                        "id":  "835d7092-99e9-4655-9fe6-19d448fd555f",
+                        "sourceHash":  "e4f2426d30f8133812bda5b7f2efa18b580d90cbdd639b06612c8f2c420df4ba"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-harness-dispatch-s8.md",
+                        "target":  ".agents/notes/harness/execution/history/harness-dispatch-s8.md",
+                        "id":  "6af9ceb4-acd9-4818-ba67-374a06c897bc",
+                        "sourceHash":  "c8f4ef24006ce170b0e7d0f024643d9845700b6ddc120f29e2d329f16e3b17e3"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-harness-repo-identity-s7.md",
+                        "target":  ".agents/notes/harness/storage/history/harness-repo-identity-s7.md",
+                        "id":  "be583dc5-1d9e-4f4c-8d52-a16aa8645342",
+                        "sourceHash":  "7337d1b20a9f172bc684d3835c0df73138315b3bfb10f60505b6467c411b1069"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md",
+                        "target":  ".agents/notes/agent/history/opencode-token-parity.md",
+                        "id":  "541b985f-7536-4dc6-a9fd-055c76e57c90",
+                        "sourceHash":  "894204dca475a973f4f7251b6c391b8a0bec4ce169485024d71c8dc51b430f13"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-search-first-token-optimization.md",
+                        "target":  ".agents/notes/agent/history/search-first-token-optimization-0400774e.md",
+                        "id":  "0400774e-767e-4dc6-b31a-98feaf7b9372",
+                        "sourceHash":  "083fb68f6beb44ec8fbc67241c58a4861971143d724265ba974b174aa61f9d85"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-17-turn-ritual-history-replay.md",
+                        "target":  ".agents/notes/agent/history/turn-ritual-history-replay-07b20880.md",
+                        "id":  "07b20880-fc0e-472f-b5ef-a18609c81a55",
+                        "sourceHash":  "3527bf6792cb336988d737723e41b3992db821bf381baa9c4987bec5ffccddef"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-18-harness-portable-results.md",
+                        "target":  ".agents/notes/harness/storage/history/harness-portable-results.md",
+                        "id":  "554196e5-682a-4146-ae3a-3285be2d452d",
+                        "sourceHash":  "8f7296f001affcc7de9a00b19a6c60d78e8082aa77e904e55f4896506129eb1a"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md",
+                        "target":  ".agents/notes/harness/execution/history/harness-task-execution.md",
+                        "id":  "c514cc8a-ba91-4102-add4-54f7f8460ee9",
+                        "sourceHash":  "17eaac65a1e8a74f852a65e4605f3fc879c0a68833fc756e27217230b8abbe39"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-19-delegated-task-hosts.md",
+                        "target":  ".agents/notes/harness/execution/history/delegated-task-hosts.md",
+                        "id":  "2287ec26-2412-4138-a252-e9d6d4041232",
+                        "sourceHash":  "5f9b7599e116b84e867432b4d29d30a42be2bcad0018774c2e7913b068f800f2"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-19-external-runner-launch.md",
+                        "target":  ".agents/notes/agent/history/external-runner-launch.md",
+                        "id":  "29375685-c2e4-4ae6-8c70-a14102d13852",
+                        "sourceHash":  "1cc32d00cb17d21c3a5ff95bb0c18d0f11ec501fdf1637ea38d0a9c8ddfc4548"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-19-harness-auto-repair.md",
+                        "target":  ".agents/notes/harness/execution/history/harness-auto-repair.md",
+                        "id":  "9a3ede44-4b50-4680-9908-b6e0c129d321",
+                        "sourceHash":  "5764a3ceea369782980c89db8774bd1c9ef5181e7c2e999e7aded581706e2b0a"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-19-harness-profile-namespace.md",
+                        "target":  ".agents/notes/harness/storage/history/harness-profile-namespace.md",
+                        "id":  "a25708f4-6a09-4c18-a3d2-e0e02be42885",
+                        "sourceHash":  "07c01bfddbea7e52b5c04055b6d60c64101e7c72739bb4f0cfa487e76bc5b3ef"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/architecture/2026-09-19-ink-harness-host.md",
+                        "target":  ".agents/notes/harness/storage/history/ink-harness-host.md",
+                        "id":  "a4654129-3e2d-4086-90f2-3343a38c66e4",
+                        "sourceHash":  "845fe21a8cc48e946e45d97963bf29c32f4689591dc567adac430c216e4d3551"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-13-background-jobs-windows-shell-shim.md",
+                        "target":  ".agents/notes/agent/history/background-jobs-windows-shell-shim.md",
+                        "id":  "0560f872-f06d-46ee-b7f7-be61d1f98989",
+                        "sourceHash":  "01a8c0cf8d115a007fc834d535b1b22e0dbb20ddd93f40a9427c28e7497c7835"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-13-tui-stream-batch-cursor.md",
+                        "target":  ".agents/notes/cli/history/tui-stream-batch-cursor.md",
+                        "id":  "8f677100-d28a-4992-a5d4-0fc9a565d498",
+                        "sourceHash":  "c750b4af6cb2bf24db6aaba152e6b217b34a6fbe1593f7d8678c862d48ea5360"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-14-tui-incremental-render-cursor.md",
+                        "target":  ".agents/notes/cli/history/tui-incremental-render-cursor.md",
+                        "id":  "c493094e-e7d0-4fcf-a2a4-ab9bba755a55",
+                        "sourceHash":  "f78e7833317532afb156533f6600cdb455da4260e72f0abc1ac78590cd4ac936"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-15-model-limits-check.md",
+                        "target":  ".agents/notes/cli/history/model-limits-check.md",
+                        "id":  "df264196-d0da-4721-86cc-47f687c89b30",
+                        "sourceHash":  "b1dd7443b34627f0dac6ada92646a0cbc3ea251e2a256d4a04c0f4e440f5ce4d"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-15-tool-call-recovery.md",
+                        "target":  ".agents/notes/agent/history/tool-call-recovery.md",
+                        "id":  "71753f04-46f8-4262-b3a4-45eb08703da3",
+                        "sourceHash":  "eda3448a9988aa606099388fc892298de959313a3e6b0f3fc05e64e53b0a5e8b"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-15-tui-wrap-long-rows.md",
+                        "target":  ".agents/notes/cli/history/tui-wrap-long-rows.md",
+                        "id":  "1f799057-c39b-45d1-9dc5-d595749c9d91",
+                        "sourceHash":  "177e5b3cc46312c5b851a48201251cb51ceaa4ad64760c3c9f9c1556bbd13c88"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md",
+                        "target":  ".agents/notes/agent/history/agent-context-search-efficiency.md",
+                        "id":  "e4dc1f57-0621-4e4b-8737-efb020241e08",
+                        "sourceHash":  "8476af7bec916e3902787a46c20b52288d1a867c507f26f70686151f857ee6a0"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md",
+                        "target":  ".agents/notes/agent/history/read-paging-token-amplification.md",
+                        "id":  "7a3776e0-bb34-41d1-8867-bcb23e0f8bee",
+                        "sourceHash":  "07afde8d2eb9132d76adb8edd7791fa447bd022fe9ab8a93f68c2403983a17f1"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-16-search-hunk-groups.md",
+                        "target":  ".agents/notes/agent/history/search-hunk-groups.md",
+                        "id":  "05f43f22-68e1-46d0-9c1a-70ecad6159f6",
+                        "sourceHash":  "d672bbb2bd66d527fce3a18d3ceaf96692ffbb828a5fcc5ef3ca44871b8d5b7c"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/bug-fix/2026-09-18-harness-receipt-gates.md",
+                        "target":  ".agents/notes/harness/execution/history/harness-receipt-gates.md",
+                        "id":  "202ee600-5445-40bf-9cff-545de64ae4e8",
+                        "sourceHash":  "57a2511dcd98be9370c04778c1fbe28b0ce9ca24e8cc62416a1c78a631c05971"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-05-todo-write-sticky.md",
+                        "target":  ".agents/notes/agent/history/todo-write-sticky.md",
+                        "id":  "dd35b62a-df43-4e70-abce-82026b7ae3dd",
+                        "sourceHash":  "7953baf4fae88cb643b47ce43b2271e7c18305301a5f3541fdcc7046b34ebc25"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-11-composer-drag-select-constrained.md",
+                        "target":  ".agents/notes/cli/history/composer-drag-select-constrained.md",
+                        "id":  "d3d5d04c-81d2-4b1e-b980-c90b8759d3d8",
+                        "sourceHash":  "ea134c51782b147373997a86969b6d19dd56436ba1d863af93ac82190b11ed51"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-11-composer-mouse-select-mode.md",
+                        "target":  ".agents/notes/cli/history/composer-mouse-select-mode.md",
+                        "id":  "322747fa-c08e-43cb-8dda-f0dce8dfa0d9",
+                        "sourceHash":  "c3f48a188b10294768f7ce0a79b9f8628ba454950251244b6ab40fbc08a5f438"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-11-composer-native-select-default.md",
+                        "target":  ".agents/notes/cli/history/composer-native-select-default.md",
+                        "id":  "2c12b34d-5cd9-43db-b04b-684472839c2a",
+                        "sourceHash":  "d216ad4b84fdd4a50fc1f7b4691a524235c35ca10cca50a98131667466d8b281"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-11-composer-select-copy-paste.md",
+                        "target":  ".agents/notes/cli/history/composer-select-copy-paste.md",
+                        "id":  "d2e76326-e75a-43cd-9895-8cd872c76e09",
+                        "sourceHash":  "3cfd24c5d9945bcaaa1b950144af864f5a73a95b25e1f6ef773e628ac125d099"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-12-llm-compaction-loop.md",
+                        "target":  ".agents/notes/agent/history/llm-compaction-loop.md",
+                        "id":  "90bdb504-1db2-422e-bb9d-df0968bdb653",
+                        "sourceHash":  "3b1f2968d53c0768e3087014f5af7615676a38689c9de2bf462d6d9b7604f424"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-12-model-window-table.md",
+                        "target":  ".agents/notes/cli/history/model-window-table.md",
+                        "id":  "9bd3de56-ca9f-4a8c-bf12-ef781a46a89d",
+                        "sourceHash":  "e235dc566325f4355d052c9d7bc5886df8f465be9b049f30a8fe27f8b57f4f01"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-13-checkpoint-diff-cards.md",
+                        "target":  ".agents/notes/agent/history/checkpoint-diff-cards.md",
+                        "id":  "4105fab9-4564-49d2-9fd1-4d4dac0ddfee",
+                        "sourceHash":  "b0a9028a41a9ca394912716bf50718bd2891662213755f750d1f2300c1d34cb2"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md",
+                        "target":  ".agents/notes/agent/history/tool-failure-recovery-5f1662f2.md",
+                        "id":  "5f1662f2-1696-4e46-8918-53ac4e85e8a3",
+                        "sourceHash":  "2feac536382eb3addf5d2cf419a3b7a840db250beeeac43b4008f1a129f9dbc6"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-14-command-error-self-heal-and-todo-resume.md",
+                        "target":  ".agents/notes/agent/history/command-error-self-heal-and-todo-resume.md",
+                        "id":  "64480ca9-4247-46dd-b08d-a7c72c9244a8",
+                        "sourceHash":  "7ac5124b7d98d9be3ff03332281a9d84f82434aa98c58b2e03879169f02c0cc9"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-14-provider-model-picker.md",
+                        "target":  ".agents/notes/cli/history/provider-model-picker.md",
+                        "id":  "35b88990-ffc1-4896-aeca-1112e9e50cfe",
+                        "sourceHash":  "b51830bb50e49d04073062915015878a01f7b2d64ca0ede0fa7f4bddeb5edd24"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-15-approval-gate-interrupt.md",
+                        "target":  ".agents/notes/agent/history/approval-gate-interrupt.md",
+                        "id":  "09e35704-73d3-4106-ab2b-600df07e37b9",
+                        "sourceHash":  "df44b0fecdc5b704d229115a08e4f119d989fc68520af20324eaf80654e4bf02"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-15-context-efficiency.md",
+                        "target":  ".agents/notes/agent/history/context-efficiency.md",
+                        "id":  "21c6a27f-d3e2-4986-9875-4cdf22253bf7",
+                        "sourceHash":  "48e99e95c0bd2d2a5f646e60c66b24d5addef7477c79e8cd89f964dd310c92aa"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md",
+                        "target":  ".agents/notes/harness/execution/history/todo-continuous-execution.md",
+                        "id":  "f14e0b47-fd2f-413c-8f7f-874e3ca39d32",
+                        "sourceHash":  "b56c07670f02db67b94eb57ba7615d24c257d9515c9ad453206a5f8ad2589953"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md",
+                        "target":  ".agents/notes/agent/history/workspace-read-line-pages.md",
+                        "id":  "42c92e00-2a4a-4790-af19-d0626ef45446",
+                        "sourceHash":  "61865265798390c59f2ff6321bb771776f0228892f70a47c0aafe77c8df07e9f"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md",
+                        "target":  ".agents/notes/agent/history/write-anchor-chain.md",
+                        "id":  "f32bcd66-eaff-4f73-96bb-40e6296f820c",
+                        "sourceHash":  "dc9eb6e835fe36ccd77adfb491c7de3b68a1fbea24d266732a13d5d8a47644cb"
+                    },
+                    {
+                        "source":  ".agents/notes/implemented/feature/2026-09-17-slash-enter-confirm.md",
+                        "target":  ".agents/notes/cli/history/slash-enter-confirm.md",
+                        "id":  "3f51093d-d906-4964-a2fb-29f7a2085887",
+                        "sourceHash":  "47e873298e41259f6626d0e7f085f401e9dfa81cf7d0d039d913ac8e09b383cd"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/architecture/2026-08-31-persistent-subagent-review-loop.md",
+                        "target":  ".agents/notes/agent/history/persistent-subagent-review-loop.md",
+                        "id":  "9473eaab-de5d-4d5a-9cdb-8eecee1f125c",
+                        "sourceHash":  "72dc813906c8947df000394650ad065f6074ba3923f18e19ef0df4861b5f71f3"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/architecture/2026-09-11-harness-persistent-subagents.md",
+                        "target":  ".agents/notes/harness/storage/history/harness-persistent-subagents.md",
+                        "id":  "f337c49b-fdd3-4e16-be05-a614df57ac13",
+                        "sourceHash":  "9c726a5e19ba4cabb0c559d7269ca005f7f94ad472db49abcf45c4a5633930ff"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/architecture/2026-09-15-agent-reliability-token-interrupt-overhaul.md",
+                        "target":  ".agents/notes/agent/history/agent-reliability-token-interrupt-overhaul.md",
+                        "id":  "e09e8c3e-a920-4eda-af3a-58470ad30031",
+                        "sourceHash":  "53c9142f7a54cade25bfee5c26f4a28fcd43968f1b3ef6a6fb58093ff0687d60"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/feature/2026-09-05-knowledge-mcp-access.md",
+                        "target":  ".agents/notes/agent/history/knowledge-mcp-access.md",
+                        "id":  "39b2e529-3809-4f57-84fa-fa5c0d1fd22c",
+                        "sourceHash":  "5b4c390cbbb5ab762dc6a4abd82913284a71040bebfca32976770a9ad39bc5fa"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/feature/2026-09-08-context-brief-task-spawn.md",
+                        "target":  ".agents/notes/agent/history/context-brief-task-spawn.md",
+                        "id":  "a6f8ba18-3f7d-4b1d-ae07-1ebc867f5739",
+                        "sourceHash":  "b29b87c1d41960303fde8192f6bf17a1d990f3d5ab76b2941a3536a28f6478c6"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/feature/2026-09-12-agent-cli-gap-matrix.md",
+                        "target":  ".agents/notes/cli/history/agent-cli-gap-matrix.md",
+                        "id":  "c20376f3-eb5c-4ee5-b877-b612ce304d5c",
+                        "sourceHash":  "8b75c0788e44818ba7df0b8ae9a4baea5d7c547989d6bfe3478b696a6b472181"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/feature/2026-09-12-context-compaction.md",
+                        "target":  ".agents/notes/agent/history/context-compaction.md",
+                        "id":  "008c7e8e-dbb8-4087-91ed-20b55618b196",
+                        "sourceHash":  "84b1d0464630a043814dc1ea52e20e638c91b6030aae4ebfab183a6a0a1565de"
+                    },
+                    {
+                        "source":  ".agents/notes/proposed/feature/2026-09-12-multi-workspace-primary-children.md",
+                        "target":  ".agents/notes/agent/history/multi-workspace-primary-children.md",
+                        "id":  "ddc862ca-90ae-42b9-b1b8-ebae9f638052",
+                        "sourceHash":  "a25844e50f665ff1a8b2f1ef8b29f4d171ecfdfeff7c5ccc19b5700dc954a68d"
+                    }
+                ],
+    "protected":  "Untracked main-checkout assets are not part of this migration; preserve them during merge.",
+    "deferred":  [
+                     {
+                         "path":  ".agents/notes/proposed/architecture/2026-09-16-codex-cli-tool-surface-survey.md",
+                         "sha256":  "eb9e29ae66d24fbc11674b2e94be3d37721043faf41fdb8a48df26a4bfb78cdf",
+                         "reason":  "Pre-existing untracked main-checkout source; preserved outside migration"
+                     }
+                 ]
+}

@@ -1,4 +1,4 @@
-// Note: execution dispatch lives here — see .agents/notes/implemented/architecture/2026-09-17-harness-dispatch-s8.md
+// Note: execution dispatch lives here — see .agents/notes/harness/execution/history/harness-dispatch-s8.md
 /**
  * @file Harness run dispatcher (S8 slice 8a).
  * @description Owns run records from dispatch to closeout: transitions run
@@ -105,6 +105,7 @@ export interface RepairPacket {
 }
 
 export interface LiveSnapshot {
+  requiredReview?: 'self' | 'independent';
   taskContractHash: string;
   inputHashes: Array<[string, string]>;
   criterionHashes: Array<[string, Array<[string, string]>]>;
@@ -134,6 +135,7 @@ function toValidityContext(live: LiveSnapshot): ValidityContext {
     codeHashes: new Map(live.codeHashes),
     acceptanceRefs: live.acceptanceRefs,
     verification: live.verification,
+    requiredReview: live.requiredReview,
     implementor: live.implementor,
   };
 }
@@ -448,7 +450,7 @@ export interface AutoRepairOutcome {
  * accounting plus the attempt match: every new failure records a new
  * receipt, so retriggering always needs fresh evidence.
  */
-// Note: automatic repair spends the budget here — see .agents/notes/implemented/architecture/2026-09-19-harness-auto-repair.md
+// Note: automatic repair spends the budget here — see .agents/notes/harness/execution/history/harness-auto-repair.md
 export async function maybeAutoRepair(
   root: string,
   runId: string,

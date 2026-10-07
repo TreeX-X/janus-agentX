@@ -8,7 +8,7 @@ export const RECEIPT_SCHEMA = 'harness-receipt/1' as const;
 export const BUNDLE_SCHEMA = 'harness-bundle/1' as const;
 export const VIEW_SCHEMA = 'harness-view/1' as const;
 
-export const NOTE_KINDS = ['idea', 'initiative', 'requirement', 'decision', 'task'] as const;
+export const NOTE_KINDS = ['module', 'note', 'idea', 'initiative', 'requirement', 'decision', 'task'] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
 
 export const LIFECYCLES = ['draft', 'proposed', 'accepted', 'rejected', 'archived', 'implemented'] as const;
@@ -79,7 +79,7 @@ export const KNOWN_TOP_KEYS = [
   'id',
   'kind',
   'lifecycle',
-  'created',
+  'created', 'updated', 'module', 'moduleState', 'role',
   'class',
   'tags',
   'parent',
@@ -137,6 +137,7 @@ export interface VerificationStep {
 }
 
 export interface WorkContract {
+  review?: 'self' | 'independent';
   scope: WorkScope[];
   acceptanceRefs: AcceptanceRef[];
   verification: VerificationStep[];
@@ -160,11 +161,15 @@ export interface TaskExecution {
 }
 
 export interface HarnessNoteMeta {
-  schema: typeof NOTE_SCHEMA;
+  schema: typeof NOTE_SCHEMA | 'harness-note/2';
   id: string;
   kind: NoteKind;
   lifecycle: Lifecycle;
   created: string;
+  updated?: string;
+  module?: string;
+  moduleState?: 'planned' | 'partial' | 'implemented' | 'retired';
+  role?: 'project';
   class?: NoteClass;
   tags?: string[];
   parent?: string;

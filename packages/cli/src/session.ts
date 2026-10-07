@@ -950,7 +950,7 @@ export class CliSession {
   }
 
   /**
-   * Note: approval-gate always-approve (`a`) — see .agents/notes/implemented/feature/2026-09-15-approval-gate-interrupt.md
+   * Note: approval-gate always-approve (`a`) — see .agents/notes/agent/history/approval-gate-interrupt.md
    * Switches to auto-run and approves the currently pending request, if any.
    * opencode inline-card allow-always parity for the Composer-unmounted gate.
    * Already-settled waits resolve false and are ignored.
@@ -1132,7 +1132,7 @@ export class CliSession {
     }
   }
 
-  // Note: task execution reuses runtime approval and command results - see .agents/notes/implemented/architecture/2026-09-18-harness-task-execution.md
+  // Note: task execution reuses runtime approval and command results - see .agents/notes/harness/execution/history/harness-task-execution.md
   taskVerificationPorts(_actor: string): TaskVerificationPorts {
     if (!this.modelId || (!this.hasApiKey() && !this.hasCustomTransport)) throw new Error('CAPABILITY_UNAVAILABLE: self-review needs a configured model and transport')
     const review: NonNullable<TaskVerificationPorts['review']> = async (input, signal) => {

@@ -1,5 +1,6 @@
-// Note: task baseline collection lives here — see .agents/notes/implemented/architecture/2026-09-17-harness-baseline-s8.md
-// Note: eligibility and evidence share one validity gate — see .agents/notes/implemented/bug-fix/2026-09-18-harness-receipt-gates.md
+import { noteInputDigest } from '@janus-agent/harness-core';
+// Note: task baseline collection lives here — see .agents/notes/harness/execution/history/harness-baseline-s8.md
+// Note: eligibility and evidence share one validity gate — see .agents/notes/harness/execution/history/harness-receipt-gates.md
 /**
  * @file Task baseline collection (S8 slice 8b, shared).
  * @description Assembles the fixed C3 baseline for one task note: the task
@@ -195,7 +196,7 @@ export async function receiptProblems(root: string, repoId: string, receipt: Rec
         if (!(id in lines)) return [diag('STALE_BASELINE', `input criterion vanished: ${input.uri}#${id}`)];
         criteria[id] = lines[id];
       }
-      inputHashes.set(input.uri, contentDigest({ uri: input.uri, kind: note.meta.kind, lifecycle: note.meta.lifecycle, sections: pickSections(note, note.meta.kind), criteria }).digest);
+      inputHashes.set(input.uri, note.meta.schema === 'harness-note/2' ? noteInputDigest(note) : contentDigest({ uri: input.uri, kind: note.meta.kind, lifecycle: note.meta.lifecycle, sections: pickSections(note, note.meta.kind), criteria }).digest);
     }
     for (const cov of receipt.coverage) {
       if (!inputHashes.has(cov.uri)) return [diag('NOT_READY', `taskless receipt does not pin covered input ${cov.uri}`)];
@@ -233,6 +234,7 @@ export async function receiptProblems(root: string, repoId: string, receipt: Rec
     taskContractHash: contract, inputHashes, criterionHashes, codeHashes,
     acceptanceRefs: task?.meta.work?.acceptanceRefs ?? receipt.coverage.map(({ uri, criterionId }) => ({ uri, criterionId })),
     verification: task?.meta.work?.verification ?? [],
+    requiredReview: task?.meta.work?.review,
     implementor: receipt.actor,
   });
 }
@@ -320,7 +322,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
     if (note.meta.kind === 'requirement') required.add(`${ref.uri}#${ref.criterionId}`);
   }
   const intended = new Set((task.meta.relations ?? []).filter((rel) => rel.type === 'implements').flatMap((rel) => (rel.criteria ?? []).map((id) => `${rel.target}#${id}`)));
-  if (required.size !== intended.size || [...required].some((key) => !intended.has(key))) return { ok: false, problems: [diag('INVALID_RELATION', 'implements criteria must match work.acceptanceRefs', 'work.acceptanceRefs')] };
+  if (task.meta.schema === 'harness-note/1' && (required.size !== intended.size || [...required].some((key) => !intended.has(key)))) return { ok: false, problems: [diag('INVALID_RELATION', 'implements criteria must match work.acceptanceRefs', 'work.acceptanceRefs')] };
 
   const pinTarget = async (uri: string, via: string, edgeCriteria: string[] | undefined, stack: string[]): Promise<void> => {
     if (stack.includes(uri)) {
@@ -375,7 +377,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
         uri: target.uri, kind, lifecycle: target.note.meta.lifecycle,
         sections: pickSections(target.note, kind), criteria,
       });
-      const pin = { uri: target.uri, contentHash: digest.digest, criteria: Object.keys(criteria) };
+      const pin = { uri: target.uri, contentHash: target.note.meta.schema === 'harness-note/2' ? noteInputDigest(target.note) : digest.digest, criteria: Object.keys(criteria) };
       if (existing) Object.assign(existing, pin);
       else inputs.push(pin);
     } else if (kind === 'decision') {
@@ -383,7 +385,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
         uri: target.uri, kind, lifecycle: target.note.meta.lifecycle,
         sections: pickSections(target.note, kind), criteria: {},
       });
-      inputs.push({ uri: target.uri, contentHash: digest.digest });
+      inputs.push({ uri: target.uri, contentHash: target.note.meta.schema === 'harness-note/2' ? noteInputDigest(target.note) : digest.digest });
     } else {
       const execution = target.note.meta.execution;
       if (!execution || execution.state !== 'done') {
@@ -425,7 +427,7 @@ async function collectBaseline(root: string, taskRef: string, ancestors: Readonl
         sections: pickSections(target.note, kind), criteria,
         dependencies,
       });
-      inputs.push({ uri: target.uri, contentHash: digest.digest, criteria: Object.keys(criteria) });
+      inputs.push({ uri: target.uri, contentHash: target.note.meta.schema === 'harness-note/2' ? noteInputDigest(target.note) : digest.digest, criteria: Object.keys(criteria) });
     }
 
     if (!firstVisit) return;

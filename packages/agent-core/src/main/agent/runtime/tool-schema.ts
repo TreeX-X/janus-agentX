@@ -1,4 +1,4 @@
-// Note: host tools share schema validation and model exposure — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: host tools share schema validation and model exposure — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { z } from 'zod'
 
 /** JSON Schema subset used by built-in, host and MCP tools. Unsupported constraints fail explicitly. */

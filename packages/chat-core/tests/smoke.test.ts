@@ -56,7 +56,7 @@ describe('tool traces', () => {
     expect(toolTraceHistoryMessage([])).toBeNull()
   })
 
-  // Note: trace history cap (output-token parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: trace history cap (output-token parity) — see .agents/notes/agent/history/opencode-token-parity.md
   it('caps trace history at the newest entries in chronological order', () => {
     const entries = Array.from({ length: 15 }, (_, index) => ({
       toolName: 'workspace.read', workspaceId: 'w', status: 'completed' as const, summary: `file${index}.ts`,

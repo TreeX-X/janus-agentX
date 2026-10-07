@@ -1,3 +1,5 @@
+import {validateModuleStructure} from './module-structure.js';
+import {serializeNote, taskContractHash} from '@janus-agent/harness-core';
 /**
  * Managed multi-file apply (contract C5). One checkout serializes short
  * persistence under `.local/locks/notes.lock`; the journal under
@@ -43,7 +45,7 @@ import {
   type Journal,
 } from './journal.js';
 
-// Note: execution assets use the same recoverable writer - see .agents/notes/implemented/architecture/2026-09-18-harness-portable-results.md
+// Note: execution assets use the same recoverable writer - see .agents/notes/harness/storage/history/harness-portable-results.md
 export async function withAssetLock<T>(root: string, action: () => Promise<T>): Promise<T> {
   await assertAssetPath(root, '.agents/.local/runs/.path-check');
   const mine = await acquireLock(root);
@@ -224,12 +226,14 @@ export async function recoverPending(root: string): Promise<RecoverReport> {
       if (row.afterHash === null) {
         await rm(resolve(root, row.relPath), { force: true });
       } else {
+        await mkdir(dirname(resolve(root, row.relPath)), { recursive: true });
         await finalizeRename(root, txId, row.tmpName, row.relPath);
       }
     }
-    const results = journal.files.map((f) => ({ operationId: f.operationId, status: 'applied' }));
+    const results = journal.files.filter(f => !f.tmpName.startsWith('move-')).map((f) => ({ operationId: f.operationId, status: 'applied', relPath: f.relPath }));
     await markCommitted(root, txId, { committed: true, results });
     for (const f of journal.files) {
+      if (f.tmpName.startsWith('move-')) continue;
       await storeOpResult(root, journal.changeSetId, journal.revision, f.operationId, journal.requestDigest, {
         operationId: f.operationId,
         status: 'applied',
@@ -427,7 +431,7 @@ async function applyLocked(
         continue;
       }
       op.noteDiagnostics.push(...validateNote(op.note));
-      const rel = op.relativePath ?? autoRel(taken, op.note);
+      const rel = op.relativePath ?? (op.note.meta.schema === 'harness-note/2' ? modulePath(index, planned, op.note) : autoRel(taken, op.note));
       if (index.entries.some((e) => e.relPath.toLowerCase() === `.agents/notes/${rel}`.toLowerCase())) {
         op.noteDiagnostics.push(diag('CONFLICT', `target file exists: ${rel}`, op.operationId));
         continue;
@@ -474,8 +478,28 @@ async function applyLocked(
       }
     }
   }
+  // Enforce v2 identity, timestamps and execution ownership at the common writer.
+  const writerProfile = JSON.parse(await readFile(join(root,'.agents/harness.json'),'utf8')).profile;
+  for (const op of planned) {
+    const old = index.byId.get(idPart(op.uri));
+    if (op.note && op.note.meta.id !== idPart(op.uri)) op.noteDiagnostics.push(diag('SCHEMA_INVALID','operation identity mismatch'));
+    if (index.repoId && !op.uri.startsWith('note://' + index.repoId + '/')) op.noteDiagnostics.push(diag('UNRESOLVED_REFERENCE','operation belongs to another checkout'));
+    if (old?.note?.meta.execution && (op.type === 'delete' || !op.note || JSON.stringify(old.note.meta.execution) !== JSON.stringify(op.note.meta.execution) || taskContractHash(old.note) !== taskContractHash(op.note))) op.noteDiagnostics.push(diag('BUSY','execution contract/evidence must be changed through the execution workflow'));
+    if (!old?.note?.meta.execution && op.note?.meta.execution) op.noteDiagnostics.push(diag('PERMISSION_DENIED','only the executor writes execution metadata'));
+    if (op.note?.meta.schema === 'harness-note/2') {
+      if(writerProfile?.version !== '2.0.0') op.noteDiagnostics.push(diag('UNSUPPORTED_SCHEMA','activate the supported v2 profile before writing v2 documents'));
+      if (old?.note && op.note.meta.created !== old.note.meta.created) op.noteDiagnostics.push(diag('SCHEMA_INVALID','maintenance preserves created'));
+      if (!old || op.relativePath || op.afterMarkdown !== (await readFile(resolve(root,old.relPath),'utf8'))) {
+        op.note.meta.updated = new Date().toISOString();
+        op.afterMarkdown = serializeNote(op.note);
+      }
+    }
+  }
+  const post = new Map(index.entries.map(e => [e.note?.meta.id ?? e.relPath, {relPath:e.relPath,note:e.note}]));
+  for (const op of planned) { if (op.type === 'delete') post.delete(idPart(op.uri)); else if (op.note && op.targetRel) post.set(op.note.meta.id,{relPath:op.targetRel,note:op.note}); }
+  const moduleErrors = validateModuleStructure([...post.values()], index.repoId);
   // Final-graph loop check over the post-image (id graph; needs no repo binding).
-  const loopErrors = checkPostImage(index, planned);
+  const loopErrors = [...checkPostImage(index, planned), ...moduleErrors];
   const invalid = planned.filter((o) => o.noteDiagnostics.length > 0);
   if (invalid.length > 0 || loopErrors.length > 0) {
     return {
@@ -508,6 +532,13 @@ async function applyLocked(
       await writeTxFile(root, txId, `snap-${i}`, await readFile(resolve(root, rel)));
     }
   }
+  for (const [i, op] of planned.entries()) {
+    const old = op.type === 'replace' ? index.byId.get(idPart(op.uri)) : undefined;
+    if (old && old.relPath !== op.targetRel) {
+      await writeTxFile(root,txId,'move-'+i,await readFile(resolve(root,old.relPath)));
+      journal.files.push({operationId:op.operationId,relPath:old.relPath,existed:true,beforeHash:op.expectedHash,afterHash:null,snapName:'move-'+i,tmpName:'move-'+i});
+    }
+  }
   await writeJournal(root, journal);
   if (opts.inject?.failAfter === 'journal') throw crash('after journal');
   for (const [i, op] of planned.entries()) {
@@ -518,6 +549,8 @@ async function applyLocked(
   const results: OpOutcome[] = [];
   for (const [i, op] of planned.entries()) {
     const row = journal.files[i];
+    await assertAssetPath(root,row.relPath);
+    if(await currentHash(root,row.relPath)!==row.beforeHash) throw Object.assign(new Error('asset changed before apply'),{code:'CONFLICT'});
     if (op.type === 'delete') {
       try {
         await rm(resolve(root, row.relPath));
@@ -530,6 +563,7 @@ async function applyLocked(
       // A rename leaves the old path behind.
       const oldEntry = op.type === 'replace' ? index.byId.get(idPart(op.uri)) : undefined;
       if (op.type === 'replace' && oldEntry && oldEntry.relPath !== row.relPath) {
+        if(await currentHash(root,oldEntry.relPath)!==op.expectedHash) throw Object.assign(new Error('move source changed'),{code:'CONFLICT'});
         await rm(resolve(root, oldEntry.relPath), { force: true });
       }
     }
@@ -621,4 +655,13 @@ function checkPostImage(index: NoteIndex, planned: PlannedOp[]): Diagnostic[] {
     if (loop) out.push({ code: 'INVALID_RELATION', message: `${type} cycle: ${(loop as string[]).join(' -> ')}` });
   }
   return out;
+}
+
+function modulePath(index: NoteIndex, planned: Array<{uri:string; targetRel?:string; relativePath?:string}>, note: ParsedNote): string {
+  if (note.meta.kind === 'module') { if (note.meta.role === 'project') return 'module.md'; throw new Error('SCHEMA_INVALID: a child module requires relativePath ending in /module.md'); }
+  const ownerId = note.meta.module?.split('/').pop();
+  const owner = ownerId && (index.byId.get(ownerId)?.relPath ?? planned.find(op=>idPart(op.uri)===ownerId)?.targetRel);
+  if (!owner) throw new Error('UNRESOLVED_REFERENCE: module entry must exist before its documents');
+  const slug = note.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'') || 'note';
+  return owner.replace(/^\.agents\/notes\//,'').replace(/module\.md$/,slug+'.md');
 }

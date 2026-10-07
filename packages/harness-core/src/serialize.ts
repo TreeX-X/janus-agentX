@@ -31,6 +31,9 @@ function toYamlNode(doc: Document<ParsedNode>, value: unknown): ParsedNode {
 
 /** Regenerate the full note text. Meta writes in original key order; new keys append. */
 export function serializeNote(note: ParsedNote): string {
+  if (note.meta.schema === 'harness-note/2') {
+    return normalizeEol((note.bom ? '\uFEFF' : '') + '---\n' + JSON.stringify({...note.meta, ...note.unknownFields}, null, 2) + '\n---\n' + note.body, note.eol);
+  }
   const doc = new Document<ParsedNode>();
   const seen = new Set<string>();
   const put = (key: string, value: unknown): void => {
@@ -66,6 +69,11 @@ export function contractSections(note: ParsedNote): Record<string, string> {
 export function patchTaskExecution(raw: string, execution: TaskExecution): string {
   const note = parseNote(raw);
   if (note.meta.kind !== 'task') throw Object.assign(new Error('execution belongs to a task'), { code: 'SCHEMA_INVALID' });
+  if (note.meta.schema === 'harness-note/2') {
+    note.meta.execution = execution;
+    note.meta.updated = new Date().toISOString();
+    return serializeNote(note);
+  }
   const { fmText, eol } = splitFrontmatter(raw);
   const doc = parseDocument(fmText);
   if (!isMap(doc.contents) || doc.contents.flow) throw Object.assign(new Error('execution update needs block frontmatter'), { code: 'SCHEMA_INVALID' });

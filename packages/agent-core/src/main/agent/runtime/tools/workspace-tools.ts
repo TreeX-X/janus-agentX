@@ -31,7 +31,7 @@ const DEFAULT_OVERVIEW_MAX_ENTRIES = 100
 const MAX_MAX_ENTRIES = 1000
 const registeredRegistries = new WeakSet<ToolRegistry>()
 
-// Note: per-call verified diffs feed the change cards — see .agents/notes/implemented/feature/2026-09-13-checkpoint-diff-cards.md
+// Note: per-call verified diffs feed the change cards — see .agents/notes/agent/history/checkpoint-diff-cards.md
 /** Source side over this size skips the preview; the card falls back to summary. */
 const MAX_DIFF_PREVIEW_SOURCE_BYTES = 256 * 1024
 /** Bounded unified preview carried on the tool output for display only. */
@@ -106,8 +106,8 @@ function lineEditsDiffPreview(path: string, value: unknown): CallDiffPreview | u
   return boundPreview([`--- a/${path}`, `+++ b/${path}`, ...hunks].join('\n'))
 }
 
-// Note: line-paged reads keep large-file evidence reachable without re-reading the head — see .agents/notes/implemented/feature/2026-09-15-workspace-read-line-pages.md
-// Note: adaptive pages, token budgets, and search-carried hashes cut diagnostic round trips — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
+// Note: line-paged reads keep large-file evidence reachable without re-reading the head — see .agents/notes/agent/history/workspace-read-line-pages.md
+// Note: adaptive pages, token budgets, and search-carried hashes cut diagnostic round trips — see .agents/notes/agent/history/read-paging-token-amplification.md
 export const workspaceReadTool: RegisteredTool = {
   name: 'workspace.read',
   description: 'Read one UTF-8 file as line pages (≤40KB whole; larger default 300 lines/20KB). Continue with offset=nextOffset while truncated. Returns the full-file SHA-256 for edits; withLineAnchors:true adds LINE#HASH anchors per line for lineEdits.',

@@ -1,4 +1,4 @@
-// Note: portable results are derived from formal assets - see .agents/notes/implemented/architecture/2026-09-18-harness-portable-results.md
+// Note: portable results are derived from formal assets - see .agents/notes/harness/storage/history/harness-portable-results.md
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { canon, parseNote, receiptContentHash, taskContractHash, validateNote, validateReceiptShape, type Diagnostic, type ParsedNote, type Receipt, type TaskExecution } from '@janus-agent/harness-core';

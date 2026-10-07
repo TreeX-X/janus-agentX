@@ -1,5 +1,6 @@
-// Note: shared engineering capabilities and host extensions — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared engineering capabilities and host extensions — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { join, resolve } from 'node:path'
+import {validateModuleStructure} from './module-structure.js'
 import {
   checkAcyclic,
   parseNote,
@@ -234,6 +235,7 @@ export async function patchNoteIndex(
     snapshotHash: sha256HexBytes(Buffer.from(JSON.stringify([resolve(root), repoId, repoIdentity.diagnostics, next.map((entry) => [entry.relPath, entry.sourceHash, entry.classification]), coverageDiagnostics]))),
     diagnostics: coverageDiagnostics,
   }
-  const index: NoteIndex = { repoId, entries: next, byId, byUri, byPath, conflicts, coverage, outgoing, backlinks, relations, mentions, mentionBacklinks, readDiagnostics, diagnostics }
+  diagnostics.push(...validateModuleStructure(next,repoId))
+  const index: NoteIndex = { repoId, profileKey: repoIdentity.profileKey, entries: next, byId, byUri, byPath, conflicts, coverage, outgoing, backlinks, relations, mentions, mentionBacklinks, readDiagnostics, diagnostics }
   return { index, events }
 }

@@ -1,4 +1,5 @@
-// Note: WorkflowX executes in the shared facade — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: maintained module adoption - see .agents/notes/harness/workflowx-v2-adoption.md
+// Note: WorkflowX executes in the shared facade — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import type { ChatMessage } from '@janus-agent/chat-core'
 import type { HarnessMode } from '@janus-agent/harness-core'
 
@@ -28,13 +29,14 @@ export function workflowXPrompt(mode: WorkflowXMode): string {
     'Apply it to engineering development; ordinary conversation and host-specific product actions keep their own scope.',
     'Before changes, inspect project instructions and search existing .agents/notes by requirement, title and code references. Reuse the owning Note when it fits.',
     'Implement only authorized scope, preserve unrelated edits, verify the real result, and self-review. Record actual checks and unrun checks distinctly.',
-    'For code changes, synchronize the owning Note or create a flat .agents/notes Note, add one reverse reference at the code entry, and land code plus Note together. The commit message includes the Note path. Never manufacture verification or completion evidence.',
+    'For code changes, maintain the owning module document in place; create a stable topic Note only when needed, add one reverse reference at the code entry, and land code plus Note together. The commit message includes the Note path. Never manufacture verification or completion evidence.',
     'If harness identity is missing, present note.init preview and initialize only within authorized scope; do not overwrite existing identity or silently install project configuration.',
     mode === 'xdo'
-      ? 'xdo: execute directly, self-review, and archive the result. A task Note is not required before starting. Do not delegate unless explicitly requested.'
+      ? 'xdo: execute directly, self-review, and archive the result. Do not create a Task. An explicitly selected existing Task retains acceptance and review obligations. Do not delegate unless explicitly requested.'
       : mode === 'xdel'
-        ? 'xdel: define an accepted task Note with scope, acceptance refs and verification, then call workflow_execute with its URI. The shared executor runs a separate implementor and self-review; no independent evaluator.'
+        ? 'xdel: define an accepted task Note with scope, acceptance refs and verification, then call workflow_execute with its URI. The shared executor runs a separate implementor and self-review; retain any independent-review obligation already in the Task.'
         : 'xflow: discover relevant repository context, clarify unresolved requirements, define accepted task Notes with real dependencies, then call workflow_execute in dependency order. The executor runs a separate implementor and independent evaluator with at most one local repair.',
+    'Use one module.md per module; parent explanations, topic Notes and submodules coexist. Preserve created and refresh updated on maintenance. Convert Ideas in place; expand or merge modules only when responsibilities warrant it. Stay within user-discussed modules and repair references during reorganization. Main Agent owns the shared Task and updates Progress/Evidence/Handoff before every dispatch. Use work.review and never weaken it by switching mode.',
     'Delegation requires a real execution capability and fixed task evidence. Never impersonate a child agent or label an unrun review as passed.',
     'The user can switch the active mode with /xdo, /xdel, or /xflow; mode selection never grants extra filesystem or execution permissions.',
   ].join('\n')

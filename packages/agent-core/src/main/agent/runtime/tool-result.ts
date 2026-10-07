@@ -1,7 +1,7 @@
 import type { ToolResult } from '../../../shared/ipc/agent-runtime'
 import { truncateModelText } from './tools/output-budget'
 
-// Note: opencode-style plain-text model values live here — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Note: opencode-style plain-text model values live here — see .agents/notes/agent/history/opencode-token-parity.md
 // Structured runtime outputs stay complete in details/traces/UI; only the
 // text the model re-reads every turn is capped via truncateModelText.
 

@@ -1,4 +1,4 @@
-// Note: MCP connections and tool adaptation are owned by agentX — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: MCP connections and tool adaptation are owned by agentX — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'

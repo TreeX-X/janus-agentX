@@ -482,7 +482,7 @@ describe('runChatTurn', () => {
     expect(count.count).toBe(4)
   })
 
-  // Note: staged tool offering — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: staged tool offering — see .agents/notes/agent/history/opencode-token-parity.md
   function stagedPorts(captured: string[][]) {
     const names = ['workspace.search', 'workspace.read', 'workspace.edit', 'command.run', 'git.commit', 'git.push', 'project.apply-config']
     return stubPorts({
@@ -536,7 +536,7 @@ describe('runChatTurn', () => {
     expect(captured[0]).toContain('git_commit')
   })
 
-  // Note: single-workspace omission — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: single-workspace omission — see .agents/notes/agent/history/opencode-token-parity.md
   // Regression: the model omits workspaceId (schemas allow it), but the loop
   // execution path dropped the omission and failed every call with
   // 'Workspace session is unavailable'. The id must be filled before the host

@@ -1,4 +1,4 @@
-// Note: xdo exposes missing closeout evidence without blocking legacy projects — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: xdo exposes missing closeout evidence without blocking legacy projects — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import type { ToolResult } from '@janus-agent/agent-core'
 
 /** Tool receipts provide observations, never proof that a command tested the right behavior. */
@@ -25,7 +25,6 @@ export class WorkflowXCloseout {
   gaps(): string[] {
     if (!this.changed) return []
     return [
-      ...(!this.note ? ['Note 归档'] : []),
       ...(!this.command ? ['修改后的检查'] : []),
       ...(!this.commit ? ['Git 提交'] : []),
     ]

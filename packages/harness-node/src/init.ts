@@ -1,4 +1,4 @@
-// Note: explicit initialization is shared by CLI and desktop — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: explicit initialization is shared by CLI and desktop — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -42,10 +42,10 @@ export async function previewHarnessInit(root: string, name = basename(resolve(r
     return remember({ root, repoId: identity.repoId, existing: true, files: [] })
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   const repoId = randomUUID()
-  const note = createNoteInput('initiative', name, null)
+  const note = createNoteInput('module', name, null, {schema: 'harness-note/2', role: 'project', moduleState: 'planned'})
   const files = [
     { path: '.agents/harness.json', content: JSON.stringify({ schemaVersion: 1, repoId, name, profile: SUPPORTED_HARNESS_PROFILE }, null, 2) + '\n' },
-    { path: `.agents/notes/${new Date().toISOString().slice(0, 10)}-project--${note.id.slice(0, 8)}.md`, content: note.markdown },
+    { path: '.agents/notes/module.md', content: note.markdown },
   ].map(file => ({ ...file, hash: sha256HexBytes(Buffer.from(file.content)) }))
   return remember({ root, repoId, existing: false, files })
 }

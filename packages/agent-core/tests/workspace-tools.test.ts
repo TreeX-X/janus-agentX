@@ -381,7 +381,7 @@ describe('workspace.edit tool', () => {
     })
   })
 
-  // Note: line-trimmed fuzzy fallback — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: line-trimmed fuzzy fallback — see .agents/notes/agent/history/opencode-token-parity.md
   it('applies a whitespace-drifted oldText when the trimmed shape is unique', async () => {
     const root = await temporaryDirectory()
     await writeFile(join(root, 'notes.txt'), 'if (x) {\n    hello workspace\n}', 'utf-8')
@@ -583,7 +583,7 @@ describe('workspace.edit tool', () => {
     expect(result.error).toContain('line 2')
   })
 
-  // Note: pi-style hash-anchored line edits — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  // Note: pi-style hash-anchored line edits — see .agents/notes/agent/history/write-anchor-chain.md
   describe('hash-anchored lineEdits', () => {
     async function readWithAnchors(root: string, path: string, offset?: number) {
       const runtime = new WorkspaceAgentRuntime(async () => root)

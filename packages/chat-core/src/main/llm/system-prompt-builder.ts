@@ -32,7 +32,7 @@ const ASK_GUIDANCE = [
 export function buildChatSystemPrompt(input: SystemPromptBuilderInput): string {
   const resources = [...input.resources.entries()].map(([workspaceId, resource]) =>
     `${resource.workspaceName} (workspaceId=${workspaceId})`)
-  // Note: tools sorted + frozen for cache affinity — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+  // Note: tools sorted + frozen for cache affinity — see .agents/notes/agent/history/context-efficiency.md
   // Registry order is host-dependent; sorting here keeps the system prefix stable across turns.
   const tools = [...input.toolManifests]
     .sort((left, right) => left.providerName.localeCompare(right.providerName))

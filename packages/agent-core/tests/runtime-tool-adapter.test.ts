@@ -57,7 +57,7 @@ describe('runtime tool adapter', () => {
     expect(executeFunctionCall.mock.calls[0][0].sessionId).toBe('session-a')
   })
 
-  // Note: single-workspace omission — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+  // Note: single-workspace omission — see .agents/notes/agent/history/opencode-token-parity.md
   // Regression: schemas let the model omit workspaceId, but this execution
   // path (the one janus-agent actually uses) dropped the omission and failed
   // every call with 'Workspace session is unavailable'.

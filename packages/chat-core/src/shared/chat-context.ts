@@ -1,4 +1,4 @@
-// Note: shared compression retains original history and source references — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared compression retains original history and source references — see .agents/notes/harness/storage/history/workflowx-runtime.md
 /** Host-produced checkpoint. Original messages remain in the conversation journal. */
 export interface ChatContextCheckpoint {
   summary: string

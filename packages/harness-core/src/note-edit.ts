@@ -1,4 +1,4 @@
-// Note: shared engineering capabilities and host extensions — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared engineering capabilities and host extensions — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { randomUUID } from 'node:crypto'
 import {
   parseNote,
@@ -10,6 +10,7 @@ import {
 import type { NoteKind } from './schema.js'
 
 export const KIND_SECTIONS: Record<NoteKind, string[]> = {
+  module: ['Responsibility', 'Design'], note: ['Description'],
   idea: ['Background', 'Idea', 'Open questions'],
   initiative: ['Goal', 'Scope', 'Acceptance criteria'],
   requirement: ['Problem', 'Expected behavior', 'Scope', 'Acceptance criteria'],
@@ -20,7 +21,7 @@ export const KIND_SECTIONS: Record<NoteKind, string[]> = {
 export interface NoteEdit {
   title?: string
   sections: Record<string, string>
-  frontmatter: { tags?: string[]; parent?: string | null; lifecycle?: string; work?: ParsedNote['meta']['work']; relations?: ParsedNote['meta']['relations']; codeRefs?: ParsedNote['meta']['codeRefs'] }
+  frontmatter: { kind?: NoteKind; module?: string; moduleState?: ParsedNote['meta']['moduleState']; role?: 'project'; tags?: string[]; parent?: string | null; lifecycle?: string; work?: ParsedNote['meta']['work']; relations?: ParsedNote['meta']['relations']; codeRefs?: ParsedNote['meta']['codeRefs'] }
 }
 
 export interface ProducedOp {
@@ -50,10 +51,20 @@ function frontmatter(lines: Record<string, string | string[] | undefined>): stri
 }
 
 /** Fresh draft skeletons; the editor fills sections through replace ops. */
-export function createNoteInput(kind: NoteKind, title: string, parentUri: string | null, options: {
+export function createNoteInput(kind: NoteKind, title: string, parentUri: string | null, options: { schema?: 'harness-note/1' | 'harness-note/2'; module?: string; moduleState?: ParsedNote['meta']['moduleState']; role?: 'project'; work?: ParsedNote['meta']['work'];
   sections?: Record<string, string>; lifecycle?: string; class?: ParsedNote['meta']['class']; tags?: string[]
 } = {}): { id: string; markdown: string } {
   const id = randomUUID()
+  if (options.schema === 'harness-note/2') {
+    if (kind === 'initiative') throw new Error('UNSUPPORTED_SCHEMA: v2 uses module instead of initiative');
+    const now = new Date().toISOString();
+    const defaults: Record<string, string[]> = {module: ['Responsibility','Design'], note: ['Description'], idea: ['Intent'], requirement: ['Expected behavior','Acceptance criteria'], decision: ['Problem','Decision','Alternatives considered','Consequences'], task: ['Scope','Acceptance criteria','Verification','Progress','Evidence','Handoff']};
+    const meta = {schema: 'harness-note/2', id, kind, lifecycle: options.lifecycle ?? 'draft', created: now.slice(0,10), updated: now,
+      ...(kind === 'module' ? {moduleState: options.moduleState ?? 'planned', ...(parentUri ? {parent: parentUri} : {role: options.role ?? 'project'})} : {module: options.module ?? parentUri}),
+      ...(options.tags ? {tags: options.tags} : {}), ...(options.work ? {work: options.work} : {})};
+    const sections = options.sections ?? Object.fromEntries(defaults[kind].map(name => [name, 'Pending definition.']));
+    return {id, markdown: '---\n'+JSON.stringify(meta,null,2)+'\n---\n\n# '+title+'\n\n'+Object.entries(sections).map(([name,text])=>'## '+name+'\n\n'+text).join('\n\n')+'\n'};
+  }
   const sections = KIND_SECTIONS[kind].map((name) => `## ${name}\n\n${name === 'Open questions' ? 'None.' : 'TBD.'}`).join('\n\n')
   const fm: Record<string, string | string[] | undefined> = {
     schema: 'harness-note/1',
@@ -158,6 +169,8 @@ export function mergeNoteEdit(note: ParsedNote, rawText: string, edit: NoteEdit,
   for (const [name, text] of Object.entries(edit.sections)) {
     body = setSection(body, name, text)
   }
+  for (const key of ['kind','module','moduleState','role'] as const) if (edit.frontmatter[key] !== undefined) (meta as Record<string, unknown>)[key] = edit.frontmatter[key];
+  if (note.meta.schema === 'harness-note/2' && (JSON.stringify(meta) !== JSON.stringify(note.meta) || body !== splitFrontmatter(rawText).body)) meta.updated = new Date().toISOString();
   const merged: ParsedNote = { ...note, meta: meta as ParsedNote['meta'], body }
   const out = serializeNote(merged)
   // Round-trip guard: the merger must never produce an invalid note.

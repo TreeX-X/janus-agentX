@@ -1,4 +1,4 @@
-// Note: shared engineering capabilities and host extensions — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared engineering capabilities and host extensions — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import type { Diagnostic, ParsedNote } from '@janus-agent/harness-core'
 import { buildNoteIndex, withAssetLock, type NoteIndex } from './index.js'
 import type { NoteDoc } from './note-types.js'
@@ -36,6 +36,7 @@ export function toNoteDoc(note: ParsedNote): NoteDoc {
     tags,
     parent: str(meta['parent']),
     created: str(meta['created']) ?? undefined,
+    updated: note.meta.updated, module: note.meta.module, moduleState: note.meta.moduleState, role: note.meta.role,
     title: note.title,
     sections: note.sections.map((s) => ({ name: s.name, text: s.text })),
     acs: note.acs.map((ac) => ({ ...ac })),

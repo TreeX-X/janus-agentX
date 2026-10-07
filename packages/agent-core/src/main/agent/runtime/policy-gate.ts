@@ -170,7 +170,7 @@ export function evaluateWorkspaceActionPolicy(input: {
       reasonCode: input.actionRisk === 'read' ? 'READ_ALLOWED' : 'READ_ONLY_ALLOWED',
     }
   }
-  // Note: permission-tier plan mode — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  // Note: permission-tier plan mode — see .agents/notes/agent/history/write-anchor-chain.md
   // opencode `plan`/grok `--permission-mode plan` parity: a session in plan mode
   // is read-only at the policy layer, not by prompt convention. Every mutating
   // or side-effecting tool is denied before execution or approval — the model

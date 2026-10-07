@@ -220,7 +220,7 @@ describe('JanusAgentLoop', () => {
     expect(messages.at(-1)).toEqual({ role: 'assistant', content: 'recovered' })
   })
 
-  // Note: C4 loop convergence — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  // Note: C4 loop convergence — see .agents/notes/agent/history/write-anchor-chain.md
   it('C4: a parent abort after the stream keeps partial text, strips half-made toolCalls, and lands history', async () => {
     const execute = vi.fn(async () => ({ content: 'must not run' }))
     const controller = new AbortController()

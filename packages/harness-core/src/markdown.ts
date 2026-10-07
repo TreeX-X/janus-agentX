@@ -1,5 +1,5 @@
 /** Derived Markdown view only; raw source hashes belong to the file reader.
- * Note: .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
+ * Note: .agents/notes/harness/storage/history/note-index-v1.md
  */
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import type { Nodes } from 'mdast';

@@ -3,7 +3,7 @@
  * Pure against an explicit root: no process.cwd, no console, no exit.
  * Every result carries `{ok, data?, errors[]}`; `exitFor` maps to the
  * fixed CLI codes 0/2/3/4/5/6. `cli.ts` only parses argv and prints.
- * Note: shared read scope and snapshots — .agents/notes/2026-09-24-note-index-v1--4f6c2a91.md
+ * Note: shared read scope and snapshots — .agents/notes/harness/storage/history/note-index-v1.md
  */
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -54,6 +54,7 @@ export function exitFor(errors: Diagnostic[]): number {
 }
 
 export interface NoteSummary {
+  module?: string; parent?: string; moduleState?: string; updated?: string;
   id: string;
   uri: string | null;
   title: string;
@@ -77,6 +78,7 @@ function summarize(index: Awaited<ReturnType<typeof buildNoteIndex>>, entry: imp
     title: note.title,
     kind: note.meta.kind,
     lifecycle: note.meta.lifecycle,
+    module: note.meta.module, parent: note.meta.parent, moduleState: note.meta.moduleState, updated: note.meta.updated,
     relPath: entry.relPath,
     excerpt: entry.view?.excerpt ?? '',
     outgoing: uri ? (index.outgoing.get(uri)?.length ?? 0) : 0,
@@ -176,6 +178,10 @@ export interface CreateInput {
   lifecycle?: string;
   class?: ParsedNote['meta']['class'];
   tags?: string[];
+  module?: string;
+  moduleState?: ParsedNote['meta']['moduleState'];
+  parent?: string;
+  work?: ParsedNote['meta']['work'];
   relativePath?: string;
 }
 
@@ -184,7 +190,7 @@ export async function cmdCreate(root: string, input: CreateInput): Promise<CliRe
   if (!bound.repoId) {
     return { ok: false, errors: [{ code: 'NOT_READY', message: 'init .agents/harness.json with a repoId first' }] };
   }
-  const { id, markdown: afterMarkdown } = createNoteInput(input.kind, input.title, null, input);
+  const { id, markdown: afterMarkdown } = createNoteInput(input.kind, input.title, input.parent ?? null, {...input, ...(bound.entries.some(e=>e.note?.meta.schema === 'harness-note/2') ? {schema:'harness-note/2' as const} : {})});
   let note: ParsedNote;
   try {
     note = parseNote(afterMarkdown);

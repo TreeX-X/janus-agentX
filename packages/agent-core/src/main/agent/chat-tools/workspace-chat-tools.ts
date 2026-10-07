@@ -34,7 +34,7 @@ function withManifestDescriptions<T extends Record<string, { description: string
  */
 export function createWorkspaceChatTools(options: WorkspaceChatToolOptions) {
   const execute = async (toolName: string, input: Record<string, unknown>) => {
-    // Note: single-workspace omission (output-token parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+    // Note: single-workspace omission (output-token parity) — see .agents/notes/agent/history/opencode-token-parity.md
     // workspaceId is optional in every schema so the model can omit ~10
     // argument tokens per call. Resolution is fail-closed: an explicit id
     // always resolves exactly (unknown ids error even with one workspace, so

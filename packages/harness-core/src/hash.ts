@@ -1,3 +1,4 @@
+import {taskContractInput as inputV2, taskContractHash as hashV2, inputDigest as digestV2, parseNote as parseV2} from './workflowx-v2/reference.js';
 /**
  * Task contract and content hashing (contract C3 + C107 top-up).
  * The canonical form below is byte-locked by the S1 fixture
@@ -26,6 +27,7 @@ export interface TaskContractInput {
   repositories?: unknown;
   relations: Array<{ type: string; target: string; criteria?: string[] }>;
   work?: {
+    review?: 'self' | 'independent';
     scope: Array<{ repoId: string; paths: string[] }>;
     acceptanceRefs: Array<{ uri: string; criterionId: string }>;
     verification: unknown[];
@@ -35,6 +37,7 @@ export interface TaskContractInput {
 
 /** Build the hashed contract input from a parsed task note. */
 export function taskContractInput(note: ParsedNote): TaskContractInput {
+  if(note.meta.schema === 'harness-note/2') return inputV2(v2Input(note)) as TaskContractInput;
   const m = note.meta;
   const rels = (m.relations ?? [])
     .filter((r) => (CONTRACT_RELATIONS as readonly string[]).includes(r.type))
@@ -68,6 +71,7 @@ export function taskContractInput(note: ParsedNote): TaskContractInput {
 
 /** The version pin: writing execution/Results never moves it, scope moves do. */
 export function taskContractHash(note: ParsedNote): string {
+  if (note.meta.schema === 'harness-note/2') return hashV2(v2Input(note));
   return sha256Hex(Buffer.from(canon(taskContractInput(note)), 'utf8'));
 }
 
@@ -110,3 +114,6 @@ export function contentDigest(input: {
   };
   return { uri: input.uri, kind: input.kind, lifecycle: input.lifecycle, digest: sha256Hex(Buffer.from(canon(canonical), 'utf8')) };
 }
+
+function v2Input(note: ParsedNote) { return parseV2('---\n' + JSON.stringify({...note.meta, ...note.unknownFields}) + '\n---\n' + note.body); }
+export function noteInputDigest(note: ParsedNote): string { return digestV2(v2Input(note)); }

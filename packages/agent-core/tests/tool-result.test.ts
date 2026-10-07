@@ -17,7 +17,7 @@ function completed(toolName: string, output: unknown): ToolResult {
   }
 }
 
-// Note: opencode-style plain-text model values — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Note: opencode-style plain-text model values — see .agents/notes/agent/history/opencode-token-parity.md
 // Structured outputs stay complete in details/traces/UI; the model only
 // re-reads these texts, so assertions check header-first plain text.
 describe('toolResultToModelValue plain-text (opencode parity)', () => {

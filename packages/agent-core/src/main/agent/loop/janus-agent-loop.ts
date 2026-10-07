@@ -265,7 +265,7 @@ export async function runJanusAgentLoop(
       }
       const execute = async (call: JanusToolCall): Promise<JanusAgentMessage> => {
         emit({ type: 'tool_execution_start', call })
-        // Note: stream-level validation failures recover as tool messages — see .agents/notes/implemented/bug-fix/2026-09-15-tool-call-recovery.md
+        // Note: stream-level validation failures recover as tool messages — see .agents/notes/agent/history/tool-call-recovery.md
         if (typeof call.validationError === 'string' && call.validationError.length > 0) {
           const result = errorResult(call.validationError)
           emit({ type: 'tool_execution_end', call, result, isError: true })

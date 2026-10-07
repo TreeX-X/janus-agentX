@@ -73,7 +73,7 @@ describe('sticky helpers', () => {
   })
 
   it('excludes cancelled items from the open count', () => {
-    // Note: open口径与 hasOpenTodos 一致 — see .agents/notes/implemented/feature/2026-09-15-todo-continuous-execution.md
+    // Note: open口径与 hasOpenTodos 一致 — see .agents/notes/harness/execution/history/todo-continuous-execution.md
     expect(summarizeTodos([
       { content: 'A', status: 'completed' as const },
       { content: 'B', status: 'cancelled' as const },

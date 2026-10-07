@@ -10,7 +10,7 @@
  * overflows the provider.
  *
  * Note: why a checked-in table instead of adaptive learning or live
- * discovery — see .agents/notes/implemented/feature/2026-09-12-model-window-table.md
+ * discovery — see .agents/notes/cli/history/model-window-table.md
  */
 import { MODEL_LIMIT_ROWS } from './model-limits.table.js'
 

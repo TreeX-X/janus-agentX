@@ -4,7 +4,7 @@
  * per-criterion coverage, and review verdict. Validity always re-derives
  * from current contract/inputs/code; cached verdicts never substitute.
  */
-// Note: completion requires a complete live proof — see .agents/notes/implemented/bug-fix/2026-09-18-harness-receipt-gates.md
+// Note: completion requires a complete live proof — see .agents/notes/harness/execution/history/harness-receipt-gates.md
 import { AC_ID_RE, HEX64_RE, NOTE_URI_RE, UUID_RE, type AcceptanceRef, type Diagnostic, type VerificationStep } from './schema.js';
 import { badPath } from './parse.js';
 import { sha256Hex } from './hash.js';
@@ -175,6 +175,7 @@ export function validateReceiptShape(r: unknown): Diagnostic[] {
 }
 
 export interface ValidityContext {
+  requiredReview?: 'self' | 'independent';
   taskContractHash: string;
   inputHashes: Map<string, string>;
   /** criterionId -> current criterion hash per note URI. */
@@ -237,7 +238,7 @@ export function evaluateReceipt(r: Receipt, ctx: ValidityContext): Diagnostic[] 
   }
   if (r.review.verdict !== 'approved') out.push(diag('NOT_READY', `review is ${r.review.verdict}`, 'review.verdict'));
   if (r.review.reviewedManifestHash !== codeManifestHash(r.codeManifest)) out.push(diag('STALE_BASELINE', 'review does not cover this code manifest', 'review.reviewedManifestHash'));
-  if (r.mode === 'xflow' && (r.review.kind !== 'independent' || r.review.actor === r.actor || r.review.actor === ctx.implementor)) {
+  if ((r.mode === 'xflow' || ctx.requiredReview === 'independent') && (r.review.kind !== 'independent' || r.review.actor === r.actor || r.review.actor === ctx.implementor)) {
     out.push(diag('SCHEMA_INVALID', 'xflow review must come from a different identity', 'review.actor'));
   }
   return out;

@@ -285,7 +285,7 @@ async function sortPathsByRecency(root: string, paths: string[]): Promise<string
  * collection order (stable sort). Only matched files are stated, so the cost
  * stays bounded by maxResults instead of the repository size.
  */
-// Note: flat first-hit hashes and recency order cut re-reads — see .agents/notes/implemented/architecture/2026-09-17-turn-ritual-history-replay.md
+// Note: flat first-hit hashes and recency order cut re-reads — see .agents/notes/agent/history/turn-ritual-history-replay-07b20880.md
 async function orderContentMatchesByRecency(root: string, matches: SearchMatch[]): Promise<void> {
   const distinct: string[] = []
   for (const match of matches) {
@@ -340,9 +340,9 @@ async function attachFirstHitHashes(root: string, matches: SearchMatch[]): Promi
   })
 }
 
-// Note: bounded search preserves complete matches and uses rg when available — see .agents/notes/implemented/bug-fix/2026-09-16-agent-context-search-efficiency.md
-// Note: matches carry context lines, recency order, and edit-compatible hashes — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
-// Note: first hit is a single rg passthrough with flat matches; hunks and hashes are opt-in — see .agents/notes/implemented/architecture/2026-09-17-search-first-token-optimization.md
+// Note: bounded search preserves complete matches and uses rg when available — see .agents/notes/agent/history/agent-context-search-efficiency.md
+// Note: matches carry context lines, recency order, and edit-compatible hashes — see .agents/notes/agent/history/read-paging-token-amplification.md
+// Note: first hit is a single rg passthrough with flat matches; hunks and hashes are opt-in — see .agents/notes/agent/history/search-first-token-optimization-0400774e.md
 export async function searchWorkspace(options: SearchOptions) {
   const { root, signal, query, maxResults, mode } = options
   const withContext = options.withContext === true

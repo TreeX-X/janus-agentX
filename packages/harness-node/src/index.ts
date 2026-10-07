@@ -1,4 +1,5 @@
-// Note: managed note storage lives here — see .agents/notes/implemented/architecture/2026-09-16-harness-node-cli-s3.md
+// Note: maintained module adoption - see .agents/notes/harness/workflowx-v2-adoption.md
+// Note: managed note storage lives here — see .agents/notes/harness/storage/history/harness-node-cli-s3.md
 /**
  * @janus-agent/harness-node — Node file adapter for harness notes.
  * Transacted writes, journal recovery, checkout resolve, watcher facts,
@@ -31,3 +32,6 @@ export * from './undo.js';
 
 export * from './note-editor.js';
 export * from './init.js';
+
+export * from './task-handoff.js';
+export * from './module-structure.js';

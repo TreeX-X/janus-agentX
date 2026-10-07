@@ -91,7 +91,7 @@ export function applyCompletion(value: string, item: CompletionItem): { value: s
  * visible list (non-dismissed, non-busy), so `Esc` keeps its submit-raw
  * escape hatch.
  */
-// Note: two-stage Enter (confirm-then-send) keeps partial slash input from surfacing as `unknown command` — see .agents/notes/implemented/feature/2026-09-17-slash-enter-confirm.md
+// Note: two-stage Enter (confirm-then-send) keeps partial slash input from surfacing as `unknown command` — see .agents/notes/cli/history/slash-enter-confirm.md
 export function shouldConfirmCompletion(token: string, candidates: readonly CompletionItem[]): boolean {
   if (token === '/' || token === '') return false
   if (candidates.length === 0) return false
@@ -299,7 +299,7 @@ export function truncateToWidth(text: string, width: number): string {
  * content instead of truncating; single-line summaries keep
  * `truncateToWidth` by design.
  */
-// Note: read-only long rows wrap instead of truncating - see .agents/notes/implemented/bug-fix/2026-09-15-tui-wrap-long-rows.md
+// Note: read-only long rows wrap instead of truncating - see .agents/notes/cli/history/tui-wrap-long-rows.md
 export function wrapToWidth(text: string, width: number): string[] {
   const budget = Math.max(1, Math.floor(width))
   const lines: string[] = []

@@ -13,7 +13,7 @@
  * (auto-lowers unsafe floors only). CI runs `--check` weekly.
  *
  * Note: why a checked-in table instead of adaptive learning or live
- * discovery — see .agents/notes/implemented/feature/2026-09-12-model-window-table.md
+ * discovery — see .agents/notes/cli/history/model-window-table.md
  */
 
 export interface ModelLimitRow {

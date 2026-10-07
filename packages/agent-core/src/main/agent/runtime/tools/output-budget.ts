@@ -10,7 +10,7 @@
  * not depend on chat-core.
  */
 
-// Note: bounded outputs carry token counts and narrowing guidance — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
+// Note: bounded outputs carry token counts and narrowing guidance — see .agents/notes/agent/history/read-paging-token-amplification.md
 /** Default budget only documents the output scale; tools enforce their own page caps unless the caller passes maxTokens. */
 export const DEFAULT_OUTPUT_TOKEN_BUDGET = 10_000
 export const MAX_OUTPUT_TOKEN_BUDGET = 100_000
@@ -37,7 +37,7 @@ export function fitItemsToBudget<T>(items: T[], toText: (item: T) => string, max
   return { items: items.slice(0, end), truncated: end < items.length }
 }
 
-// Note: opencode-style global text cap for model-facing values — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Note: opencode-style global text cap for model-facing values — see .agents/notes/agent/history/opencode-token-parity.md
 // Structured runtime outputs stay complete in details/traces/UI; only the
 // text the model re-reads every turn is capped here. Matches opencode
 // Truncate (2000 lines / 50KB): overflows name a narrower re-query instead

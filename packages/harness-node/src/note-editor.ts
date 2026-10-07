@@ -1,9 +1,9 @@
-// Note: shared engineering capabilities and host extensions — see .agents/notes/2026-10-05-workflowx-runtime--ac75da81.md
+// Note: shared engineering capabilities and host extensions — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { z } from 'zod'
-import { parseNote, NOTE_URI_RE } from '@janus-agent/harness-core'
+import { parseNote, NOTE_URI_RE, createNoteInput } from '@janus-agent/harness-core'
 import { listPendingTx, readCommitted, readJournal } from './index.js'
 import { NoteService, noteService } from './note-service.js'
 import { createNoteOp, mergeNoteEdit, type NoteEdit } from '@janus-agent/harness-core'
@@ -34,15 +34,18 @@ export function hasNoteMutationIntent(text: string): boolean {
 }
 
 const operationSchema = z.object({
-  type: z.enum(['create', 'update']),
+  type: z.enum(['create', 'update', 'delete']),
   uri: z.string().regex(NOTE_URI_RE).optional(),
   expectedHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  kind: z.enum(['idea', 'initiative', 'requirement', 'decision', 'task']).optional(),
+  kind: z.enum(['module', 'note', 'idea', 'initiative', 'requirement', 'decision', 'task']).optional(),
+  relativePath: z.string().optional(),
+  module: z.string().regex(NOTE_URI_RE).optional(),
+  moduleState: z.enum(['planned','partial','implemented','retired']).optional(),
   title: z.string().trim().min(1).max(300).refine(value => !/[\r\n]/.test(value)).optional(),
   sections: z.record(z.string().max(200_000)).default({}),
   tags: z.array(z.string().max(100)).max(32).optional(),
   parent: z.string().regex(NOTE_URI_RE).nullable().optional(),
-  lifecycle: z.enum(['draft', 'proposed', 'accepted', 'archived', 'rejected']).optional(),
+  lifecycle: z.enum(['draft', 'proposed', 'accepted', 'archived', 'rejected', 'implemented']).optional(),
   work: z.record(z.unknown()).optional(),
   relations: z.array(z.record(z.unknown())).optional(),
   codeRefs: z.array(z.record(z.unknown())).optional(),
@@ -90,16 +93,17 @@ export class NoteChatEditor {
   private writes = new Map<string, Promise<NoteChatChange | null>>()
   constructor(private readonly service: NoteService = noteService) {}
 
-  async list(root: string, query: string, relatedTo?: string) {
+  async list(root: string, query: string, relatedTo?: string, filters: {kind?: string; module?: string; moduleState?: string} = {}) {
     const snapshot = await this.service.readSnapshot(root)
     if (relatedTo) await this.service.readNote(root, relatedTo)
     const relations = relatedTo ? snapshot.relations.filter(edge => edge.sourceUri === relatedTo || edge.targetUri === relatedTo) : []
     const mentions = relatedTo ? snapshot.mentions.filter(edge => edge.sourceUri === relatedTo || edge.targetUri === relatedTo) : []
     const related = new Set([relatedTo, ...relations.flatMap(edge => [edge.sourceUri, edge.targetUri]), ...mentions.flatMap(edge => [edge.sourceUri, edge.targetUri])])
     const search = query.trim().toLowerCase()
-    return { repoId: snapshot.repoId, coverage: snapshot.coverage, relations, mentions, notes: snapshot.entries.filter(entry => entry.doc && (!relatedTo || related.has(entry.uri)) && (!search
-      || [entry.doc.title, entry.doc.body, ...entry.doc.tags].join('\n').toLowerCase().includes(search)))
-      .slice(0, 100).map(entry => ({ uri: entry.uri, title: entry.doc!.title, kind: entry.doc!.kind, path: entry.relPath })),
+    const matches = snapshot.entries.filter(entry => entry.doc && (!filters.kind || entry.doc.kind === filters.kind) && (!filters.module || entry.doc.module === filters.module || entry.doc.parent === filters.module) && (!filters.moduleState || entry.doc.moduleState === filters.moduleState) && (!relatedTo || related.has(entry.uri) || entry.doc.module === relatedTo || entry.doc.parent === relatedTo) && (!search
+      || [entry.doc.title, entry.doc.body, ...entry.doc.tags].join('\n').toLowerCase().includes(search)));
+    return { repoId: snapshot.repoId, coverage: snapshot.coverage, relations, mentions, limit: 100, truncated: matches.length > 100, notes: matches
+      .slice(0, 100).map(entry => ({ uri: entry.uri, title: entry.doc!.title, kind: entry.doc!.kind, lifecycle:entry.doc!.lifecycle, module:entry.doc!.module, parent:entry.doc!.parent, moduleState:entry.doc!.moduleState, updated:entry.doc!.updated, sourceHash:entry.sourceHash, path: entry.relPath })),
       diagnostics: snapshot.diagnostics }
   }
 
@@ -144,23 +148,31 @@ export class NoteChatEditor {
       let uri: string, before: string, after: string, expectedHash: string | null
       if (op.type === 'create') {
         if (!op.kind || !op.title || op.uri || op.expectedHash) throw new Error('Create requires kind and title; Note identity is host assigned')
-        const created = createNoteOp(snapshot.repoId, op.kind, op.title, op.parent ?? null, args.reason)
+        const v2 = snapshot.entries.some(e => e.doc?.metadata?.schema === 'harness-note/2');
+        const made = v2 ? createNoteInput(op.kind,op.title,op.parent ?? null,{schema:'harness-note/2',module:op.module,moduleState:op.moduleState,sections:op.sections,work:op.work as NoteEdit['frontmatter']['work']}) : undefined;
+        const created = made ? {uri:'note://'+snapshot.repoId+'/'+made.id,afterMarkdown:made.markdown} : createNoteOp(snapshot.repoId, op.kind, op.title, op.parent ?? null, args.reason)
         uri = created.uri; before = ''; expectedHash = null
-        after = mergeNoteEdit(parseNote(created.afterMarkdown!), created.afterMarkdown!, { frontmatter: { tags: op.tags, lifecycle: op.lifecycle, work: op.work, relations: op.relations, codeRefs: op.codeRefs } as NoteEdit['frontmatter'], sections: op.sections }, args.reason)
+        after = mergeNoteEdit(parseNote(created.afterMarkdown!), created.afterMarkdown!, { frontmatter: { kind: op.kind, module: op.module, moduleState: op.moduleState, tags: op.tags, lifecycle: op.lifecycle, work: op.work, relations: op.relations, codeRefs: op.codeRefs } as NoteEdit['frontmatter'], sections: op.sections }, args.reason)
       } else {
         if (!op.uri || !op.expectedHash || this.reads.get(`${root}:${op.uri}`) !== op.expectedHash) throw new Error('Read the Note with note_read before editing; use its exact expectedHash')
         const current = await this.service.readNote(root, op.uri)
         if (current.sha256 !== op.expectedHash) throw new Error('CONFLICT: Note changed since reading; read it again')
-        if (current.note.meta.execution) throw new Error('Task has execution metadata; use the execution workflow to change its contract')
-        if (op.kind && op.kind !== current.note.meta.kind) throw new Error('Note kind cannot be changed')
+        if (op.type === 'delete') {
+          if(seen.has(op.uri)) throw new Error('Duplicate Note in one write');
+          seen.add(op.uri);
+          files.push({uri:op.uri,title:current.note.title,before:current.raw,after:''});
+          ops.push({operationId:randomUUID(),type:'delete',uri:op.uri,expectedHash:op.expectedHash});
+          continue;
+        }
+        if (op.kind && op.kind !== current.note.meta.kind && current.note.meta.schema !== 'harness-note/2') throw new Error('Legacy type conversion requires migration')
         uri = op.uri; before = current.raw; expectedHash = op.expectedHash
-        after = mergeNoteEdit(current.note, before, { title: op.title, frontmatter: { tags: op.tags, parent: op.parent, lifecycle: op.lifecycle, work: op.work, relations: op.relations, codeRefs: op.codeRefs } as NoteEdit['frontmatter'], sections: op.sections }, args.reason)
+        after = mergeNoteEdit(current.note, before, { title: op.title, frontmatter: { kind: op.kind, module: op.module, moduleState: op.moduleState, tags: op.tags, parent: op.parent, lifecycle: op.lifecycle, work: op.work, relations: op.relations, codeRefs: op.codeRefs } as NoteEdit['frontmatter'], sections: op.sections }, args.reason)
       }
       if (seen.has(uri)) throw new Error('Duplicate Note in one write')
       seen.add(uri)
-      if (before === after) continue
+      if (before === after && !op.relativePath) continue
       files.push({ uri, title: /^#\s+(.+)$/m.exec(after)?.[1] ?? uri, before, after })
-      ops.push({ operationId: randomUUID(), type: op.type === 'create' ? 'create' : 'replace', uri, expectedHash, afterMarkdown: after })
+      ops.push({ operationId: randomUUID(), type: op.type === 'create' ? 'create' : 'replace', uri, expectedHash, afterMarkdown: after, relativePath: op.relativePath })
     }
     if (!ops.length) return null
     if (signal.aborted) throw new Error('Note edit cancelled')
@@ -168,7 +180,7 @@ export class NoteChatEditor {
     await saveChange(change)
     if (signal.aborted) throw new Error('Note edit cancelled')
     const result = await this.service.applyBundleChangeSet(root, { id: change.id, revision: 1,
-      source: { type: 'chat', id: conversationId, revision: 1 }, operations: ops }, args.reason)
+      source: { type: 'chat', id: conversationId, revision: 1 }, operations: ops }, args.reason, {allowDelete: true})
     change.txId = result.txId
     // The committed transaction remains authoritative if saving the convenience reference fails.
     await saveChange(change).catch(() => undefined)

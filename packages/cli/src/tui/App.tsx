@@ -472,8 +472,8 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
   // through `useSyncedCaret()` (real native cursor while focused, hidden
   // while disabled); when the approval gate unmounts it, Ink clears
   // that intent itself, so no stale cursor can leak.
-  // Note: stream deltas are coalesced into one render per window — see .agents/notes/implemented/bug-fix/2026-09-13-tui-stream-batch-cursor.md
-  // Note: 100ms window keeps stream repaints at 10fps so typed keys stop competing with full-frame repaints for the caret — see .agents/notes/implemented/bug-fix/2026-09-14-tui-incremental-render-cursor.md
+  // Note: stream deltas are coalesced into one render per window — see .agents/notes/cli/history/tui-stream-batch-cursor.md
+  // Note: 100ms window keeps stream repaints at 10fps so typed keys stop competing with full-frame repaints for the caret — see .agents/notes/cli/history/tui-incremental-render-cursor.md
   const STREAM_BATCH_MS = 100
   const streamBatchRef = useRef<ChatAgentEvent[]>([])
   const streamBatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -573,7 +573,7 @@ export function App({ initialSession, host, onExit, initialNotices = [] }: AppPr
       setOverlay({ kind: 'effort' })
       return
     }
-    // Note: bare /provider and /model open switcher panels — see .agents/notes/implemented/feature/2026-09-14-provider-model-picker.md
+    // Note: bare /provider and /model open switcher panels — see .agents/notes/cli/history/provider-model-picker.md
     // Bare /provider opens the provider switcher; with an arg (or rm) it switches directly.
     if (command === 'provider' && args.length === 0) {
       setOverlay({ kind: 'provider' })

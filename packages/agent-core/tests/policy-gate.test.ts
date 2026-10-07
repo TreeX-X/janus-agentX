@@ -100,7 +100,7 @@ describe('workspace read policy', () => {
     },
   )
 
-  // Note: permission-tier plan mode — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+  // Note: permission-tier plan mode — see .agents/notes/agent/history/write-anchor-chain.md
   it.each(['write', 'create', 'config-apply', 'run', 'restore', 'delete', 'external-command', 'network'] as const)(
     'denies %s in plan mode before execution or approval',
     (actionRisk) => {

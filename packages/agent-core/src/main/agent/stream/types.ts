@@ -15,7 +15,7 @@ export interface AgentUsage {
   promptTokens: number
   completionTokens: number
   /**
-   * Note: reasoning tokens ride inside completion on some providers — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+   * Note: reasoning tokens ride inside completion on some providers — see .agents/notes/agent/history/context-efficiency.md
    * Kept explicit so budgets stop under-counting thinking models; absent = provider did not report.
    */
   reasoningTokens?: number

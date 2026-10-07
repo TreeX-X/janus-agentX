@@ -26,8 +26,8 @@ export interface WorkspaceContextOptions {
 const DEFAULT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.md', '.txt', '.yml', '.yaml', '.toml', '.css', '.html', '.xml'])
 const DEFAULT_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', 'build', 'release', 'coverage', '.cache'])
 
-// Note: adaptive page caps keep small-file evidence in one round trip — see .agents/notes/implemented/bug-fix/2026-09-16-read-paging-token-amplification.md
-// Note: smaller locate-first defaults (opencode cost parity) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Note: adaptive page caps keep small-file evidence in one round trip — see .agents/notes/agent/history/read-paging-token-amplification.md
+// Note: smaller locate-first defaults (opencode cost parity) — see .agents/notes/agent/history/opencode-token-parity.md
 // Large-file default pages are locate-first (300 lines/20KB): enough to land
 // on the right region, cheap to replay every turn. Continuation via
 // offset=nextOffset stays one cheap round trip, so narrower defaults trade a

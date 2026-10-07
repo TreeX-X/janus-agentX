@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'path'
 
-// Note: TARGET_EXISTS carries the overwrite path instead of growing an overwrite flag — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+// Note: TARGET_EXISTS carries the overwrite path instead of growing an overwrite flag — see .agents/notes/agent/history/tool-failure-recovery-5f1662f2.md
 
 export type WorkspacePathReasonCode =
   | 'WORKSPACE_UNAVAILABLE'

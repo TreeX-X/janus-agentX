@@ -21,7 +21,7 @@ export interface WorkspaceExactReplacement {
   newText: string
 }
 
-// Note: pi-style hash-anchored line edits — see .agents/notes/implemented/feature/2026-09-15-write-anchor-chain.md
+// Note: pi-style hash-anchored line edits — see .agents/notes/agent/history/write-anchor-chain.md
 // Each entry names one 1-indexed line with its LINE#HASH anchor from workspace.read
 // (withLineAnchors: `12#<8 hex>`). Edits apply bottom-up so earlier line numbers
 // stay valid while later lines shift; any anchor mismatch aborts the whole
@@ -67,7 +67,7 @@ function applyExactReplacements(content: string, replacements: WorkspaceExactRep
   if (replacements.length < 1 || replacements.length > MAX_WORKSPACE_REPLACEMENTS) {
     throw new Error(`workspace.edit requires between 1 and ${MAX_WORKSPACE_REPLACEMENTS} replacements`)
   }
-  // Note: matching is line-ending insensitive and files keep their dominant style — see .agents/notes/implemented/feature/2026-09-13-tool-failure-recovery.md
+  // Note: matching is line-ending insensitive and files keep their dominant style — see .agents/notes/agent/history/tool-failure-recovery-5f1662f2.md
   const fileEol = content.includes('\r\n') ? '\r\n' : '\n'
   let next = normalizeEditText(content)
   for (const [index, replacement] of replacements.entries()) {
@@ -112,7 +112,7 @@ function normalizeEditText(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
-// Note: line-trimmed fuzzy fallback (opencode LineTrimmed parity, minimal) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+// Note: line-trimmed fuzzy fallback (opencode LineTrimmed parity, minimal) — see .agents/notes/agent/history/opencode-token-parity.md
 // Exact match stays authoritative: fuzzy only fires when indexOf misses, and
 // only when the trimmed shape matches exactly one span. Anything ambiguous
 // (zero or multiple candidates) falls back to the exact-match error so the

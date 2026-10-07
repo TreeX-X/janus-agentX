@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Note: offline notes entry lives here — see .agents/notes/implemented/architecture/2026-09-16-harness-node-cli-s3.md
+// Note: offline notes entry lives here — see .agents/notes/harness/storage/history/harness-node-cli-s3.md
 /**
  * wfx-notes: offline-first notes CLI. Deterministic file operations only;
  * no network, no model calls, no long-lived services.
@@ -106,6 +106,7 @@ export async function run(rawArgv: string[], cwd: string): Promise<RunOut> {
         return emit(
           await cmdCreate(root, {
             kind: kind as CreateInput['kind'],
+          module: takeFlag(a, '--module'), parent: takeFlag(a, '--parent'), relativePath: takeFlag(a, '--path'), moduleState: takeFlag(a, '--module-state') as CreateInput['moduleState'],
             title,
             sections,
             lifecycle: takeFlag(a, '--lifecycle'),

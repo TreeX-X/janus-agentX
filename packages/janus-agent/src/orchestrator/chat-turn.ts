@@ -261,7 +261,7 @@ export async function runChatTurn(
     )
     const allToolManifests = ports.tools.registry.listManifests?.()
       ?? createToolManifests(ports.tools.registry.list())
-    // Note: tools sorted + frozen for cache affinity — see .agents/notes/implemented/feature/2026-09-15-context-efficiency.md
+    // Note: tools sorted + frozen for cache affinity — see .agents/notes/agent/history/context-efficiency.md
     // Registry order is host-dependent; a stable order keeps the system prefix + tool array identical across turns.
     const sortedManifests = [...allToolManifests].sort((left, right) =>
       left.providerName.localeCompare(right.providerName))
@@ -270,7 +270,7 @@ export async function runChatTurn(
     // subset — e.g. the janus CLI has no project.detect. Offering more would
     // let the model call tools that can only fail at execution.
     const implemented = new Set(sortedManifests.map((manifest) => manifest.providerName))
-    // Note: staged tool offering (opencode parity: ~10 tools, not 23) — see .agents/notes/implemented/architecture/2026-09-17-opencode-token-parity.md
+    // Note: staged tool offering (opencode parity: ~10 tools, not 23) — see .agents/notes/agent/history/opencode-token-parity.md
     // Diagnose+fix+verify stays in the core set every turn (search/read/edit/
     // command); publish/management tools (git write, project write) join only
     // when the user asked to publish or prior turns already mutated files.

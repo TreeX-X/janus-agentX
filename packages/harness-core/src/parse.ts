@@ -1,3 +1,4 @@
+import {validateNote as validateV2, parseNote as parseV2} from './workflowx-v2/reference.js';
 /**
  * Note parsing and single-file validation (contract C1-C2).
  * Frontmatter via `yaml` Document/CST (duplicate keys, custom tags and
@@ -317,7 +318,7 @@ export function parseNote(raw: string): ParsedNote {
   } else {
     throw Object.assign(new Error('frontmatter must be a mapping'), { code: 'SCHEMA_INVALID' });
   }
-  if (data['schema'] !== 'harness-note/1') {
+  if (!['harness-note/1', 'harness-note/2'].includes(String(data['schema']))) {
     throw Object.assign(new Error(`unsupported schema ${String(data['schema'])}`), { code: 'UNSUPPORTED_SCHEMA' });
   }
   const unknownFields: Record<string, unknown> = {};
@@ -336,7 +337,7 @@ export function parseNote(raw: string): ParsedNote {
     meta,
     unknownFields,
     keyOrder,
-    title: model.titles[0],
+    title: meta.schema === 'harness-note/2' ? parseV2('---\n' + JSON.stringify(data) + '\n---\n' + bodyLf).title[0] : model.titles[0],
     sections: sliceAllSections(bodyLf),
     acs: model.acs,
     body,
@@ -370,6 +371,11 @@ function fullNeed(kind: string, lifecycle: string): string[] {
 
 /** Structural validation (C1-C2, single file). Empty array means valid. */
 export function validateNote(note: ParsedNote): Diagnostic[] {
+  if (note.meta.schema === 'harness-note/2') {
+    const raw = '---\n' + JSON.stringify({...note.meta, ...note.unknownFields}) + '\n---\n' + note.body;
+    return validateV2(raw).errors.map((message: string) => ({code: 'SCHEMA_INVALID' as const, message}));
+  }
+  if (['module','note'].includes(note.meta.kind)) return [diag('SCHEMA_INVALID', 'module/note require harness-note/2')];
   const out: Diagnostic[] = [];
   const m = note.meta;
   for (const k of Object.keys(note.unknownFields)) {
