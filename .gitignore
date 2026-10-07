@@ -15,3 +15,6 @@ CLAUDE.md
 # 兜底：即使未来目录结构变化，本地记忆与本地设置也不上传
 **/*.local.md
 **/settings.local.json
+
+# Checkout-local harness runs, transactions and rule backups
+.agents/.local/

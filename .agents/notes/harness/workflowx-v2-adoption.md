@@ -5,7 +5,7 @@
   "kind": "decision",
   "lifecycle": "implemented",
   "created": "2026-10-07",
-  "updated": "2026-10-07T17:21:40.917Z",
+  "updated": "2026-10-07T17:25:42.742Z",
   "module": "note://62b44166-82f0-41ff-838d-e2b02388ed06/427edb4f-5f85-4c99-aa29-3ef947bc80d3"
 }
 ---
@@ -32,8 +32,10 @@ Replacing the runtime with another scanner would duplicate source truth for CLI 
 
 ## Consequences
 
-Sixty tracked old Notes were migrated before final corpus validation; identities and original source hashes are recorded in the [inventory](../../../docs/migrations/note-v2.json). Legacy records are explicitly historical, not new v2 execution evidence. One pre-existing untracked main-checkout Note is protected by an exact-hash exclusion. Main checkout deletions must be preserved in a Git stash before merging this adaptation; they must not silently overwrite the integrated source.
+Sixty tracked old Notes were migrated before final corpus validation; identities and original source hashes are recorded in the [inventory](../../../docs/migrations/note-v2.json). Legacy records are explicitly historical, not new v2 execution evidence. One pre-existing untracked main-checkout Note is protected by an exact-hash exclusion. Merged a801a806420b31faa9fe7281a4b3f799497f693f into main by fast-forward. Pre-existing main deletions are preserved in stash f8a48c8e58490f9a865a2cc059d366aaf89620c8; untracked Notes/plans were restored without replaying deletions over the integrated source. Checkout-local runtime state and rule backups are ignored by Git.
 
 Workspace build passes. The final relevant suites pass 319 tests: harness-core 92, harness-node 55, janus-agent 100, node-hosts 59 and notes-cli 13. The broader run also passed agent-core 359 with one existing skip, chat-core 64 and 400 CLI tests; one CLI automatic-repair test exceeded its 5-second limit under concurrency. The entire 20-test harness-mode suite passed on isolated rerun. These tests use controlled model/reviewer ports; no live model or JanusX UI acceptance is claimed.
 
 AgentX and WorkflowX corpus checks and local managed-rule parity pass. JanusX integration, visual type grouping, README demonstrations and final release/push remain later work. The runtime changes are ready for that integration, not a claim of final cross-product release acceptance.
+
+After merge, the main checkout passed workspace build, 13 targeted v2/profile/handoff tests, agentX corpus verification, WorkflowX corpus verification and managed-rule parity. Known legacy teammate bodies were merged explicitly while preserving their frontmatter; originals remain in .agents/.local/pre-v2-rules. No remote push was performed.
