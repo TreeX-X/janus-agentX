@@ -388,6 +388,19 @@ describe('runChatTurn', () => {
     expect(streams.count).toBe(2)
     expect(result.text).toContain('stuck')
   })
+  it.each(['validated', 'applied', 'unchanged', 'failed'])('does not retry successful tools whose domain status is %s', async (status) => {
+    const streams = { count: 0 }
+    const ports = failurePorts({ status: 'completed' }, streams)
+    let executions = 0
+    ports.tools.executeFunctionCall = async (input) => {
+      executions++
+      return { status: 'completed', toolName: input.call.toolName, summary: 'Tool completed',
+        output: { status, message: 'Domain result; the tool itself succeeded.' } } as never
+    }
+    await runChatTurn(failureRequest('domain-status'), ports)
+    expect(streams.count).toBe(2)
+    expect(executions).toBe(1)
+  })
   it('does not reopen a failure after a corrected tool batch succeeds', async () => {
     const count = { count: 0 }
     const ports = failurePorts({ status: 'failed', error: 'file not found' }, count)

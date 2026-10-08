@@ -341,6 +341,7 @@ export async function runChatTurn(
   let failureRepairIssued = false
   let lastTodoNudgeState: string | undefined
   let latestFailedTools: string[] = []
+  const repairableCalls = new Set<string>()
   const failedCalls = new Map<string, number>()
   const callKey = (call: { name: string; arguments: unknown }) => JSON.stringify([call.name, call.arguments])
   const modelMessages: JanusAgentMessage[] = promptMessages.map((message) => ({
@@ -570,15 +571,16 @@ export async function runChatTurn(
     onEvent: (loopEvent) => {
       if (signal?.aborted) return
       if (loopEvent.type === 'turn_start') turnStarts += 1
+      // Note: repair follows execution errors, not domain status — see .agents/notes/agent/module.md
+      if (loopEvent.type === 'tool_execution_end') {
+        if (loopEvent.isError && !/denied|cancelled/i.test(loopEvent.result.content)) repairableCalls.add(loopEvent.call.id)
+        else repairableCalls.delete(loopEvent.call.id)
+      }
       if (loopEvent.type === 'turn_end') {
         lastTurnToolResults = loopEvent.toolResults.length
         if (loopEvent.toolResults.length > 0) {
-          latestFailedTools = loopEvent.toolResults.filter((message) => {
-            try {
-              const value = JSON.parse(message.content)
-              return value.status && value.status !== 'completed' && !/denied|cancelled/i.test(message.content)
-            } catch { return /error|invalid|failed/i.test(message.content) && !/denied|cancelled/i.test(message.content) }
-          }).map((message) => message.toolName ?? 'tool')
+          latestFailedTools = loopEvent.toolResults.filter((message) => repairableCalls.has(message.toolCallId ?? '')).map((message) => message.toolName ?? 'tool')
+          repairableCalls.clear()
         }
       }
       const streamEvent = toAgentStreamEvent(requestId, loopEvent)
