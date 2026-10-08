@@ -34,4 +34,5 @@ export * from './note-editor.js';
 export * from './init.js';
 
 export * from './task-handoff.js';
+export * from './review-tests.js';
 export * from './module-structure.js';

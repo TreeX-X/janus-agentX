@@ -29,6 +29,7 @@ it.each(['xdo', 'xdel', 'xflow'] as const)('v2 %s preserves Main Agent ownership
     seen.push(input.kind);const task=parseNote(await readFile(path,'utf8'));expect(task.sections.find(s=>s.name==='Handoff')!.text).toContain(input.kind==='independent'?'Independent review':'Self-review');
     expect(await readFile(join(root,'src/file.txt'),'utf8')).toBe('implemented');
     if(input.kind==='independent') expect(input.turn.systemPromptPrefix).not.toContain('Unverified implementation claim.');
+    await input.runTests?.({tests:[{name:'source works',criteria:input.criteria,checkId:'check'}]});
     return {review:{kind:input.kind,verdict:'approved',actor:input.actor,reviewedManifestHash:input.manifestHash},coverage:input.criteria.map(c=>({...c,checkIds:['check']}))};
   };
   const result=await executeTaskExecution(root,runId,token,{command:async step=>{execFileSync(step.program!,step.args!);return {ok:true,exitCode:0,summary:'process exited successfully'};},review,...(mode==='xdel'?{}:{independentReview:review}),implement:async turn=>{

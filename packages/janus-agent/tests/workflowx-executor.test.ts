@@ -40,7 +40,11 @@ async function fixture() {
     const prompt = request.messages[0].content
     let text = 'implemented'
     if (prompt.startsWith('Implement the pinned')) await writeFile(join(root, 'src/file.txt'), 'after')
-    else {
+    else if (prompt.startsWith('Independent evaluator:')) {
+      const input = JSON.parse(prompt.split('\n').at(-1)!)
+      text = JSON.stringify({ tests: [{ name: 'source was implemented', criteria: input.criteria,
+        source: "import assert from 'node:assert/strict'; import { readFileSync } from 'node:fs'; assert.equal(readFileSync('src/file.txt', 'utf8'), 'after');" }] })
+    } else {
       const shape = JSON.parse(prompt.split('\n').at(-1)!)
       roles.push(shape.review.kind)
       expect(await request.toolGate!({ name: 'workspace_edit', arguments: { path: 'src/file.txt' } })).toMatchObject({ block: true })
@@ -57,6 +61,7 @@ describe('WorkflowX shared executor adapter', () => {
     const result = await executeWorkflowXTask({ mode, taskUri: URI, parent: f.parent, ports: f.ports, request: { requestId: 'r', providerId: 'p', messages: [] } })
     expect(result.errors).toEqual([]); expect(result.completed).toBe(true)
     expect(f.roles).toEqual(mode === 'xdel' ? ['self'] : ['self', 'independent'])
+    if (mode === 'xflow') expect(result.receipt.checks.find(check => check.performedBy === result.receipt.review.actor)).toMatchObject({ status: 'passed' })
     expect(new Set(f.sessions).size).toBe(f.sessions.length)
     expect(f.closed).toHaveLength(f.sessions.length + 1)
     expect(f.ports.tools.executeFunctionCall).toHaveBeenCalledWith(expect.objectContaining({ call: expect.objectContaining({ toolName: 'command.run', input: expect.objectContaining({ program: 'node', background: false }) }) }), 'janus-agent')

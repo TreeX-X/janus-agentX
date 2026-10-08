@@ -1,7 +1,7 @@
 // Note: both hosts use the same WorkflowX task executor — see .agents/notes/harness/storage/history/workflowx-runtime.md
 import { randomUUID } from 'node:crypto'
 import { collectTaskBaseline, readTaskResult } from '@janus-agent/harness-node'
-import type { HarnessMode } from '@janus-agent/harness-core'
+import { REVIEW_TEST_PLAN_INSTRUCTIONS, type HarnessMode } from '@janus-agent/harness-core'
 import { ChatSessionRuntime } from '@janus-agent/chat-core'
 import { createToolPreview } from '@janus-agent/agent-core'
 import type { ChatTurnPorts, AgentSessionDescriptor } from './ports.js'
@@ -42,17 +42,28 @@ export async function executeWorkflowXTask(input: {
   const turn = (context: TaskTurnContext, prompt: string) => child(session => runChatTurn({
     ...request, ...context, requestId: randomUUID(), messages: [{ role: 'user', content: prompt }],
     toolAllowlist: request.toolAllowlist ? context.toolAllowlist?.filter(name => request.toolAllowlist!.some(allowed => allowed.replace(/[._-]/g, '').toLowerCase() === name.replace(/[._-]/g, '').toLowerCase())) ?? request.toolAllowlist : context.toolAllowlist,
-    toolGate: async call => await request.toolGate?.(call) ?? await context.toolGate?.(call),
+    toolGate: async call => await context.toolGate?.(call) ?? await request.toolGate?.(call),
     conversationId: `${context.conversationId}-${randomUUID()}`, chatSession: new ChatSessionRuntime(),
     workspaceResources: [{ workspaceId: parent.workspaceId, workspacePath: parent.workspaceRoot,
       workspaceName: parent.workspaceId, agentSessionId: session.sessionId }],
     toolTraces: [], steeringPort: undefined,
   }, ports, {}, signal))
   const review: NonNullable<TaskVerificationPorts['review']> = async reviewInput => {
+    let checks = reviewInput.checks
+    if (reviewInput.kind === 'independent') {
+      if (!reviewInput.runTests) throw new Error('CAPABILITY_UNAVAILABLE: evaluator test execution is unavailable')
+      const planned = await turn(reviewInput.turn, [REVIEW_TEST_PLAN_INSTRUCTIONS,
+        JSON.stringify({ manifest: reviewInput.manifest, checks, criteria: reviewInput.criteria }),
+      ].join('\n'))
+      if (planned.cancelled || planned.toolTraces.some(trace => trace.status !== 'completed')) throw new Error('NOT_READY: evaluator test planning did not complete')
+      let plan: unknown
+      try { plan = JSON.parse(planned.text) } catch { throw new Error('SCHEMA_INVALID: evaluator did not return a test plan') }
+      checks = [...checks, ...await reviewInput.runTests(plan, signal)]
+    }
     const result = await turn(reviewInput.turn, [
       `${reviewInput.kind === 'independent' ? 'Independent evaluation' : 'Implementor self-review'} of the pinned task. Read relevant files.`,
       'Return a JSON object with review and coverage. Cite only passing check IDs that demonstrate each acceptance criterion. Never approve failing or insufficient evidence.',
-      JSON.stringify({ manifest: reviewInput.manifest, checks: reviewInput.checks, criteria: reviewInput.criteria }),
+      JSON.stringify({ manifest: reviewInput.manifest, checks, criteria: reviewInput.criteria }),
       JSON.stringify({ review: { kind: reviewInput.kind, verdict: 'approved|needs-fix|blocked', reviewedManifestHash: reviewInput.manifestHash, actor: reviewInput.actor, summary: 'concrete findings' }, coverage: reviewInput.criteria }),
     ].join('\n'))
     if (result.cancelled || result.toolTraces.some(trace => trace.status !== 'completed')) throw new Error('NOT_READY: review did not complete')

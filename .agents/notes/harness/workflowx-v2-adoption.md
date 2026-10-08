@@ -5,7 +5,7 @@
   "kind": "decision",
   "lifecycle": "implemented",
   "created": "2026-10-07",
-  "updated": "2026-10-08T11:37:00Z",
+  "updated": "2026-10-08T12:41:09Z",
   "module": "note://62b44166-82f0-41ff-838d-e2b02388ed06/427edb4f-5f85-4c99-aa29-3ef947bc80d3"
 }
 ---
@@ -30,13 +30,13 @@ Ordinary xdo does not create Task and does not demand a Note write when facts ar
 
 Main Agent alone modifies Task metadata, prose, timestamps and paths. Its runtime replaces one bounded next-action block in Handoff and removes old runtime-owned state/receipt duplicates while preserving authored Progress and Evidence. Implementation returns Change Summary + Note draft to the coordinator instead of writing Task prose. Independent review receives the fixed Task contract without progress or handoff claims. Child tools reject all Task mutations; fixed baselines, leases and recoverable transactions remain authoritative.
 
-## Independent evaluation gap
+## Independent test execution
 
-Source inspection confirms that review routing and reviewer isolation are implemented, but the embedded evaluator does not yet fulfill auditX's test-driven contract. `packages/harness-core/src/execution-policy.ts` restricts independent turns to `workspace.read`. `packages/janus-agent/src/harness/task-execution.ts` runs Task-declared verification through the host before review; `packages/janus-agent/src/workflowx-executor.ts` asks the reviewer to map those existing checks to AC. There is no reviewer-directed path for selecting, constructing and running the smallest useful tests. These observations are a source review, not a new execution result.
+The evaluator now plans tests before returning a verdict. `harness-core/src/review-tests.ts` validates named tests against fixed AC; `harness-node/src/review-tests.ts` executes them and records observed checks under the assigned reviewer identity. The shared executor gives independent turns one host-owned test phase, refuses a verdict without execution, appends only host-produced evidence and preserves manifest/acceptance binding. A parent tool gate cannot override the task gate. xdel still stops after implementation and self-review.
 
-The proposed follow-up reuses fixed AC, manifest hashes, reviewer identity and receipt checks. Let the evaluator submit focused test requests, with temporary test content only when needed; the host executes them against the pinned code in an isolated test workspace and returns actual results for coverage. Repository source and every Task remain read-only to the evaluator. Existing checks can be reused when adequate, but unsupported or failed execution cannot become a pass. Main Agent alone integrates Evaluation Result and dispatches repairs. Keep xdel free of evaluator dispatch and preserve explicitly retained review obligations.
+An evaluator can request a fresh run of an exact Main-authored verification command, or provide a small Node ES-module test. Generated tests read a hash-checked copy of manifest files; Node permissions restrict writes to disposable fixtures and deny subprocesses and workers. The child does not inherit task history, NODE_OPTIONS or application credentials. Source copying is bounded to 64 MiB; plans contain at most 12 tests, each generated source at most 32,000 characters, with a 30-second execution limit. Installed frameworks and other languages use declared commands. Unsupported runtime permissions or unavailable prerequisites produce not-run evidence and a blocked verdict; failed required checks cannot produce approval. This is filesystem/process permission enforcement, not a general hostile-code sandbox.
 
-First clarify this execution boundary in WorkflowX's evaluator contract, then implement it in the shared runtime and align JanusX's desktop review adapter. This is pending implementation, not merely pending independent acceptance. The original adoption tests and receipts below remain historical evidence of their stated scope. Track the cross-repository sequence in the [integration Task](note://d2499d5b-4ceb-4d46-aa3b-18e5c9b86034/2ce416be-b118-40c4-bddc-87da25a8fe02).
+Main self-checks pass 93 harness-core tests, 10 evaluator-runner tests (real passing/failing assertions, write/history/subprocess/junction refusal, scratch fixtures, stale input and cancellation), and 27 targeted janus-agent tests across task-execution, v2-handoff and workflowx-executor. The three changed packages build. The adapters use controlled model ports while the generated Node assertions and existing command path execute real processes. WorkflowX rules are synchronized and JanusX consumes the shared test contract; final independent integration evaluation remains tracked by the [integration Task](note://d2499d5b-4ceb-4d46-aa3b-18e5c9b86034/2ce416be-b118-40c4-bddc-87da25a8fe02). Historical receipts below keep their original scope and baseline.
 
 ## Alternatives considered
 

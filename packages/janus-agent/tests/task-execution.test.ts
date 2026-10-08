@@ -42,8 +42,11 @@ async function fixture(mode: 'xdo' | 'xdel' | 'xflow' = 'xdo', manual = false) {
 function ports(overrides: TaskVerificationPorts = {}): TaskVerificationPorts {
   return {
     command: async () => ({ ok: true, exitCode: 0, summary: 'passed' }),
-    review: async (input) => ({ review: { kind: input.kind, verdict: 'approved', actor: input.actor, reviewedManifestHash: input.manifestHash },
-      coverage: input.criteria.map((criterion) => ({ ...criterion, checkIds: ['check'] })) }),
+    review: async (input) => {
+      await input.runTests?.({ tests: [{ name: 'source works', criteria: input.criteria, checkId: 'check' }] });
+      return { review: { kind: input.kind, verdict: 'approved', actor: input.actor, reviewedManifestHash: input.manifestHash },
+        coverage: input.criteria.map((criterion) => ({ ...criterion, checkIds: ['check'] })) };
+    },
     ...overrides,
   };
 }

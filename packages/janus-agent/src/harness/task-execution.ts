@@ -1,7 +1,7 @@
 // Note: task turns and verification share one host lifecycle - see .agents/notes/harness/execution/history/harness-task-execution.md
 import { randomUUID } from 'node:crypto';
-import { codeKey, codeManifestHash, INDEPENDENT_REVIEW_TOOLS, isIndependentReviewPath, taskExecutionPolicy, validateReceiptShape, type Receipt, type ReceiptCheck, type VerificationStep } from '@janus-agent/harness-core';
-import { checkpointTaskHandoff, collectLiveSnapshot, collectTaskSnapshot, TaskScope } from '@janus-agent/harness-node';
+import { codeKey, codeManifestHash, INDEPENDENT_REVIEW_TOOLS, isIndependentReviewPath, taskExecutionPolicy, validateReceiptShape, reviewTestVerdict, type RunReviewTests, type Receipt, type ReceiptCheck, type VerificationStep } from '@janus-agent/harness-core';
+import { checkpointTaskHandoff, collectLiveSnapshot, collectTaskSnapshot, createReviewTestSession, TaskScope } from '@janus-agent/harness-node';
 import { finishRun, maybeAutoRepair, pauseRun, recordReceipt, verifyRun } from './dispatcher.js';
 import { loadReceipt, loadRun, readLease, type HarnessRun } from './run-store.js';
 import type { ChatTurnRequest } from '../orchestrator/chat-turn.js';
@@ -78,7 +78,7 @@ export async function prepareTaskTurn(root: string, runId: string, token: string
 
 export interface TaskVerificationPorts {
   command?: (step: VerificationStep, signal?: AbortSignal) => Promise<{ ok: boolean; exitCode?: number; timedOut?: boolean; summary: string }>;
-  review?: (input: { turn: TaskTurnContext; actor: string; kind: 'self' | 'independent'; manifest: Receipt['codeManifest']; manifestHash: string; checks: ReceiptCheck[]; criteria: Receipt['coverage'] }, signal?: AbortSignal) => Promise<Pick<Receipt, 'review' | 'coverage'>>;
+  review?: (input: { turn: TaskTurnContext; actor: string; kind: 'self' | 'independent'; manifest: Receipt['codeManifest']; manifestHash: string; checks: ReceiptCheck[]; criteria: Receipt['coverage']; runTests?: RunReviewTests }, signal?: AbortSignal) => Promise<Pick<Receipt, 'review' | 'coverage'>>;
   independentReview?: TaskVerificationPorts['review'];
 }
 
@@ -117,9 +117,18 @@ export async function verifyTaskExecution(root: string, runId: string, token: st
       const turn = await prepareTaskTurn(root, runId, token, true, kind === 'independent');
       // Every review starts empty, including retries of the same attempt.
       turn.conversationId += `-${kind}-${randomUUID()}`;
-      const claim = await port({ turn, actor, kind, manifest, manifestHash, checks, criteria }, signal);
+      const tests = kind === 'independent' ? createReviewTestSession({ root, repoId: snapshot.repoId, actor, manifest, criteria,
+        verification: snapshot.work.verification, command: ports.command,
+        checkCurrent: async () => {
+          const current = await context(root, runId, token, ['verifying']);
+          if (current.run.attempt !== run.attempt) throw new Error('STALE_BASELINE: evaluator attempt changed');
+        },
+      }) : undefined;
+      const claim = await port({ turn, actor, kind, manifest: structuredClone(manifest), manifestHash, checks: structuredClone(checks), criteria: structuredClone(criteria), ...(tests ? { runTests: tests.run } : {}) }, signal);
+      if (tests) { tests.assertExecuted(); checks.push(...tests.checks); }
       signal?.throwIfAborted();
       if (claim?.review?.reviewedManifestHash !== manifestHash || claim.review?.kind !== kind || claim.review?.actor !== actor) throw new Error('NOT_READY: review must bind the tested manifest and assigned reviewer identity');
+      claim.review.verdict = reviewTestVerdict(claim.review.verdict, checks);
       const problems = validateReceiptShape({ schema: 'harness-receipt/1', id: 'review-shape', taskUri: run.taskUri, mode: kind === 'self' ? 'xdel' : 'xflow', attempt: run.attempt,
         taskContractHash: run.baseline.taskContractHash, inputs: run.baseline.inputs, codeManifest: manifest, checks, coverage: claim.coverage, review: claim.review, actor: policy.implementor, createdAt: new Date().toISOString() });
       if (problems.length) throw new Error(`SCHEMA_INVALID: ${problems[0].message}`);

@@ -16,5 +16,6 @@ export * from './task-state.js';
 export * from './receipt.js';
 export * from './changeset.js';
 export * from './execution-policy.js';
+export * from './review-tests.js';
 
 export * from './note-edit.js';
