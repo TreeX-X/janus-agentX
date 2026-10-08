@@ -60,7 +60,7 @@ export async function executeWorkflowXTask(input: {
   }
   try {
     const result = await executeTaskExecution(parent.workspaceRoot, runId, token, {
-      implement: context => turn(context, 'Implement the pinned task in the declared scope. Include an entry reverse reference to the owning task Note. The executor maintains task execution and verification evidence. Preserve unrelated work; never modify formal execution records yourself.'),
+      implement: context => turn(context, 'Implement the pinned task in the declared scope with engineeringX and specX, then self-review. Return Change Summary + Note draft with implementation facts, actual checks and unresolved issues for Main Agent integration. Include an entry reverse reference to the owning Note. All Task files are read-only: never edit metadata, prose, timestamps or paths. Preserve unrelated work; the executor owns formal execution records.'),
       review, independentReview: review,
       command: step => child(async session => {
         const input = { workspaceId: parent.workspaceId, program: step.program, args: step.args, cwd: step.cwd, background: false }

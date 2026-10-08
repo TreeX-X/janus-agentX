@@ -8,6 +8,7 @@ import {
   type ParsedNote,
 } from './index.js'
 import type { NoteKind } from './schema.js'
+import { formatNoteMetadata } from './workflowx-v2/note-format.js'
 
 export const KIND_SECTIONS: Record<NoteKind, string[]> = {
   module: ['Responsibility', 'Design'], note: ['Description'],
@@ -63,7 +64,7 @@ export function createNoteInput(kind: NoteKind, title: string, parentUri: string
       ...(kind === 'module' ? {moduleState: options.moduleState ?? 'planned', ...(parentUri ? {parent: parentUri} : {role: options.role ?? 'project'})} : {module: options.module ?? parentUri}),
       ...(options.tags ? {tags: options.tags} : {}), ...(options.work ? {work: options.work} : {})};
     const sections = options.sections ?? Object.fromEntries(defaults[kind].map(name => [name, 'Pending definition.']));
-    return {id, markdown: '---\n'+JSON.stringify(meta,null,2)+'\n---\n\n# '+title+'\n\n'+Object.entries(sections).map(([name,text])=>'## '+name+'\n\n'+text).join('\n\n')+'\n'};
+    return {id, markdown: '---\n'+formatNoteMetadata(meta)+'\n---\n\n# '+title+'\n\n'+Object.entries(sections).map(([name,text])=>'## '+name+'\n\n'+text).join('\n\n')+'\n'};
   }
   const sections = KIND_SECTIONS[kind].map((name) => `## ${name}\n\n${name === 'Open questions' ? 'None.' : 'TBD.'}`).join('\n\n')
   const fm: Record<string, string | string[] | undefined> = {

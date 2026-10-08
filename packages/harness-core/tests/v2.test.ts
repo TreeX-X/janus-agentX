@@ -29,4 +29,16 @@ describe('WorkflowX v2 conformance',()=>{
     expect(updated.meta.updated).not.toBe(note.meta.updated);
     expect(taskContractHash(updated)).toBe(taskContractHash(note));
   });
+  it('writes compact metadata without changing command literals, body or BOM/EOL',()=>{
+    const note=parseNote(file('fixtures/valid-task.md'));
+    note.meta.work!.verification[0].args=['- [x] literal', '引号 " 和换行\n', '', '  '];
+    note.bom=true;note.eol='\r\n';
+    const encoded=serializeNote(note), roundtrip=parseNote(encoded);
+    expect(encoded.startsWith('\uFEFF---\r\n')).toBe(true);
+    expect(roundtrip.meta).toEqual(note.meta);
+    expect(taskContractHash(roundtrip)).toBe(taskContractHash(note));
+    expect(roundtrip.body.replace(/\r\n/g,'\n')).toBe(note.body.replace(/\r\n/g,'\n'));
+    expect(serializeNote(roundtrip)).toBe(encoded);
+    expect(encoded.length).toBeLessThan(JSON.stringify(note.meta,null,2).length+note.body.length+80);
+  });
 });

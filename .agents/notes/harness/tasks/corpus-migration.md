@@ -5,24 +5,14 @@
   "kind": "task",
   "lifecycle": "accepted",
   "created": "2026-10-07",
-  "updated": "2026-10-07T17:21:40.917Z",
+  "updated": "2026-10-08T01:56:26.778Z",
   "module": "note://62b44166-82f0-41ff-838d-e2b02388ed06/427edb4f-5f85-4c99-aa29-3ef947bc80d3",
   "work": {
     "scope": [
-      {
-        "repoId": "62b44166-82f0-41ff-838d-e2b02388ed06",
-        "paths": [
-          ".agents/notes/",
-          "packages/",
-          "docs/migrations/"
-        ]
-      }
+      {"repoId":"62b44166-82f0-41ff-838d-e2b02388ed06","paths":[".agents/notes/","packages/","docs/migrations/"]}
     ],
     "acceptanceRefs": [
-      {
-        "uri": "note://62b44166-82f0-41ff-838d-e2b02388ed06/be017850-3a3d-4248-970e-b7cbd3c1a31f",
-        "criterionId": "AC-1"
-      }
+      {"uri":"note://62b44166-82f0-41ff-838d-e2b02388ed06/be017850-3a3d-4248-970e-b7cbd3c1a31f","criterionId":"AC-1"}
     ],
     "verification": [
       {
@@ -32,9 +22,7 @@
         "repoId": "62b44166-82f0-41ff-838d-e2b02388ed06",
         "cwd": ".",
         "program": "node",
-        "args": [
-          "scripts/verify-note-corpus.mjs"
-        ]
+        "args": ["scripts/verify-note-corpus.mjs"]
       }
     ],
     "review": "self"

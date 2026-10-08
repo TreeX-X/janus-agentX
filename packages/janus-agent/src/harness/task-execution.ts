@@ -41,6 +41,9 @@ export async function prepareTaskTurn(root: string, runId: string, token: string
   const repair = independent ? undefined : run.repairs.find((row) => row.attempt === run.attempt);
   const failureReceipt = repair ? await loadReceipt(root, runId, repair.failureReceiptId) : undefined;
   const tools = independent ? INDEPENDENT_REVIEW_TOOLS : [...READ_TOOLS, ...(readOnly ? [] : [...WRITE_TOOLS, 'todo_write', 'ask_user'])];
+  const notes = independent ? snapshot.notes.map(note => ({ ...note,
+    sections: note.uri === run.taskUri ? note.sections.filter(section => ['Scope', 'Acceptance criteria', 'Verification'].includes(section.name)) : note.sections,
+  })) : snapshot.notes;
   return {
     root,
     conversationId: `harness-${runId}-${run.attempt}${readOnly ? '-review' : ''}`,
@@ -48,9 +51,10 @@ export async function prepareTaskTurn(root: string, runId: string, token: string
     systemPromptPrefix: [
       'Task-bound execution. Follow the pinned task contract below. Report blockers explicitly.',
       'Only the host can verify or complete this task. Model prose never changes run state.',
+      'All Task files are read-only, including metadata, body, timestamps and paths. Main Agent alone integrates implementation and evaluation results.',
       'File mutations are restricted to literal scope paths. Ledger writes and arbitrary commands are unavailable.',
       `Workflow ${run.mode}. ${readOnly ? 'Review only; independently inspect the current files and evidence.' : `Implementor identity: ${policy.implementor}. Complete the accepted task within its scope.`}`,
-      JSON.stringify({ taskUri: run.taskUri, baseline: run.baseline, work: snapshot.work, notes: snapshot.notes, repair, failureReceipt }),
+      JSON.stringify({ taskUri: run.taskUri, baseline: run.baseline, work: snapshot.work, notes, repair, failureReceipt }),
     ].join('\n'),
     toolAllowlist: tools,
     toolGate: async (call) => {
@@ -83,7 +87,7 @@ export async function verifyTaskExecution(root: string, runId: string, token: st
   const { run, snapshot, scope } = await context(root, runId, token, ['running', 'verifying']);
   const policy = taskExecutionPolicy(run.mode, run.lease!.owner, runId, snapshot.work.review);
   if (!ports.review) throw new Error('CAPABILITY_UNAVAILABLE: task reviewer is unavailable');
-  if (policy.independent && !ports.independentReview) throw new Error('CAPABILITY_UNAVAILABLE: xflow requires an independent reviewer');
+  if (policy.independent && !ports.independentReview) throw new Error('CAPABILITY_UNAVAILABLE: task requires an independent reviewer');
   if (snapshot.work.verification.some((step) => step.kind !== 'command' || step.repoId !== snapshot.repoId) || !ports.command) throw new Error('CAPABILITY_UNAVAILABLE: verification needs a command runner for this checkout; manual checks need external evidence');
   const manifest = await scope.manifest();
   const manifestHash = taskManifestHash(manifest);
@@ -135,10 +139,18 @@ export async function verifyTaskExecution(root: string, runId: string, token: st
     const stored = await recordReceipt(root, runId, token, receipt);
     if (!stored.ok) throw new Error(stored.errors.map((error) => `${error.code}: ${error.message}`).join('\n'));
     if (codeChanged) return { receipt, completed: false, errors: ['STALE_BASELINE: scoped code changed during verification or review'] };
+    if (run.mode === 'xdel' && snapshot.work.review === 'independent') {
+      await checkpointTaskHandoff(root, run.taskUri, run.baseline.taskContractHash,
+        'Main Agent reviews the self-review receipt and arranges the required independent evaluation separately. xdel does not dispatch an evaluator.');
+      return { receipt, completed: false, errors: ['NOT_READY: independent review remains pending; xdel performed implementation and self-review only'] };
+    }
     const live = await collectLiveSnapshot(root, run.taskUri, policy.implementor, currentManifest.map((row) => [codeKey(row.repoId, row.path), row.deleted ? null : row.sha256!]));
     if (!live.ok) return { receipt, completed: false, errors: live.errors.map((error) => `${error.code}: ${error.message}`) };
     signal?.throwIfAborted();
     const finished = await finishRun(root, runId, token, receipt.id, live.live);
+    if (snapshot.schema === 'harness-note/2') await checkpointTaskHandoff(root, run.taskUri, run.baseline.taskContractHash, finished.ok
+      ? 'Main Agent integrates Change Summary + Note draft and checks the required closeout against execution.receipts.'
+      : 'Main Agent inspects execution.receipts and unresolved checks before deciding the next action.');
     return { receipt, completed: finished.ok, errors: finished.errors.map((error) => `${error.code}: ${error.message}`) };
   } catch (error) {
     if (signal?.aborted) await pauseRun(root, runId, token);
@@ -148,24 +160,29 @@ export async function verifyTaskExecution(root: string, runId: string, token: st
 
 // Note: delegated execution owns the full bounded lifecycle — see .agents/notes/harness/execution/history/delegated-task-hosts.md
 export async function executeTaskExecution(root: string, runId: string, token: string,
-  ports: TaskVerificationPorts & { implement(turn: TaskTurnContext, signal?: AbortSignal): Promise<{ cancelled: boolean; toolTraces?: Array<{ status: string; summary?: string }> }> }, signal?: AbortSignal,
-): Promise<Awaited<ReturnType<typeof verifyTaskExecution>>> {
+  ports: TaskVerificationPorts & { implement(turn: TaskTurnContext, signal?: AbortSignal): Promise<{ cancelled: boolean; text?: string; toolTraces?: Array<{ status: string; summary?: string }> }> }, signal?: AbortSignal,
+): Promise<Awaited<ReturnType<typeof verifyTaskExecution>> & { implementationResult?: string }> {
+  let implementationResult: string | undefined;
   try {
     for (;;) {
       signal?.throwIfAborted();
       const { run, snapshot } = await context(root, runId, token, ['running', 'verifying']);
-      if (!ports.review || ((run.mode === 'xflow' || snapshot.work.review === 'independent') && !ports.independentReview)) throw new Error('CAPABILITY_UNAVAILABLE: required task reviewer is unavailable');
+      const policy = taskExecutionPolicy(run.mode, run.lease!.owner, runId, snapshot.work.review);
+      if (!ports.review || (policy.independent && !ports.independentReview)) throw new Error('CAPABILITY_UNAVAILABLE: required task reviewer is unavailable');
       if (run.state === 'running') {
         const result = await ports.implement(await prepareTaskTurn(root, runId, token), signal);
+        implementationResult = result.text;
         if (result.cancelled) { await pauseRun(root, runId, token); throw new Error('NOT_READY: implementation cancelled; run paused'); }
         if (result.toolTraces?.some((trace) => trace.status !== 'completed')) throw new Error('NOT_READY: implementation tool failed; verification refused');
         signal?.throwIfAborted();
       }
       const result = await verifyTaskExecution(root, runId, token, ports, signal);
-      if (result.completed || run.mode === 'xdel' || result.receipt.review.verdict === 'blocked' || result.errors.some((error) => error.startsWith('STALE_BASELINE'))) return result;
+      if (result.completed || run.mode === 'xdel' || result.receipt.review.verdict === 'blocked' || result.errors.some((error) => error.startsWith('STALE_BASELINE'))) {
+        return { ...result, ...(implementationResult === undefined ? {} : { implementationResult }) };
+      }
       signal?.throwIfAborted();
       const auto = await maybeAutoRepair(root, runId, token);
-      if (!auto.ok || !auto.data.repaired) return result;
+      if (!auto.ok || !auto.data.repaired) return { ...result, ...(implementationResult === undefined ? {} : { implementationResult }) };
     }
   } catch (error) {
     if (signal?.aborted) await pauseRun(root, runId, token);

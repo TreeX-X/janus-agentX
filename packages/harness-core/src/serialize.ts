@@ -9,6 +9,8 @@ import { Document, isMap, isScalar, parseDocument } from 'yaml';
 import type { ParsedNode } from 'yaml';
 import { parseNote, sliceSections, splitFrontmatter } from './parse.js';
 import type { ParsedNote, TaskExecution } from './schema.js';
+// Note: compact metadata preserves execution grounds — see .agents/notes/harness/workflowx-v2-adoption.md
+import { formatNoteMetadata } from './workflowx-v2/note-format.js';
 
 export function normalizeEol(text: string, eol: '\n' | '\r\n'): string {
   return eol === '\r\n' ? text.replace(/\r?\n/g, '\r\n') : text.replace(/\r\n/g, '\n');
@@ -32,7 +34,7 @@ function toYamlNode(doc: Document<ParsedNode>, value: unknown): ParsedNode {
 /** Regenerate the full note text. Meta writes in original key order; new keys append. */
 export function serializeNote(note: ParsedNote): string {
   if (note.meta.schema === 'harness-note/2') {
-    return normalizeEol((note.bom ? '\uFEFF' : '') + '---\n' + JSON.stringify({...note.meta, ...note.unknownFields}, null, 2) + '\n---\n' + note.body, note.eol);
+    return normalizeEol((note.bom ? '\uFEFF' : '') + '---\n' + formatNoteMetadata({...note.meta, ...note.unknownFields}) + '\n---\n' + note.body, note.eol);
   }
   const doc = new Document<ParsedNode>();
   const seen = new Set<string>();

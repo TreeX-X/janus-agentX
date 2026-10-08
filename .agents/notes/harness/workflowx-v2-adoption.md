@@ -5,7 +5,7 @@
   "kind": "decision",
   "lifecycle": "implemented",
   "created": "2026-10-07",
-  "updated": "2026-10-07T17:25:42.742Z",
+  "updated": "2026-10-08T02:02:14.548Z",
   "module": "note://62b44166-82f0-41ff-838d-e2b02388ed06/427edb4f-5f85-4c99-aa29-3ef947bc80d3"
 }
 ---
@@ -20,11 +20,15 @@ The previous runtime only understood harness-note/1, generated date-prefixed fil
 
 Reuse the shared harness-core, harness-node and janus-agent boundaries. The WorkflowX 82d5b3d reference algorithm and v2 schema are packaged with harness-core; storage stays in harness-node. The public Task input/hash and baseline digest follow v2, while legacy v1 and sealed receipt hashing remain unchanged. Both known profiles are supported; an old profile cannot write v2 sources.
 
+Metadata uses the shared WorkflowX compact JSON formatter on creation, editing and execution updates. Short nested values stay inline without changing command literals, body content, parsed fields or contract hashes. Raw-source hashes still track changed bytes.
+
 New projects start with module.md. Notes have six kinds, explicit module ownership, stable filenames and refreshed maintenance times. The structured writer supports in-place maintenance, type conversion, moves and authorized deletion, validates the final module/reference structure, and journals both sides of moves. Original creation time and exact read hashes are preserved. Conflicting or missing references must be repaired in the same transaction.
 
 Wiki snapshots expose module/parent, kind, moduleState, updated and raw source identity through one common source reader. Note tools support module/type filters and report result limits. Profile changes invalidate cached discovery; changed files use the existing incremental index with module validation. Planned modules and parent-level documents coexist.
 
-Ordinary xdo does not create Task and does not demand a Note write when facts are unchanged. Task-bound runs retain work.review across modes and require matching independent receipt identity. Before each implementation/review handoff, Main Agent's runtime updates bounded checkpoint blocks in the shared Task, preserving authored progress, evidence and handoff context. Worker tools cannot mutate execution ledgers; fixed baselines, leases and transaction recovery remain authoritative.
+Ordinary xdo does not create Task and does not demand a Note write when facts are unchanged. Task-bound runs retain work.review across modes. xdel performs one implementation and self-review without invoking an evaluator; a retained independent-review requirement stays pending, with the self-review receipt recorded and completion refused. xdo on an explicit Task and xflow retain required independent evaluation.
+
+Main Agent alone modifies Task metadata, prose, timestamps and paths. Its runtime replaces one bounded next-action block in Handoff and removes old runtime-owned state/receipt duplicates while preserving authored Progress and Evidence. Implementation returns Change Summary + Note draft to the coordinator instead of writing Task prose. Independent review receives the fixed Task contract without progress or handoff claims. Child tools reject all Task mutations; fixed baselines, leases and recoverable transactions remain authoritative.
 
 ## Alternatives considered
 
@@ -39,3 +43,8 @@ Workspace build passes. The final relevant suites pass 319 tests: harness-core 9
 AgentX and WorkflowX corpus checks and local managed-rule parity pass. JanusX integration, visual type grouping, README demonstrations and final release/push remain later work. The runtime changes are ready for that integration, not a claim of final cross-product release acceptance.
 
 After merge, the main checkout passed workspace build, 13 targeted v2/profile/handoff tests, agentX corpus verification, WorkflowX corpus verification and managed-rule parity. Known legacy teammate bodies were merged explicitly while preserving their frontmatter; originals remain in .agents/.local/pre-v2-rules. No remote push was performed.
+
+
+The managed rules, standard clarifications and compact formatter are pinned to WorkflowX a44cfb7c46219b215a6e6c0dc93221a3d39e6d65; the existing v2 schema/profile and hash locks remain unchanged. Managed synchronization updates 23 files; check and repeated apply pass with zero further changes and unchanged local configuration hashes.
+
+Verification: workspace build passes. Package test commands `npm test --workspace=@janus-agent/harness-core -- --maxWorkers=1 --minWorkers=1`, the same command for harness-node and janus-agent, and `npm test --workspace=@janus-agent/cli -- tests/harness-mode.test.ts --maxWorkers=1 --minWorkers=1` pass 93, 55, 102 and 20 tests respectively. The final handoff/output adjustments pass a seven-test rerun of v2-handoff and workflowx-executor with a janus-agent rebuild. Corpus validation passes 69 v2 documents with zero errors and six read-side diagnostics, including existing external references. Model ports remain controlled test doubles.

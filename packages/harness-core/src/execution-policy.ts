@@ -12,7 +12,8 @@ export function taskExecutionPolicy(mode: Receipt['mode'], owner: string, runId:
   return {
     implementor,
     reviewer: `${owner}:evaluator:${runId}`,
-    independent: mode === 'xflow' || review === 'independent',
+    // xdel stops after self-review; receipt validation retains any stronger obligation.
+    independent: mode !== 'xdel' && (mode === 'xflow' || review === 'independent'),
     autoRepair: mode !== 'xdel',
   };
 }
