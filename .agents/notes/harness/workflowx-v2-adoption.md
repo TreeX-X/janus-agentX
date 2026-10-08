@@ -5,7 +5,7 @@
   "kind": "decision",
   "lifecycle": "implemented",
   "created": "2026-10-07",
-  "updated": "2026-10-08T13:15:29Z",
+  "updated": "2026-10-08T14:39:00Z",
   "module": "note://62b44166-82f0-41ff-838d-e2b02388ed06/427edb4f-5f85-4c99-aa29-3ef947bc80d3"
 }
 ---
@@ -38,7 +38,7 @@ An evaluator can request a fresh run of an exact Main-authored verification comm
 
 Main self-checks pass 93 harness-core tests, 10 evaluator-runner tests (real passing/failing assertions, write/history/subprocess/junction refusal, scratch fixtures, stale input and cancellation), and 27 targeted janus-agent tests across task-execution, v2-handoff and workflowx-executor. The three changed packages build. The adapters use controlled model ports while the generated Node assertions and existing command path execute real processes. WorkflowX rules are synchronized and JanusX consumes the shared test contract; final independent integration evaluation remains tracked by the [integration Task](note://d2499d5b-4ceb-4d46-aa3b-18e5c9b86034/2ce416be-b118-40c4-bddc-87da25a8fe02). Historical receipts below keep their original scope and baseline.
 
-A separate native evaluator reviewed b40d1eb, ran 41 focused runtime and handoff tests, rebuilt the three shared packages and confirmed JanusX's installed distribution copies match. Actual Electron 35.7.5 / Node 22.16.0 probes also exercised the generated-test runner. The shared implementation passes the scoped independent review; the Task retains broader release coverage, and this native result is not a new embedded runtime receipt.
+A separate native evaluator reviewed b40d1eb, ran 41 focused runtime and handoff tests, rebuilt the three shared packages and confirmed JanusX's installed distribution copies match. Actual Electron 35.7.5 / Node 22.16.0 probes also exercised the generated-test runner. The shared implementation passes the scoped independent review; the later full local integration review also passes on 5c41e2f. It independently accounts for all 60 migrated originals and current rule/config preservation. Pre-adoption personal-config bytes are unavailable, so historical byte equality is not claimed. The Task records completed local acceptance and the separate publication boundary; this native result is not a new embedded runtime receipt.
 
 ## Alternatives considered
 
