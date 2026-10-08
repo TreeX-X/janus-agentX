@@ -5,7 +5,7 @@
   "kind": "decision",
   "lifecycle": "implemented",
   "created": "2026-10-07",
-  "updated": "2026-10-08T12:41:09Z",
+  "updated": "2026-10-08T13:15:29Z",
   "module": "note://62b44166-82f0-41ff-838d-e2b02388ed06/427edb4f-5f85-4c99-aa29-3ef947bc80d3"
 }
 ---
@@ -37,6 +37,8 @@ The evaluator now plans tests before returning a verdict. `harness-core/src/revi
 An evaluator can request a fresh run of an exact Main-authored verification command, or provide a small Node ES-module test. Generated tests read a hash-checked copy of manifest files; Node permissions restrict writes to disposable fixtures and deny subprocesses and workers. The child does not inherit task history, NODE_OPTIONS or application credentials. Source copying is bounded to 64 MiB; plans contain at most 12 tests, each generated source at most 32,000 characters, with a 30-second execution limit. Installed frameworks and other languages use declared commands. Unsupported runtime permissions or unavailable prerequisites produce not-run evidence and a blocked verdict; failed required checks cannot produce approval. This is filesystem/process permission enforcement, not a general hostile-code sandbox.
 
 Main self-checks pass 93 harness-core tests, 10 evaluator-runner tests (real passing/failing assertions, write/history/subprocess/junction refusal, scratch fixtures, stale input and cancellation), and 27 targeted janus-agent tests across task-execution, v2-handoff and workflowx-executor. The three changed packages build. The adapters use controlled model ports while the generated Node assertions and existing command path execute real processes. WorkflowX rules are synchronized and JanusX consumes the shared test contract; final independent integration evaluation remains tracked by the [integration Task](note://d2499d5b-4ceb-4d46-aa3b-18e5c9b86034/2ce416be-b118-40c4-bddc-87da25a8fe02). Historical receipts below keep their original scope and baseline.
+
+A separate native evaluator reviewed b40d1eb, ran 41 focused runtime and handoff tests, rebuilt the three shared packages and confirmed JanusX's installed distribution copies match. Actual Electron 35.7.5 / Node 22.16.0 probes also exercised the generated-test runner. The shared implementation passes the scoped independent review; the Task retains broader release coverage, and this native result is not a new embedded runtime receipt.
 
 ## Alternatives considered
 
