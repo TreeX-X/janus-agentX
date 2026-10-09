@@ -106,7 +106,7 @@ export interface JanusAgentLoopConfig {
    * R6-full：轮中 steering 抢占端口（调用方创建并持有，生产者随时 push）。
    * - 流式生成中 push 会立即打断本轮 stream（仅生产者驱动，无轮询）。
    * - 工具执行中 push 不打断在途工具（副作用不可撤回），在串行工具间隙
-   *   与并行批次结束后应用，已完成结果保留，未执行调用直接丢弃。
+   *   与并行批次结束后应用，已完成结果保留，未执行调用以 skipped 结果配对。
    * - 被打断轮次的半截 toolCalls 一律剥离（只保留正文）：半截调用配不到
    *   tool 结果，进模型上下文会违反 provider tool_use/tool_result 配对约束。
    * - 每条 steering 消耗 exactly once（destructive take），消耗时发
@@ -255,7 +255,7 @@ export async function runJanusAgentLoop(
       // terminate:true; mixed batches continue normally.
       const terminateFlags: boolean[] = []
       // R6-full：工具间隙检查点。steer 不打断在途工具（副作用不可撤回），
-      // 只在串行间隙与并行批次后应用；已完成结果保留，未执行调用直接丢弃。
+      // 只在串行间隙与并行批次后应用；已完成结果保留，未执行调用以 skipped 结果配对。
       const pendingInject: JanusAgentMessage[] = []
       const drainSteering = (): boolean => {
         const injected = takeSteered()
@@ -307,23 +307,23 @@ export async function runJanusAgentLoop(
         .filter((call) => tools.get(call.name)?.executionMode !== 'parallel')
         // Stable: deferred (`runLast`) tools settle after in-flight effects.
         .sort((a, b) => Number(tools.get(a.name)?.runLast === true) - Number(tools.get(b.name)?.runLast === true))
-      toolResults.push(...await Promise.all(parallelCalls.map(execute)))
-      let steeredMidTurn = drainSteering()
-      if (!steeredMidTurn) {
+      // Note: all preemption boundaries preserve call/result pairing — see .agents/notes/agent/module.md
+      const skipCalls = (calls: JanusToolCall[]) => {
+        for (const skipped of calls) {
+          const result = { content: 'Tool call skipped: superseded by a steered follow-up message.', isError: true }
+          emit({ type: 'tool_execution_end', call: skipped, result, isError: true })
+          terminateFlags.push(false)
+          toolResults.push(toolMessage(skipped, result))
+        }
+      }
+      if (drainSteering()) {
+        skipCalls(toolCalls)
+      } else {
+        toolResults.push(...await Promise.all(parallelCalls.map(execute)))
+        const steeredAfterParallel = drainSteering()
         for (let index = 0; index < sequentialCalls.length; index += 1) {
-          if (drainSteering()) {
-            steeredMidTurn = true
-            // Pairing invariant: every emitted call ships exactly one result.
-            // Preempted calls are never executed, but skipping their results
-            // breaks strict call/response pairing downstream (Gemini rejects
-            // the next request with a 400), so each gets a superseded marker.
-            // Note: preemption root cause for JanusX blueprint/island 400s — see JanusX .agents/notes/2026-09-25-blueprint-dialog-separation--2ec6c79b.md
-            for (const skipped of sequentialCalls.slice(index)) {
-              const result = { content: 'Tool call skipped: superseded by a steered follow-up message.', isError: true }
-              emit({ type: 'tool_execution_end', call: skipped, result, isError: true })
-              terminateFlags.push(false)
-              toolResults.push(toolMessage(skipped, result))
-            }
+          if (steeredAfterParallel || drainSteering()) {
+            skipCalls(sequentialCalls.slice(index))
             break
           }
           toolResults.push(await execute(sequentialCalls[index]))

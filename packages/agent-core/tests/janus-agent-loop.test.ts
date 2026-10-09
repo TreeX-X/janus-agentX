@@ -4,6 +4,36 @@ import { AgentSteeringPort, runJanusAgentLoop, type JanusAgentEvent, type JanusA
 const userMessage: JanusAgentMessage = { role: 'user', content: 'start' }
 
 describe('JanusAgentLoop', () => {
+  it.each(['before-tools', 'after-parallel'])('pairs skipped calls when steering arrives %s', async (boundary) => {
+    const port = new AgentSteeringPort()
+    const events: JanusAgentEvent[] = []
+    const writes = vi.fn(async () => ({ content: 'written' }))
+    const calls = ['read', 'write-1', 'write-2'].map(id => ({ id, name: id === 'read' ? 'read' : 'write', arguments: {} }))
+    let turns = 0
+    let injected = false
+    const steer = () => {
+      if (injected) return
+      injected = true
+      port.push('followup', { role: 'user', content: 'Stop writing' })
+    }
+    const messages = await runJanusAgentLoop([userMessage], {
+      steeringPort: port, maxTurns: 2,
+      tools: [
+        { name: 'read', executionMode: 'parallel', execute: async () => { steer(); return { content: 'read' } } },
+        { name: 'write', execute: writes },
+      ],
+      onEvent: event => { events.push(event); if (boundary === 'before-tools' && event.type === 'message_end') steer() },
+      stream: async () => turns++ === 0
+        ? { message: { role: 'assistant', content: '', toolCalls: calls }, toolCalls: calls }
+        : { message: { role: 'assistant', content: 'done' } },
+    })
+    const results = messages.filter(message => message.role === 'tool')
+    expect(results.map(message => message.toolCallId)).toEqual(calls.map(call => call.id))
+    expect(results.slice(boundary === 'before-tools' ? 0 : 1).every(message => message.content.includes('skipped'))).toBe(true)
+    expect(events.filter(event => event.type === 'tool_execution_end')).toHaveLength(3)
+    expect(messages.findIndex(message => message.content === 'Stop writing')).toBeGreaterThan(messages.indexOf(results[2]))
+    expect(writes).not.toHaveBeenCalled()
+  })
   it('runs tool calls, emits lifecycle events, and finishes on a plain response', async () => {
     const events: string[] = []
     let calls = 0
