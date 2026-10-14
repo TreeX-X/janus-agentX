@@ -418,8 +418,17 @@ export async function runChatTurn(
     Object.keys(workspaceModelTools).sort((left, right) => left.localeCompare(right))
       .map((name) => [name, workspaceModelTools[name]]),
   )
+  const localTools = endpoint.supportsFunctionCalling === false ? [] : (ports.localTools ?? [])
+    .filter(tool => isToolAllowed(tool.name)).sort((left, right) => left.name.localeCompare(right.name))
+  const reservedToolNames = new Set([...ports.tools.registry.list().map(tool => tool.name), ...Object.keys(sortedWorkspaceModelTools), 'workflow_execute', TODOWRITE_TOOL_NAME, ASKUSER_TOOL_NAME].map(normalizeOfferedToolName))
+  for (const tool of localTools) {
+    const name = normalizeOfferedToolName(tool.name)
+    if (!name || reservedToolNames.has(name)) throw new Error(`Duplicate or reserved host tool: ${tool.name}`)
+    reservedToolNames.add(name)
+  }
   const modelTools = {
     ...sortedWorkspaceModelTools,
+    ...Object.fromEntries(localTools.map(tool => [tool.name, { description: tool.description, parameters: tool.parameters }])),
     ...(workflowEnabled ? { workflow_execute: { description: workflowTool.description, parameters: workflowParameters } } : {}),
     ...(isToolAllowed(TODOWRITE_TOOL_NAME) ? { [TODOWRITE_TOOL_NAME]: todoModelTool } : {}),
     ...(isToolAllowed(ASKUSER_TOOL_NAME) ? { [ASKUSER_TOOL_NAME]: askModelTool } : {}),
@@ -432,6 +441,7 @@ export async function runChatTurn(
   // settle first so the user answers against final state.
   const loopTools = [
     ...runtimeLoopTools,
+    ...localTools,
     ...(workflowEnabled ? [workflowTool] : []),
     ...(isToolAllowed(TODOWRITE_TOOL_NAME) ? [todoLoopTool] : []),
     ...(isToolAllowed(ASKUSER_TOOL_NAME) ? [askLoopTool] : []),
@@ -510,6 +520,9 @@ export async function runChatTurn(
         chatSession.recordToolResult(runtimeResult)
         executedToolTraces.push(toolTraceEntryFromResult(runtimeResult, requestId))
         return result
+      }
+      if (localTools.some(tool => tool.name === call.name)) {
+        executedToolTraces.push({ toolName: call.name, workspaceId: '', status: result.isError ? 'failed' : 'completed', summary: result.content })
       }
       // Local `ask_user` has no runtime ToolResult: record a compact trace
       // so history/resume shows what was confirmed.

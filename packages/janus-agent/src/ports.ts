@@ -4,7 +4,8 @@
  * LlmService / workspaceAgentRuntime / knowledge services / Electron IPC;
  * the janus CLI implements them with local transports and stdout.
  */
-import type { ExecuteToolInput, ToolDefinition, ToolManifest, ToolResult } from '@janus-agent/agent-core'
+import type { ExecuteToolInput, JanusAgentTool, ToolDefinition, ToolManifest, ToolResult } from '@janus-agent/agent-core'
+import type { ZodTypeAny } from 'zod'
 
 /** Resolved model endpoint (opaque handle + capability flags for gating). */
 export interface ModelEndpoint {
@@ -45,6 +46,13 @@ export interface ToolExecutorPort {
     list(): ToolDefinition[]
     listManifests?(): ToolManifest[]
   }
+}
+
+/** Host application data tools; execute in the shared loop without requiring
+ * a workspace session. Workspace operations still use ToolExecutorPort. */
+export interface ChatLocalTool extends JanusAgentTool {
+  description: string
+  parameters: ZodTypeAny
 }
 
 export interface ObservationTarget {
@@ -99,6 +107,7 @@ export interface ChatTurnPorts {
   model: ModelResolverPort
   sessions: SessionResolverPort
   tools: ToolExecutorPort
+  localTools?: ChatLocalTool[]
   /** Mid-turn confirmation UI. Absent = non-interactive host (deny). */
   question?: QuestionPort
   streamTextFn: (options: Record<string, unknown>) => Promise<{

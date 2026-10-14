@@ -11,6 +11,7 @@ export type {
   AskUserPortQuestion,
   AskUserPortRequest,
   ChatTurnPorts,
+  ChatLocalTool,
   KnowledgeCapturePort,
   ModelEndpoint,
   ModelResolverPort,
