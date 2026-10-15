@@ -115,14 +115,25 @@ export class NoteChatEditor {
     return { uri, markdown: result.raw, expectedHash: result.sha256, path: result.relPath, workspacePath: root }
   }
 
-  async readPage(root: string, uri: string, options: { offset?: unknown; maxChars?: unknown } = {}) {
-    const read = await this.read(root, uri)
+  async readPage(root: string, uri: string, options: { offset?: unknown; maxChars?: unknown; expectedHash?: unknown } = {}) {
     const offset = z.number().int().min(0).parse(options.offset ?? 0)
     const maxChars = z.number().int().min(500).max(12000).parse(options.maxChars ?? 6000)
-    if (offset > read.markdown.length) throw new Error('Offset is beyond the Note source')
-    return { ...read, title: /^#\s+(.+)$/m.exec(read.markdown)?.[1] ?? uri,
-      markdown: read.markdown.slice(offset, offset + maxChars), offset, totalChars: read.markdown.length,
-      ...(offset + maxChars < read.markdown.length ? { nextOffset: offset + maxChars, truncated: true } : {}) }
+    const expectedHash = z.string().regex(/^[a-f0-9]{64}$/).optional().parse(options.expectedHash)
+    const key = `${root}:${uri}`
+    try {
+      const read = await this.read(root, uri)
+      if (expectedHash !== undefined && read.expectedHash !== expectedHash) {
+        this.reads.delete(key)
+        throw new Error('CONFLICT: Note changed since reading; restart note.read at offset zero')
+      }
+      if (offset > read.markdown.length) throw new Error('Offset is beyond the Note source')
+      return { ...read, title: /^#\s+(.+)$/m.exec(read.markdown)?.[1] ?? uri,
+        markdown: read.markdown.slice(offset, offset + maxChars), offset, totalChars: read.markdown.length,
+        ...(offset + maxChars < read.markdown.length ? { nextOffset: offset + maxChars, truncated: true } : {}) }
+    } catch (error) {
+      this.reads.delete(key)
+      throw error
+    }
   }
 
   write(root: string, conversationId: string, callId: string, input: unknown, authorized: boolean, signal: AbortSignal): Promise<NoteChatChange | null> {
@@ -154,7 +165,8 @@ export class NoteChatEditor {
         uri = created.uri; before = ''; expectedHash = null
         after = mergeNoteEdit(parseNote(created.afterMarkdown!), created.afterMarkdown!, { frontmatter: { kind: op.kind, module: op.module, moduleState: op.moduleState, tags: op.tags, lifecycle: op.lifecycle, work: op.work, relations: op.relations, codeRefs: op.codeRefs } as NoteEdit['frontmatter'], sections: op.sections }, args.reason)
       } else {
-        if (!op.uri || !op.expectedHash || this.reads.get(`${root}:${op.uri}`) !== op.expectedHash) throw new Error('Read the Note with note_read before editing; use its exact expectedHash')
+        if (!op.uri || !op.expectedHash) throw new Error('Update and delete require uri and expectedHash from note.read or the host shared context reader')
+        if (this.reads.get(`${root}:${op.uri}`) !== op.expectedHash) throw new Error('Read the Note with note.read before editing; use its exact expectedHash (after reconnecting, read again)')
         const current = await this.service.readNote(root, op.uri)
         if (current.sha256 !== op.expectedHash) throw new Error('CONFLICT: Note changed since reading; read it again')
         if (op.type === 'delete') {
